@@ -1,4 +1,4 @@
-use bbtree::{BBTreeMap, unsync};
+use bbtree::{unsync, BBTreeMap};
 use std::{hint::black_box, time::Instant};
 fn mix(mut x: u64) -> u64 {
     x ^= x >> 30;
@@ -17,14 +17,22 @@ fn main() {
     let rounds: usize = args.get(2).map_or(128, |v| v.parse().unwrap());
     let query_count: usize = args.get(4).map_or(8192, |v| v.parse().unwrap());
     assert!(size > 0 && rounds > 0 && query_count >= 8 && query_count.is_power_of_two());
+    let kind = args.get(5).map(String::as_str).unwrap_or("all");
+    assert!(matches!(kind, "all" | "tree" | "map"));
+    let do_tree = kind == "all" || kind == "tree";
+    let do_map = kind == "all" || kind == "map";
     let mut tree = unsync::BBTreeMap::<u64, u64>::new();
     let concurrent = BBTreeMap::<u64, u64>::new();
     for i in 0..size {
         let k = mix(i);
-        tree.insert(k, k);
-        concurrent.insert(k, k).unwrap();
+        if do_tree {
+            tree.insert(k, k);
+        }
+        if do_map {
+            concurrent.insert(k, k).unwrap();
+        }
     }
-    println!("upstream 8adae97 n={size} rounds={rounds} queries={query_count}");
+    println!("upstream 8adae97 n={size} rounds={rounds} queries={query_count} kind={kind}");
     let mut queries = vec![0_u64; query_count];
     for hit in [true, false] {
         let label = if hit { "hit" } else { "miss" };
@@ -35,42 +43,48 @@ fn main() {
             }
             *q = mix(x);
         }
-        let mut sum = 0_u64;
-        let start = Instant::now();
-        for _ in 0..rounds {
-            for q in black_box(&queries) {
-                sum = sum.wrapping_add(tree.get(q).copied().unwrap_or(0));
-            }
-        }
-        report(&format!("tree_{label}"), start, sum, rounds, query_count);
-        sum = 0;
-        let start = Instant::now();
-        for _ in 0..rounds {
-            for q in black_box(&queries) {
-                sum = sum.wrapping_add(concurrent.get_copied(q).unwrap_or(0));
-            }
-        }
-        report(&format!("map_{label}"), start, sum, rounds, query_count);
-        sum = 0;
-        let start = Instant::now();
-        for _ in 0..rounds {
-            for chunk in black_box(&queries).chunks_exact(8) {
-                let qs = std::array::from_fn::<_, 8, _>(|i| &chunk[i]);
-                for v in tree.get_many(qs) {
-                    sum = sum.wrapping_add(v.copied().unwrap_or(0));
+        if do_tree {
+            let mut sum = 0_u64;
+            let start = Instant::now();
+            for _ in 0..rounds {
+                for q in black_box(&queries) {
+                    sum = sum.wrapping_add(tree.get(q).copied().unwrap_or(0));
                 }
             }
+            report(&format!("tree_{label}"), start, sum, rounds, query_count);
         }
-        report(
-            &format!("tree_batch8_{label}"),
-            start,
-            sum,
-            rounds,
-            query_count,
-        );
+        if do_map {
+            let mut sum = 0_u64;
+            let start = Instant::now();
+            for _ in 0..rounds {
+                for q in black_box(&queries) {
+                    sum = sum.wrapping_add(concurrent.get_copied(q).unwrap_or(0));
+                }
+            }
+            report(&format!("map_{label}"), start, sum, rounds, query_count);
+        }
+        if do_tree {
+            let mut sum = 0_u64;
+            let start = Instant::now();
+            for _ in 0..rounds {
+                for chunk in black_box(&queries).chunks_exact(8) {
+                    let qs = std::array::from_fn::<_, 8, _>(|i| &chunk[i]);
+                    for v in tree.get_many(qs) {
+                        sum = sum.wrapping_add(v.copied().unwrap_or(0));
+                    }
+                }
+            }
+            report(
+                &format!("tree_batch8_{label}"),
+                start,
+                sum,
+                rounds,
+                query_count,
+            );
+        }
     }
     let threads: usize = args.get(3).map_or(0, |v| v.parse().unwrap());
-    if threads > 0 {
+    if threads > 0 && do_map {
         for (i, q) in queries.iter_mut().enumerate() {
             *q = mix(mix(i as u64 + 17) % size);
         }

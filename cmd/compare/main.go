@@ -20,6 +20,7 @@ func mix(x uint64) uint64 {
 	return x
 }
 func main() {
+	kind := flag.String("kind", "all", "all, tree, map, builtin, or syncmap")
 	size := flag.Int("size", 262144, "entries")
 	queryCount := flag.Int("queries", 8192, "query buffer length (power of two)")
 	rounds := flag.Int("rounds", 128, "query repetitions")
@@ -32,21 +33,36 @@ func main() {
 	if *queryCount < 8 || *queryCount&(*queryCount-1) != 0 {
 		panic("queries must be a power of two, at least eight")
 	}
+	switch *kind {
+	case "all", "tree", "map", "builtin", "syncmap":
+	default:
+		panic("unknown kind")
+	}
+	doTree := *kind == "all" || *kind == "tree"
+	doMap := *kind == "all" || *kind == "map"
+	doBuiltin := *kind == "builtin" || (*kind == "all" && *standard)
+	doSync := *kind == "syncmap" || (*kind == "all" && *standard)
 	hardware, width := gobbtree.SIMD()
-	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d queries=%d\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds, *queryCount)
+	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d queries=%d kind=%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds, *queryCount, *kind)
 	tree := gobbtree.NewTree[uint64, uint64]()
 	concurrent := gobbtree.New[uint64, uint64]()
 	var builtin map[uint64]uint64
-	if *standard {
+	if doBuiltin {
 		builtin = make(map[uint64]uint64, *size)
 	}
 	var synced sync.Map
 	for i := 0; i < *size; i++ {
 		key := mix(uint64(i))
-		tree.Insert(key, key)
-		concurrent.Insert(key, key)
-		if *standard {
+		if doTree {
+			tree.Insert(key, key)
+		}
+		if doMap {
+			concurrent.Insert(key, key)
+		}
+		if doBuiltin {
 			builtin[key] = key
+		}
+		if doSync {
 			synced.Store(key, key)
 		}
 	}
@@ -69,24 +85,29 @@ func main() {
 			queries[i] = mix(x)
 		}
 		var sum uint64
-		start := time.Now()
-		for r := 0; r < *rounds; r++ {
-			for _, q := range queries {
-				v, _ := tree.Get(q)
-				sum += v
+		var start time.Time
+		if doTree {
+			start = time.Now()
+			for r := 0; r < *rounds; r++ {
+				for _, q := range queries {
+					v, _ := tree.Get(q)
+					sum += v
+				}
 			}
+			report("tree_"+label, start, sum)
 		}
-		report("tree_"+label, start, sum)
-		sum = 0
-		start = time.Now()
-		for r := 0; r < *rounds; r++ {
-			for _, q := range queries {
-				v, _ := concurrent.Get(q)
-				sum += v
+		if doMap {
+			sum = 0
+			start = time.Now()
+			for r := 0; r < *rounds; r++ {
+				for _, q := range queries {
+					v, _ := concurrent.Get(q)
+					sum += v
+				}
 			}
+			report("map_"+label, start, sum)
 		}
-		report("map_"+label, start, sum)
-		if *standard {
+		if doBuiltin {
 			sum = 0
 			start = time.Now()
 			for r := 0; r < *rounds; r++ {
@@ -95,6 +116,8 @@ func main() {
 				}
 			}
 			report("builtin_"+label, start, sum)
+		}
+		if doSync {
 			sum = 0
 			start = time.Now()
 			for r := 0; r < *rounds; r++ {
@@ -107,20 +130,22 @@ func main() {
 			report("syncmap_"+label, start, sum)
 
 		}
-		var dst [8]gobbtree.Result[uint64]
-		sum = 0
-		start = time.Now()
-		for r := 0; r < *rounds; r++ {
-			for i := 0; i < len(queries); i += 8 {
-				tree.GetMany(queries[i:i+8], dst[:])
-				for _, v := range dst {
-					sum += v.Value
+		if doTree {
+			var dst [8]gobbtree.Result[uint64]
+			sum = 0
+			start = time.Now()
+			for r := 0; r < *rounds; r++ {
+				for i := 0; i < len(queries); i += 8 {
+					tree.GetMany(queries[i:i+8], dst[:])
+					for _, v := range dst {
+						sum += v.Value
+					}
 				}
 			}
+			report("tree_batch8_"+label, start, sum)
 		}
-		report("tree_batch8_"+label, start, sum)
 	}
-	if *threads > 0 {
+	if *threads > 0 && (doMap || doBuiltin || doSync) {
 		runtime.GOMAXPROCS(*threads)
 		for i := range queries {
 			queries[i] = mix(mix(uint64(i+17)) % uint64(*size))
@@ -131,22 +156,24 @@ func main() {
 			if writeEvery != 0 {
 				label = "write10"
 			}
-			parallel(fmt.Sprintf("map_parallel%d_%s", *threads, label), *threads, *rounds*len(queries), func(worker int) uint64 {
-				var sum uint64
-				for r := 0; r < *rounds; r++ {
-					for i := range queries {
-						q := queries[(i+worker*113)&queryMask]
-						if writeEvery != 0 && i%10 == 0 {
-							concurrent.Insert(q, q^uint64(r&1))
-						} else {
-							v, _ := concurrent.Get(q)
-							sum += v &^ 1
+			if doMap {
+				parallel(fmt.Sprintf("map_parallel%d_%s", *threads, label), *threads, *rounds*len(queries), func(worker int) uint64 {
+					var sum uint64
+					for r := 0; r < *rounds; r++ {
+						for i := range queries {
+							q := queries[(i+worker*113)&queryMask]
+							if writeEvery != 0 && i%10 == 0 {
+								concurrent.Insert(q, q^uint64(r&1))
+							} else {
+								v, _ := concurrent.Get(q)
+								sum += v &^ 1
+							}
 						}
 					}
-				}
-				return sum
-			})
-			if *standard {
+					return sum
+				})
+			}
+			if doSync {
 				parallel(fmt.Sprintf("syncmap_parallel%d_%s", *threads, label), *threads, *rounds*len(queries), func(worker int) uint64 {
 					var sum uint64
 					for r := 0; r < *rounds; r++ {
@@ -164,6 +191,8 @@ func main() {
 					}
 					return sum
 				})
+			}
+			if doBuiltin {
 				parallel(fmt.Sprintf("rwmap_parallel%d_%s", *threads, label), *threads, *rounds*len(queries), func(worker int) uint64 {
 					var sum uint64
 					for r := 0; r < *rounds; r++ {

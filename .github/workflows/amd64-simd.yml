@@ -68,34 +68,14 @@ jobs:
       - name: Compare public operations on the same CPU
         run: |
           for size in 4096 262144; do
-            for repeat in 1 2 3; do
-              echo "size=$size repeat=$repeat baseline" >> perf/bench.txt
-              ../compare-baseline -size "$size" -rounds 512 -threads 4 >> perf/bench.txt
-              echo "size=$size repeat=$repeat current" >> perf/bench.txt
-              ../compare-current -size "$size" -rounds 512 -threads 4 >> perf/bench.txt
-              echo "size=$size repeat=$repeat Rust" >> perf/bench.txt
-              internal/oracle/target/release/compare "$size" 512 4 >> perf/bench.txt
-            done
+            python3 internal/cpu_compare.py --go ../compare-current --baseline ../compare-baseline --rust internal/oracle/target/release/compare --size "$size" --queries 8192 --rounds 512 --threads 4 --repeat 3 --standard > "perf/compare-$size.jsonl"
           done
           go test -run '^$' -bench 'BenchmarkLookup|BenchmarkMutation|BenchmarkBuild|BenchmarkParallelGet' -benchtime=200ms -count=3 >> perf/public-bench.txt
           go test -run '^$' -bench BenchmarkConcurrentMaps -cpu=4 -benchtime=250ms -count=3 > perf/standard-maps.txt
           (cd ../simd-baseline && go test -run '^$' -bench 'BenchmarkMutation|BenchmarkBuild|BenchmarkConcurrentMaps/(4096|262144)/write10/^Map$' -cpu=4 -benchtime=200ms -count=3) > perf/baseline-writes.txt
-          for size in 4096 262144; do
-            for repeat in 1 2 3; do
-              ../compare-current -standard -size "$size" -rounds 512 -threads 4 >> perf/standard-serial.txt
-            done
-          done
       - name: Compare five million entries
         run: |
-          for repeat in 1 2 3; do
-            echo "repeat=$repeat baseline" >> perf/five-million.txt
-            ../compare-baseline -size 5000000 -queries 1048576 -rounds 4 -threads 4 >> perf/five-million.txt
-            echo "repeat=$repeat current" >> perf/five-million.txt
-            ../compare-current -size 5000000 -queries 1048576 -rounds 4 -threads 4 >> perf/five-million.txt
-            echo "repeat=$repeat Rust" >> perf/five-million.txt
-            internal/oracle/target/release/compare 5000000 4 4 1048576 >> perf/five-million.txt
-          done
-          ../compare-current -standard -size 5000000 -queries 1048576 -rounds 4 -threads 4 > perf/five-million-standard.txt
+          python3 internal/cpu_compare.py --go ../compare-current --baseline ../compare-baseline --rust internal/oracle/target/release/compare --size 5000000 --queries 1048576 --rounds 4 --threads 4 --repeat 3 --standard > perf/five-million.jsonl
       - name: Compare process memory
         run: python3 internal/rss_compare.py --go ../memory-current --rust internal/oracle/target/release/memory > perf/memory.jsonl
       - name: Compare AVX2 and selected width
