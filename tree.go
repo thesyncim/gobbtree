@@ -74,11 +74,20 @@ func (t *Tree[K, V]) Insert(key K, value V) (V, bool) {
 	}
 	// Replacements should not split or allocate, even in a full leaf.
 	n := t.root.findLeaf(key)
-	i := n.lower(key)
+	i := n.exact(key)
 	if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
 		old := n.leaf.values[i]
 		n.setValue(i, value)
 		return old, true
+	}
+	if n.n < nodeSize {
+		i = n.lower(key)
+		if i > 0 {
+			n.insertLeaf(i, key, value)
+			t.length++
+			var zero V
+			return zero, false
+		}
 	}
 	if t.root.n == nodeSize {
 		right := t.root.split()
@@ -132,7 +141,7 @@ func (t *Tree[K, V]) Delete(key K) (V, bool) {
 }
 func (t *Tree[K, V]) remove(n *node[K, V], key K) (V, bool) {
 	if n.leaf != nil {
-		i := n.lower(key)
+		i := n.exact(key)
 		if i == n.n || cmp.Compare(n.keys[i], key) != 0 {
 			var v V
 			return v, false

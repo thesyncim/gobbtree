@@ -125,6 +125,14 @@ func (n *node[K, V]) lower(key K) int {
 	}
 	return lo
 }
+
+// Exact probes use the byte fingerprints; ordered positions still use lower.
+func (n *node[K, V]) exact(key K) int {
+	if !n.strings {
+		return findCode(&n.codes, &n.tags, n.n, numericCode(key))
+	}
+	return n.lower(key)
+}
 func (n *node[K, V]) childIndex(key K) int {
 	if !n.strings {
 		return n.routeNumeric(numericCode(key))

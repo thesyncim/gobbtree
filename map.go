@@ -3,7 +3,6 @@ package gobbtree
 import (
 	"cmp"
 	"iter"
-	"sync"
 	"sync/atomic"
 )
 
@@ -18,7 +17,7 @@ type Map[K cmp.Ordered, V any] struct {
 	root    atomic.Pointer[searchImage[K, V]]
 	// Keep writer bookkeeping off the cache line loaded by every lookup.
 	_         [48]byte
-	structure sync.RWMutex
+	structure structuralLock
 	tree      Tree[K, V]
 	count     atomic.Int64
 }
@@ -42,31 +41,35 @@ func (m *Map[K, V]) Get(key K) (V, bool) { return m.optimisticGet(key) }
 
 func (m *Map[K, V]) Contains(key K) bool { _, ok := m.Get(key); return ok }
 func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
-	m.structure.RLock()
+	lane := m.structure.lane(structuralLaneCode(key))
+	lane.RLock()
 	if m.tree.root != nil {
 		n := m.tree.root.findLeaf(key)
 		n.leaf.mu.Lock()
-		i := n.lower(key)
+		i := n.exact(key)
 		if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
 			old := n.leaf.values[i]
 			n.setValue(i, value)
 			n.leaf.mu.Unlock()
-			m.structure.RUnlock()
+			lane.RUnlock()
 			return old, true
 		}
-		if n.n < nodeSize && i > 0 {
-			n.leaf.advanceSequence()
-			n.insertLeaf(i, key, value)
-			m.count.Add(1)
-			n.leaf.advanceSequence()
-			n.leaf.mu.Unlock()
-			m.structure.RUnlock()
-			var v V
-			return v, false
+		if n.n < nodeSize {
+			i = n.lower(key)
+			if i > 0 {
+				n.leaf.advanceSequence()
+				n.insertLeaf(i, key, value)
+				m.count.Add(1)
+				n.leaf.advanceSequence()
+				n.leaf.mu.Unlock()
+				lane.RUnlock()
+				var v V
+				return v, false
+			}
 		}
 		n.leaf.mu.Unlock()
 	}
-	m.structure.RUnlock()
+	lane.RUnlock()
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	held := m.structuralStart(key)
@@ -79,18 +82,19 @@ func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
 	return old, replaced
 }
 func (m *Map[K, V]) Delete(key K) (V, bool) {
-	m.structure.RLock()
+	lane := m.structure.lane(structuralLaneCode(key))
+	lane.RLock()
 	if m.tree.root == nil {
-		m.structure.RUnlock()
+		lane.RUnlock()
 		var v V
 		return v, false
 	}
 	n := m.tree.root.findLeaf(key)
 	n.leaf.mu.Lock()
-	i := n.lower(key)
+	i := n.exact(key)
 	if i == n.n || cmp.Compare(n.keys[i], key) != 0 {
 		n.leaf.mu.Unlock()
-		m.structure.RUnlock()
+		lane.RUnlock()
 		var v V
 		return v, false
 	}
@@ -100,11 +104,11 @@ func (m *Map[K, V]) Delete(key K) (V, bool) {
 		m.count.Add(-1)
 		n.leaf.advanceSequence()
 		n.leaf.mu.Unlock()
-		m.structure.RUnlock()
+		lane.RUnlock()
 		return old, true
 	}
 	n.leaf.mu.Unlock()
-	m.structure.RUnlock()
+	lane.RUnlock()
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	held := m.structuralStart(key)
@@ -120,15 +124,16 @@ func (m *Map[K, V]) Delete(key K) (V, bool) {
 // Read calls visit under a shared leaf latch if key exists. Values are copies.
 // A panic releases both latches before propagating to the caller.
 func (m *Map[K, V]) Read(key K, visit func(K, V)) bool {
-	m.structure.RLock()
-	defer m.structure.RUnlock()
+	lane := m.structure.lane(structuralLaneCode(key))
+	lane.RLock()
+	defer lane.RUnlock()
 	if m.tree.root == nil {
 		return false
 	}
 	n := m.tree.root.findLeaf(key)
 	n.leaf.mu.RLock()
 	defer n.leaf.mu.RUnlock()
-	i := n.lower(key)
+	i := n.exact(key)
 	if i == n.n || cmp.Compare(n.keys[i], key) != 0 {
 		return false
 	}
@@ -139,13 +144,14 @@ func (m *Map[K, V]) Read(key K, visit func(K, V)) bool {
 // Update atomically replaces an existing value with change(old), returning
 // the new value. A panic in change leaves the stored value unchanged.
 func (m *Map[K, V]) Update(key K, change func(V) V) (V, bool) {
-	m.structure.RLock()
-	defer m.structure.RUnlock()
+	lane := m.structure.lane(structuralLaneCode(key))
+	lane.RLock()
+	defer lane.RUnlock()
 	if m.tree.root != nil {
 		n := m.tree.root.findLeaf(key)
 		n.leaf.mu.Lock()
 		defer n.leaf.mu.Unlock()
-		i := n.lower(key)
+		i := n.exact(key)
 		if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
 			value := change(n.leaf.values[i])
 			n.setValue(i, value)
