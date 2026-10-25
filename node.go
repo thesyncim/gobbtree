@@ -69,7 +69,7 @@ func (n *node[K, V]) refit() {
 
 func (n *node[K, V]) lower(key K) int {
 	if !n.strings {
-		return lowerCode(&n.codes, n.n, keyCode(key, 0))
+		return lowerCode(&n.codes, n.n, numericCode(key))
 	}
 	if n.prefix > 0 {
 		s, _ := keyString(key)
@@ -105,7 +105,7 @@ func (n *node[K, V]) lower(key K) int {
 }
 func (n *node[K, V]) childIndex(key K) int {
 	if !n.strings {
-		return routeCode(&n.codes, n.n, keyCode(key, 0))
+		return routeCode(&n.codes, n.n, numericCode(key))
 	}
 	i := n.lower(key)
 	if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
@@ -115,7 +115,7 @@ func (n *node[K, V]) childIndex(key K) int {
 }
 func (n *node[K, V]) findLeaf(key K) *node[K, V] {
 	if !n.strings {
-		return n.findLeafCode(keyCode(key, 0))
+		return n.findLeafCode(numericCode(key))
 	}
 	for n.children != nil {
 		n = n.children[n.childIndex(key)]

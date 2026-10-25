@@ -40,7 +40,7 @@ func (m *Map[K, V]) Get(key K) (V, bool) {
 	n := m.tree.root
 	var code uint64
 	if !n.strings {
-		code = keyCode(key, 0)
+		code = numericCode(key)
 		n = n.findLeafCode(code)
 	} else {
 		n = n.findLeaf(key)

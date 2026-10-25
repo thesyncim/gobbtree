@@ -14,7 +14,7 @@ func descendBatch[K cmp.Ordered, V any](root *node[K, V], keys []K, nodes *[batc
 	for j, key := range keys {
 		nodes[j] = root
 		if !root.strings {
-			codes[j] = keyCode(key, 0)
+			codes[j] = numericCode(key)
 		}
 	}
 	for nodes[0].children != nil {

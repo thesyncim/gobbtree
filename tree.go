@@ -34,7 +34,7 @@ func (t *Tree[K, V]) Clear()                     { t.root = nil; t.length = 0 }
 func (t *Tree[K, V]) Get(key K) (V, bool) {
 	if t.root != nil {
 		if !t.root.strings {
-			code := keyCode(key, 0)
+			code := numericCode(key)
 			n := t.root.findLeafCode(code)
 			i := lowerCode(&n.codes, n.n, code)
 			if i < n.n && n.codes[i] == code {
