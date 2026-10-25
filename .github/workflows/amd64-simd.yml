@@ -1,0 +1,82 @@
+name: amd64 SIMD
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    env:
+      GOEXPERIMENT: simd
+      GOAMD64: v1
+      RUSTFLAGS: -C target-cpu=native
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: CPU and selected backend
+        run: |
+          mkdir -p perf
+          lscpu > perf/cpu.txt
+          go version
+          go test -run TestSIMDAMD64Dispatch -v > perf/backend.txt
+          cat perf/backend.txt
+      - name: Native selected ISA
+        run: go test -race ./...
+      - name: AVX2 dispatch
+        env:
+          GODEBUG: cpu.avx512f=off
+          GOBBTREE_EXPECT_WIDTH: '256'
+        run: go test -v ./... > perf/avx2-tests.txt
+      - name: 128-bit fallback
+        env:
+          GODEBUG: cpu.avx512f=off,cpu.avx2=off
+          GOBBTREE_EXPECT_WIDTH: '128'
+        run: go test -v ./... > perf/avx-tests.txt
+      - name: Emulated fallback
+        env:
+          GODEBUG: simd=0
+          GOBBTREE_EXPECT_WIDTH: '0'
+        run: go test -v ./... > perf/scalar-tests.txt
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build comparison programs
+        run: |
+          git worktree add ../simd-baseline ad44a90
+          (cd ../simd-baseline && go build -o ../compare-baseline ./cmd/compare)
+          go build -o ../compare-current ./cmd/compare
+          rustc -vV > perf/rust-version.txt
+          cargo build --release --locked --manifest-path internal/oracle/Cargo.toml --bin compare
+          go test -c -o ../simd.test
+          go tool objdump -s 'gobbtree.(lowerCode|lowerCompact|findCode)$' ../simd.test > perf/generated-code.txt
+      - name: Compare public operations on the same CPU
+        run: |
+          for size in 4096 262144; do
+            for repeat in 1 2 3; do
+              echo "size=$size repeat=$repeat baseline" >> perf/bench.txt
+              ../compare-baseline -size "$size" -rounds 512 -threads 4 >> perf/bench.txt
+              echo "size=$size repeat=$repeat current" >> perf/bench.txt
+              ../compare-current -size "$size" -rounds 512 -threads 4 >> perf/bench.txt
+              echo "size=$size repeat=$repeat Rust" >> perf/bench.txt
+              internal/oracle/target/release/compare "$size" 512 4 >> perf/bench.txt
+            done
+          done
+          go test -run '^$' -bench 'BenchmarkLookup|BenchmarkMutation|BenchmarkParallelGet' -benchtime=200ms -count=3 >> perf/public-bench.txt
+      - name: Compare AVX2 and selected width
+        run: |
+          for repeat in 1 2 3; do
+            echo "repeat=$repeat forced AVX2" >> perf/widths.txt
+            GODEBUG=cpu.avx512f=off ../compare-current -size 262144 -rounds 512 -threads 4 >> perf/widths.txt
+            echo "repeat=$repeat selected" >> perf/widths.txt
+            ../compare-current -size 262144 -rounds 512 -threads 4 >> perf/widths.txt
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: amd64-${{ matrix.os }}
+          path: perf/

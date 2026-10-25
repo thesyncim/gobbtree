@@ -7,7 +7,7 @@ import "simd"
 // All slots are initialized; unused slots contain MaxUint64. A strict-less
 // count excludes padding even when the query is MaxUint64. Fixed capacity
 // is a multiple of every Go 1.27 hardware vector width (128/256/512 bits).
-func lowerCode(keys *[nodeSize]uint64, n int, key uint64) int {
+func lowerCodePortable(keys *[nodeSize]uint64, n int, key uint64) int {
 	if simd.Emulated() {
 		return lowerCodeScalar(keys, n, key)
 	}
@@ -26,9 +26,9 @@ func lowerCode(keys *[nodeSize]uint64, n int, key uint64) int {
 }
 
 // SIMD reports whether this build uses hardware SIMD and its vector width.
-func SIMD() (hardware bool, bits int) { return !simd.Emulated(), simd.VectorBitSize() }
+func simdPortable() (hardware bool, bits int) { return !simd.Emulated(), simd.VectorBitSize() }
 
-func lowerCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, key uint64) int {
+func lowerCompactPortable(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, key uint64) int {
 	if simd.Emulated() {
 		return lowerCodeScalar(keys, n, key)
 	}
@@ -50,6 +50,6 @@ func lowerCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, key uin
 	return i
 }
 
-func findCode(keys *[nodeSize]uint64, tags *[nodeSize]uint8, n int, key uint64) int {
-	return lowerCode(keys, n, key)
+func findCodePortable(keys *[nodeSize]uint64, tags *[nodeSize]uint8, n int, key uint64) int {
+	return lowerCodePortable(keys, n, key)
 }
