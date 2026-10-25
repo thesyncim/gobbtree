@@ -1,0 +1,10 @@
+//go:build !goexperiment.simd
+
+package gobbtree
+
+func lowerCode(keys *[nodeSize]uint64, n int, key uint64) int {
+	return lowerCodeScalar(keys, n, key)
+}
+
+// SIMD reports whether this build uses hardware SIMD and its vector width.
+func SIMD() (hardware bool, bits int) { return false, 0 }

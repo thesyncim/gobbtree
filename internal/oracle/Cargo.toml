@@ -1,0 +1,12 @@
+[package]
+name = "gobbtree-oracle"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bbtree = { git = "https://github.com/XiangpengHao/bbtree", rev = "8adae97a0ed97e5c98fa2790312eb0aec9719846" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
