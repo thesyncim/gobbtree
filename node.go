@@ -12,12 +12,13 @@ const minNodeSize = nodeSize / 2
 // Separate columns keep SIMD searches from loading values or child pointers.
 // These are GC-visible Go objects, with no pointer tagging or unsafe reads.
 type node[K cmp.Ordered, V any] struct {
-	codes    [nodeSize]uint64
-	keys     [nodeSize]K
 	n        int
 	prefix   int
+	strings  bool
 	children *[nodeSize]*node[K, V]
 	leaf     *leaf[K, V]
+	codes    [nodeSize]uint64
+	keys     [nodeSize]K
 }
 
 type leaf[K cmp.Ordered, V any] struct {
@@ -28,11 +29,15 @@ type leaf[K cmp.Ordered, V any] struct {
 
 func newLeaf[K cmp.Ordered, V any]() *node[K, V] {
 	n := &node[K, V]{leaf: new(leaf[K, V])}
+	var key K
+	_, n.strings = keyString(key)
 	n.pad()
 	return n
 }
 func newInner[K cmp.Ordered, V any]() *node[K, V] {
 	n := &node[K, V]{children: new([nodeSize]*node[K, V])}
+	var key K
+	_, n.strings = keyString(key)
 	n.pad()
 	return n
 }
@@ -47,7 +52,7 @@ func (n *node[K, V]) pad() {
 // changes local and avoids reading mutable ancestors in the concurrent map.
 func (n *node[K, V]) refit() {
 	n.prefix = 0
-	if n.n > 1 {
+	if n.strings && n.n > 1 {
 		if a, ok := keyString(n.keys[0]); ok {
 			b, _ := keyString(n.keys[n.n-1])
 			end := min(len(a), len(b), 65535)
@@ -63,6 +68,9 @@ func (n *node[K, V]) refit() {
 }
 
 func (n *node[K, V]) lower(key K) int {
+	if !n.strings {
+		return lowerCode(&n.codes, n.n, keyCode(key, 0))
+	}
 	if n.prefix > 0 {
 		s, _ := keyString(key)
 		first, _ := keyString(n.keys[0])
@@ -96,6 +104,9 @@ func (n *node[K, V]) lower(key K) int {
 	return lo
 }
 func (n *node[K, V]) childIndex(key K) int {
+	if !n.strings {
+		return routeCode(&n.codes, n.n, keyCode(key, 0))
+	}
 	i := n.lower(key)
 	if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
 		return i
@@ -103,8 +114,20 @@ func (n *node[K, V]) childIndex(key K) int {
 	return max(0, i-1)
 }
 func (n *node[K, V]) findLeaf(key K) *node[K, V] {
+	if !n.strings {
+		return n.findLeafCode(keyCode(key, 0))
+	}
 	for n.children != nil {
 		n = n.children[n.childIndex(key)]
+	}
+	return n
+}
+
+// Numeric codes encode the complete ordering. Routing needs an upper bound
+// on those codes, with no full-key load or re-encoding at each tree level.
+func (n *node[K, V]) findLeafCode(code uint64) *node[K, V] {
+	for n.children != nil {
+		n = n.children[routeCode(&n.codes, n.n, code)]
 	}
 	return n
 }
@@ -114,7 +137,7 @@ func (n *node[K, V]) insertLeaf(i int, key K, value V) {
 	copy(n.leaf.values[i+1:n.n+1], n.leaf.values[i:n.n])
 	n.keys[i], n.leaf.values[i] = key, value
 	n.n++
-	if i == 0 || i == n.n-1 {
+	if n.strings && (i == 0 || i == n.n-1) {
 		n.refit()
 	} else {
 		n.codes[i] = keyCode(key, n.prefix)
@@ -130,7 +153,7 @@ func (n *node[K, V]) deleteLeaf(i int) V {
 	var v V
 	n.keys[n.n], n.leaf.values[n.n] = k, v
 	n.codes[n.n] = ^uint64(0)
-	if i == 0 || i == n.n {
+	if n.strings && (i == 0 || i == n.n) {
 		n.refit()
 	}
 	return old

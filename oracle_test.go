@@ -105,3 +105,89 @@ func TestUpstreamOracle(t *testing.T) {
 	}
 	t.Log("matched every return value, forward/reverse range, length, reset, and deletion-to-empty against upstream 8adae97")
 }
+
+func TestUpstreamOracleStrings(t *testing.T) {
+	binary := os.Getenv("GOBBTREE_ORACLE")
+	if binary == "" {
+		t.Skip("set GOBBTREE_ORACLE to the pinned Rust oracle binary")
+	}
+	encode := func(s string) string {
+		if s == "" {
+			return "_"
+		}
+		return fmt.Sprintf("%x", s)
+	}
+	pool := []string{"", "\x00", "\x00\x00", "a", "a\x00", "a\x00\x00", "abcdefgh", "abcdefgh\x00", "abcdefgh\x00\x00", "\xff"}
+	for i := 0; i < 1000; i++ {
+		pool = append(pool, fmt.Sprintf("/tenant/long/shared/prefix/records/%08d/entry", i))
+	}
+	rng := rand.New(rand.NewPCG(111, 222))
+	var tr Tree[string, uint64]
+	var input, want bytes.Buffer
+	result := func(v uint64, ok bool) {
+		if ok {
+			fmt.Fprintln(&want, v)
+		} else {
+			fmt.Fprintln(&want, "-")
+		}
+	}
+	for i := 0; i < 8000; i++ {
+		key := pool[rng.IntN(len(pool))]
+		value := rng.Uint64()
+		op := rng.IntN(6)
+		if i < 2000 {
+			op = 0
+		}
+		switch op {
+		case 0, 1:
+			fmt.Fprintf(&input, "I %s %d\n", encode(key), value)
+			result(tr.Insert(key, value))
+		case 2:
+			fmt.Fprintf(&input, "D %s\n", encode(key))
+			result(tr.Delete(key))
+		case 3:
+			fmt.Fprintf(&input, "G %s\n", encode(key))
+			result(tr.Get(key))
+		case 4, 5:
+			upper := key + "\xff"
+			cmd := "R"
+			if op == 5 {
+				cmd = "V"
+			}
+			fmt.Fprintf(&input, "%s %s %s\n", cmd, encode(key), encode(upper))
+			visit := func(k string, v uint64) bool { fmt.Fprintf(&want, "%s:%d,", encode(k), v); return true }
+			if op == 4 {
+				tr.Scan(key, upper, visit)
+			} else {
+				tr.ScanReverse(key, upper, visit)
+			}
+			fmt.Fprintln(&want)
+		}
+	}
+	var keys []string
+	for k := range tr.All() {
+		keys = append(keys, k)
+	}
+	for _, k := range keys {
+		fmt.Fprintf(&input, "D %s\n", encode(k))
+		result(tr.Delete(k))
+	}
+	command := exec.Command(binary, "strings")
+	command.Stdin = &input
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	got, err := command.Output()
+	if err != nil {
+		t.Fatalf("oracle failed: %v: %s", err, stderr.String())
+	}
+	if !bytes.Equal(got, want.Bytes()) {
+		g, w := strings.Split(string(got), "\n"), strings.Split(want.String(), "\n")
+		for i := 0; i < min(len(g), len(w)); i++ {
+			if g[i] != w[i] {
+				t.Fatalf("string oracle mismatch line %d: got %q want %q", i+1, g[i], w[i])
+			}
+		}
+		t.Fatal("string oracle output length mismatch")
+	}
+	t.Log("matched byte-string keys, embedded NULs, long prefixes, ranges, and deletion-to-empty")
+}

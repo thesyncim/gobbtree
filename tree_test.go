@@ -422,10 +422,18 @@ func FuzzTree(f *testing.F) {
 		if len(data) > 4096 {
 			data = data[:4096]
 		}
-		keys := make([]int, len(data))
-		for i, b := range data {
-			keys[i] = int(b) - 128
+		// Keep operation bytes independent of key bytes so a single key can
+		// be inserted, replaced, deleted and read in one fuzz input.
+		if len(data) < 2 {
+			return
 		}
-		runTrace(t, keys, data)
+		count := len(data) / 2
+		keys := make([]int, count)
+		operations := make([]byte, count)
+		for i := 0; i < count; i++ {
+			keys[i] = int(data[2*i]) - 128
+			operations[i] = data[2*i+1]
+		}
+		runTrace(t, keys, operations)
 	})
 }

@@ -39,7 +39,7 @@ Both types have useful zero values. Keys may be integers, strings, floating poin
 
 ## SIMD
 
-With `GOEXPERIMENT=simd`, node search uses Go 1.27's portable `simd` package. Hardware and width are selected by the Go runtime. `gobbtree.SIMD()` reports the actual selection. Without the experiment, or with `GODEBUG=simd=0`, it uses binary search. The emulated setting is tested separately. No CPU-specific assembly is checked into this repository.
+With `GOEXPERIMENT=simd`, node search uses Go 1.27's `simd` package, with direct Go `simd/archsimd` NEON intrinsics on arm64 to avoid dispatch and stack-reduction overhead. Hardware and width are selected by the Go runtime. `gobbtree.SIMD()` reports the actual selection. Without the experiment, or with `GODEBUG=simd=0`, it uses binary search. The emulated setting is tested separately. No CPU-specific assembly is checked into this repository.
 
 ## Port boundary
 
@@ -62,6 +62,6 @@ GOEXPERIMENT=simd GOBBTREE_ORACLE="$PWD/internal/oracle/target/release/gobbtree-
 GOEXPERIMENT=simd go test -run '^$' -bench 'Benchmark(Lookup|Search)$' -benchmem
 ```
 
-The live Rust oracle compares insert/replace/delete/get return values, forward and reverse ranges, lengths, reset, and deletion-to-empty. Ordinary Go tests skip that gate unless its binary is configured; CI requires it. Randomized tests also compare against an independent Go map and sorted keys, check tree invariants, and cover concurrency, panic recovery, vector boundaries, and zero steady-state allocations.
+The live Rust oracle compares insert/replace/delete/get return values, forward and reverse ranges, lengths, reset, and deletion-to-empty, for integers and byte strings with long prefixes and embedded NULs. Ordinary Go tests skip that gate unless its binary is configured; CI requires it. Randomized tests also compare against an independent Go map and sorted keys, check tree invariants, and cover concurrency, panic recovery, vector boundaries, and zero steady-state allocations.
 
 Licensed under MIT OR Apache-2.0, following upstream. See [LICENSE](LICENSE).

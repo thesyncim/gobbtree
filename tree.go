@@ -33,6 +33,16 @@ func (t *Tree[K, V]) Clear()                     { t.root = nil; t.length = 0 }
 // Get returns a copy of the value associated with key.
 func (t *Tree[K, V]) Get(key K) (V, bool) {
 	if t.root != nil {
+		if !t.root.strings {
+			code := keyCode(key, 0)
+			n := t.root.findLeafCode(code)
+			i := lowerCode(&n.codes, n.n, code)
+			if i < n.n && n.codes[i] == code {
+				return n.leaf.values[i], true
+			}
+			var zero V
+			return zero, false
+		}
 		n := t.root.findLeaf(key)
 		i := n.lower(key)
 		if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
@@ -319,27 +329,21 @@ func (t *Tree[K, V]) GetMany(keys []K, dst []Result[V]) {
 	if len(dst) < len(keys) {
 		panic("gobbtree: GetMany destination too short")
 	}
-	// Interleave independent descents to expose memory-level parallelism.
-	const lanes = 8
-	for start := 0; start < len(keys); start += lanes {
-		count := min(lanes, len(keys)-start)
-		var nodes [lanes]*node[K, V]
-		for j := 0; j < count; j++ {
-			nodes[j] = t.root
-		}
-		if t.root != nil {
-			for nodes[0].children != nil {
-				for j := 0; j < count; j++ {
-					n := nodes[j]
-					nodes[j] = n.children[n.childIndex(keys[start+j])]
-				}
-			}
-		}
+	for start := 0; start < len(keys); start += batchLanes {
+		count := min(batchLanes, len(keys)-start)
+		var nodes [batchLanes]*node[K, V]
+		var codes [batchLanes]uint64
+		descendBatch(t.root, keys[start:start+count], &nodes, &codes)
 		for j := 0; j < count; j++ {
 			var result Result[V]
 			if n := nodes[j]; n != nil {
-				i := n.lower(keys[start+j])
-				if i < n.n && cmp.Compare(n.keys[i], keys[start+j]) == 0 {
+				i := 0
+				if !n.strings {
+					i = lowerCode(&n.codes, n.n, codes[j])
+				} else {
+					i = n.lower(keys[start+j])
+				}
+				if i < n.n && ((!n.strings && n.codes[i] == codes[j]) || (n.strings && cmp.Compare(n.keys[i], keys[start+j]) == 0)) {
 					result = Result[V]{n.leaf.values[i], true}
 				}
 			}

@@ -37,11 +37,23 @@ func (m *Map[K, V]) Get(key K) (V, bool) {
 		var v V
 		return v, false
 	}
-	n := m.tree.root.findLeaf(key)
+	n := m.tree.root
+	var code uint64
+	if !n.strings {
+		code = keyCode(key, 0)
+		n = n.findLeafCode(code)
+	} else {
+		n = n.findLeaf(key)
+	}
 	n.leaf.mu.RLock()
-	i := n.lower(key)
+	var i int
+	if !n.strings {
+		i = lowerCode(&n.codes, n.n, code)
+	} else {
+		i = n.lower(key)
+	}
 	var v V
-	ok := i < n.n && cmp.Compare(n.keys[i], key) == 0
+	ok := i < n.n && ((!n.strings && n.codes[i] == code) || (n.strings && cmp.Compare(n.keys[i], key) == 0))
 	if ok {
 		v = n.leaf.values[i]
 	}
@@ -210,18 +222,28 @@ func (m *Map[K, V]) GetMany(keys []K, dst []Result[V]) {
 	}
 	m.structure.RLock()
 	defer m.structure.RUnlock()
-	for j, key := range keys {
-		var result Result[V]
-		if m.tree.root != nil {
-			n := m.tree.root.findLeaf(key)
-			n.leaf.mu.RLock()
-			i := n.lower(key)
-			if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
-				result = Result[V]{n.leaf.values[i], true}
+	for start := 0; start < len(keys); start += batchLanes {
+		count := min(batchLanes, len(keys)-start)
+		var nodes [batchLanes]*node[K, V]
+		var codes [batchLanes]uint64
+		descendBatch(m.tree.root, keys[start:start+count], &nodes, &codes)
+		for j := 0; j < count; j++ {
+			var result Result[V]
+			if n := nodes[j]; n != nil {
+				n.leaf.mu.RLock()
+				i := 0
+				if !n.strings {
+					i = lowerCode(&n.codes, n.n, codes[j])
+				} else {
+					i = n.lower(keys[start+j])
+				}
+				if i < n.n && ((!n.strings && n.codes[i] == codes[j]) || (n.strings && cmp.Compare(n.keys[i], keys[start+j]) == 0)) {
+					result = Result[V]{n.leaf.values[i], true}
+				}
+				n.leaf.mu.RUnlock()
 			}
-			n.leaf.mu.RUnlock()
+			dst[start+j] = result
 		}
-		dst[j] = result
 	}
 }
 
