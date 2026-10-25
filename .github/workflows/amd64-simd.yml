@@ -57,6 +57,7 @@ jobs:
         run: |
           git worktree add ../simd-baseline 4c929ac
           cp cmd/compare/main.go ../simd-baseline/cmd/compare/main.go
+          cp standard_benchmark_test.go mutation_benchmark_test.go ../simd-baseline/
           (cd ../simd-baseline && go build -o ../compare-baseline ./cmd/compare)
           go build -o ../compare-current ./cmd/compare
           rustc -vV > perf/rust-version.txt
@@ -75,8 +76,14 @@ jobs:
               internal/oracle/target/release/compare "$size" 512 4 >> perf/bench.txt
             done
           done
-          go test -run '^$' -bench 'BenchmarkLookup|BenchmarkMutation|BenchmarkParallelGet' -benchtime=200ms -count=3 >> perf/public-bench.txt
+          go test -run '^$' -bench 'BenchmarkLookup|BenchmarkMutation|BenchmarkBuild|BenchmarkParallelGet' -benchtime=200ms -count=3 >> perf/public-bench.txt
           go test -run '^$' -bench BenchmarkConcurrentMaps -cpu=4 -benchtime=250ms -count=3 > perf/standard-maps.txt
+          (cd ../simd-baseline && go test -run '^$' -bench 'BenchmarkMutation|BenchmarkBuild|BenchmarkConcurrentMaps/(4096|262144)/write10/^Map$' -cpu=4 -benchtime=200ms -count=3) > perf/baseline-writes.txt
+          for size in 4096 262144; do
+            for repeat in 1 2 3; do
+              ../compare-current -standard -size "$size" -rounds 512 >> perf/standard-serial.txt
+            done
+          done
       - name: Compare AVX2 and selected width
         run: |
           for repeat in 1 2 3; do

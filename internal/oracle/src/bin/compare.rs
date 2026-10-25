@@ -36,25 +36,25 @@ fn main() {
         let mut sum = 0_u64;
         let start = Instant::now();
         for _ in 0..rounds {
-            for q in &queries {
-                sum = sum.wrapping_add(tree.get(black_box(q)).copied().unwrap_or(0));
+            for q in black_box(&queries) {
+                sum = sum.wrapping_add(tree.get(q).copied().unwrap_or(0));
             }
         }
         report(&format!("tree_{label}"), start, sum, rounds);
         sum = 0;
         let start = Instant::now();
         for _ in 0..rounds {
-            for q in &queries {
-                sum = sum.wrapping_add(concurrent.get_copied(black_box(q)).unwrap_or(0));
+            for q in black_box(&queries) {
+                sum = sum.wrapping_add(concurrent.get_copied(q).unwrap_or(0));
             }
         }
         report(&format!("map_{label}"), start, sum, rounds);
         sum = 0;
         let start = Instant::now();
         for _ in 0..rounds {
-            for chunk in queries.chunks_exact(8) {
+            for chunk in black_box(&queries).chunks_exact(8) {
                 let qs = std::array::from_fn::<_, 8, _>(|i| &chunk[i]);
-                for v in tree.get_many(black_box(qs)) {
+                for v in tree.get_many(qs) {
                     sum = sum.wrapping_add(v.copied().unwrap_or(0));
                 }
             }
@@ -66,39 +66,53 @@ fn main() {
         for (i, q) in queries.iter_mut().enumerate() {
             *q = mix(mix(i as u64 + 17) % size);
         }
-        let barrier = std::sync::Barrier::new(threads + 1);
-        std::thread::scope(|scope| {
-            let mut handles = Vec::new();
-            for worker in 0..threads {
-                let barrier = &barrier;
-                let queries = &queries;
-                let concurrent = &concurrent;
-                handles.push(scope.spawn(move || {
-                    barrier.wait();
-                    let mut sum = 0_u64;
-                    for _ in 0..rounds {
-                        for i in 0..queries.len() {
-                            sum = sum.wrapping_add(
-                                concurrent
-                                    .get_copied(black_box(&queries[(i + worker * 113) & 8191]))
-                                    .unwrap_or(0),
-                            );
+        for write_every in [0_usize, 10] {
+            let ready = std::sync::Barrier::new(threads + 1);
+            let barrier = std::sync::Barrier::new(threads + 1);
+            let done = std::sync::Barrier::new(threads + 1);
+            std::thread::scope(|scope| {
+                let mut handles = Vec::new();
+                for worker in 0..threads {
+                    let ready = &ready;
+                    let barrier = &barrier;
+                    let done = &done;
+                    let queries = &queries;
+                    let concurrent = &concurrent;
+                    handles.push(scope.spawn(move || {
+                        ready.wait();
+                        barrier.wait();
+                        let mut sum = 0_u64;
+                        for round in 0..rounds {
+                            let queries = black_box(queries);
+                            for i in 0..queries.len() {
+                                let q = queries[(i + worker * 113) & 8191];
+                                if write_every != 0 && i % 10 == 0 {
+                                    concurrent.insert(q, q ^ ((round & 1) as u64)).unwrap();
+                                } else {
+                                    sum = sum
+                                        .wrapping_add(concurrent.get_copied(&q).unwrap_or(0) & !1);
+                                }
+                            }
                         }
-                    }
-                    sum
-                }));
-            }
-            let start = Instant::now();
-            barrier.wait();
-            let mut sum = 0_u64;
-            for handle in handles {
-                sum = sum.wrapping_add(handle.join().unwrap());
-            }
-            let elapsed = start.elapsed().as_nanos() as f64 / (threads * rounds * 8192) as f64;
-            println!(
-                "map_parallel{threads}_hit {elapsed:.3} ns/op checksum={}",
-                black_box(sum)
-            );
-        });
+                        done.wait();
+                        sum
+                    }));
+                }
+                ready.wait();
+                let start = Instant::now();
+                barrier.wait();
+                done.wait();
+                let elapsed = start.elapsed().as_nanos() as f64 / (threads * rounds * 8192) as f64;
+                let mut sum = 0_u64;
+                for handle in handles {
+                    sum = sum.wrapping_add(handle.join().unwrap());
+                }
+                let label = if write_every == 0 { "hit" } else { "write10" };
+                println!(
+                    "map_parallel{threads}_{label} {elapsed:.3} ns/op checksum={}",
+                    black_box(sum)
+                );
+            });
+        }
     }
 }

@@ -1,6 +1,38 @@
 package gobbtree
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
+
+func BenchmarkBuild(b *testing.B) {
+	for _, size := range []int{4096, 65536} {
+		keys := make([]uint64, size)
+		for i := range keys {
+			keys[i] = mixedKey(uint64(i))
+		}
+		b.Run(fmt.Sprintf("Tree/%d", size), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				tr := NewTree[uint64, uint64]()
+				for _, key := range keys {
+					tr.Insert(key, key)
+				}
+				benchmarkSink = uint64(tr.Len())
+			}
+		})
+		b.Run(fmt.Sprintf("Map/%d", size), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				m := New[uint64, uint64]()
+				for _, key := range keys {
+					m.Insert(key, key)
+				}
+				benchmarkSink = uint64(m.Len())
+			}
+		})
+	}
+}
 
 func BenchmarkMutation(b *testing.B) {
 	for _, concurrent := range []bool{false, true} {

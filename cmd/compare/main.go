@@ -22,6 +22,7 @@ func mix(x uint64) uint64 {
 func main() {
 	size := flag.Int("size", 262144, "entries")
 	rounds := flag.Int("rounds", 128, "query repetitions")
+	standard := flag.Bool("standard", false, "include standard-library map lookups")
 	threads := flag.Int("threads", 0, "additional parallel lookup workers")
 	flag.Parse()
 	if *size <= 0 || *rounds <= 0 {
@@ -31,14 +32,19 @@ func main() {
 	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds)
 	tree := gobbtree.NewTree[uint64, uint64]()
 	concurrent := gobbtree.New[uint64, uint64]()
-	builtin := make(map[uint64]uint64, *size)
+	var builtin map[uint64]uint64
+	if *standard {
+		builtin = make(map[uint64]uint64, *size)
+	}
 	var synced sync.Map
 	for i := 0; i < *size; i++ {
 		key := mix(uint64(i))
 		tree.Insert(key, key)
 		concurrent.Insert(key, key)
-		builtin[key] = key
-		synced.Store(key, key)
+		if *standard {
+			builtin[key] = key
+			synced.Store(key, key)
+		}
 	}
 	runtime.GC()
 	var queries [8192]uint64
@@ -75,25 +81,27 @@ func main() {
 			}
 		}
 		report("map_"+label, start, sum)
-		sum = 0
-		start = time.Now()
-		for r := 0; r < *rounds; r++ {
-			for _, q := range queries {
-				sum += builtin[q]
-			}
-		}
-		report("builtin_"+label, start, sum)
-		sum = 0
-		start = time.Now()
-		for r := 0; r < *rounds; r++ {
-			for _, q := range queries {
-				if v, ok := synced.Load(q); ok {
-					sum += v.(uint64)
+		if *standard {
+			sum = 0
+			start = time.Now()
+			for r := 0; r < *rounds; r++ {
+				for _, q := range queries {
+					sum += builtin[q]
 				}
 			}
-		}
-		report("syncmap_"+label, start, sum)
+			report("builtin_"+label, start, sum)
+			sum = 0
+			start = time.Now()
+			for r := 0; r < *rounds; r++ {
+				for _, q := range queries {
+					if v, ok := synced.Load(q); ok {
+						sum += v.(uint64)
+					}
+				}
+			}
+			report("syncmap_"+label, start, sum)
 
+		}
 		var dst [8]gobbtree.Result[uint64]
 		sum = 0
 		start = time.Now()
@@ -112,35 +120,46 @@ func main() {
 		for i := range queries {
 			queries[i] = mix(mix(uint64(i+17)) % uint64(*size))
 		}
-		sums := make([]uint64, *threads)
-		var ready, done sync.WaitGroup
-		ready.Add(*threads)
-		done.Add(*threads)
-		begin := make(chan struct{})
-		for worker := 0; worker < *threads; worker++ {
-			go func() {
-				defer done.Done()
-				ready.Done()
-				<-begin
-				var sum uint64
-				for r := 0; r < *rounds; r++ {
-					for i := range queries {
-						v, _ := concurrent.Get(queries[(i+worker*113)&8191])
-						sum += v
+		for _, writeEvery := range []int{0, 10} {
+			sums := make([]uint64, *threads)
+			var ready, done sync.WaitGroup
+			ready.Add(*threads)
+			done.Add(*threads)
+			begin := make(chan struct{})
+			for worker := 0; worker < *threads; worker++ {
+				go func() {
+					defer done.Done()
+					ready.Done()
+					<-begin
+					var sum uint64
+					for r := 0; r < *rounds; r++ {
+						for i := range queries {
+							q := queries[(i+worker*113)&8191]
+							if writeEvery != 0 && i%10 == 0 {
+								concurrent.Insert(q, q^uint64(r&1))
+							} else {
+								v, _ := concurrent.Get(q)
+								sum += v &^ 1
+							}
+						}
 					}
-				}
-				sums[worker] = sum
-			}()
+					sums[worker] = sum
+				}()
+			}
+			ready.Wait()
+			start := time.Now()
+			close(begin)
+			done.Wait()
+			elapsed := time.Since(start)
+			var sum uint64
+			for _, v := range sums {
+				sum += v
+			}
+			label := "hit"
+			if writeEvery != 0 {
+				label = "write10"
+			}
+			fmt.Printf("map_parallel%d_%s %.3f ns/op checksum=%d\n", *threads, label, float64(elapsed.Nanoseconds())/float64(*threads**rounds*len(queries)), sum)
 		}
-		ready.Wait()
-		start := time.Now()
-		close(begin)
-		done.Wait()
-		var sum uint64
-		for _, v := range sums {
-			sum += v
-		}
-		fmt.Printf("map_parallel%d_hit %.3f ns/op checksum=%d\n", *threads, float64(time.Since(start).Nanoseconds())/float64(*threads**rounds*len(queries)), sum)
 	}
-
 }
