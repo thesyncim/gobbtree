@@ -22,6 +22,7 @@ type Result[V any] struct {
 type Tree[K cmp.Ordered, V any] struct {
 	root   *node[K, V]
 	length int
+	shared bool
 }
 
 // NewTree creates an empty tree without synchronization.
@@ -58,19 +59,19 @@ func (t *Tree[K, V]) Contains(key K) bool { _, ok := t.Get(key); return ok }
 // an entry. Equal keys keep the original stored key, as in upstream bbtree.
 func (t *Tree[K, V]) Insert(key K, value V) (V, bool) {
 	if t.root == nil {
-		t.root = newLeaf[K, V]()
+		t.root = newLeaf[K, V](t.shared)
 	}
 	// Replacements should not split or allocate, even in a full leaf.
 	n := t.root.findLeaf(key)
 	i := n.lower(key)
 	if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
 		old := n.leaf.values[i]
-		n.leaf.values[i] = value
+		n.setValue(i, value)
 		return old, true
 	}
 	if t.root.n == nodeSize {
 		right := t.root.split()
-		root := newInner[K, V]()
+		root := newInner[K, V](t.shared)
 		root.insertChild(0, t.root)
 		root.insertChild(1, right)
 		t.root = root

@@ -3,6 +3,7 @@ package gobbtree
 import (
 	"bytes"
 	"fmt"
+	"iter"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -14,12 +15,26 @@ import (
 // TestUpstreamOracle requires the binary compiled from the exact revision in
 // internal/oracle/Cargo.toml. Ordinary users need only Go; CI explicitly
 // requires and executes this gate instead of counting a skip as parity.
+type oracleMap[K any] interface {
+	Insert(K, uint64) (uint64, bool)
+	Delete(K) (uint64, bool)
+	Get(K) (uint64, bool)
+	Len() int
+	Clear()
+	Scan(K, K, func(K, uint64) bool)
+	ScanReverse(K, K, func(K, uint64) bool)
+	All() iter.Seq2[K, uint64]
+}
+
 func TestUpstreamOracle(t *testing.T) {
+	t.Run("Tree", func(t *testing.T) { runUpstreamOracle(t, NewTree[uint64, uint64]()) })
+	t.Run("Map", func(t *testing.T) { runUpstreamOracle(t, New[uint64, uint64]()) })
+}
+func runUpstreamOracle(t *testing.T, tr oracleMap[uint64]) {
 	binary := os.Getenv("GOBBTREE_ORACLE")
 	if binary == "" {
 		t.Skip("set GOBBTREE_ORACLE to the pinned Rust oracle binary")
 	}
-	var tr Tree[uint64, uint64]
 	var input, want bytes.Buffer
 	result := func(v uint64, ok bool) {
 		if ok {
@@ -85,7 +100,11 @@ func TestUpstreamOracle(t *testing.T) {
 		result(tr.Delete(k))
 	}
 	fmt.Fprintln(&input, "L\nC\nI 7 9\nG 7")
-	fmt.Fprintln(&want, "0\n-\n-\n9")
+	fmt.Fprintln(&want, tr.Len())
+	tr.Clear()
+	fmt.Fprintln(&want, "-")
+	result(tr.Insert(7, 9))
+	result(tr.Get(7))
 	command := exec.Command(binary)
 	command.Stdin = &input
 	var stderr bytes.Buffer
@@ -107,6 +126,10 @@ func TestUpstreamOracle(t *testing.T) {
 }
 
 func TestUpstreamOracleStrings(t *testing.T) {
+	t.Run("Tree", func(t *testing.T) { runUpstreamOracleStrings(t, NewTree[string, uint64]()) })
+	t.Run("Map", func(t *testing.T) { runUpstreamOracleStrings(t, New[string, uint64]()) })
+}
+func runUpstreamOracleStrings(t *testing.T, tr oracleMap[string]) {
 	binary := os.Getenv("GOBBTREE_ORACLE")
 	if binary == "" {
 		t.Skip("set GOBBTREE_ORACLE to the pinned Rust oracle binary")
@@ -122,7 +145,6 @@ func TestUpstreamOracleStrings(t *testing.T) {
 		pool = append(pool, fmt.Sprintf("/tenant/long/shared/prefix/records/%08d/entry", i))
 	}
 	rng := rand.New(rand.NewPCG(111, 222))
-	var tr Tree[string, uint64]
 	var input, want bytes.Buffer
 	result := func(v uint64, ok bool) {
 		if ok {

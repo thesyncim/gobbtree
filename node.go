@@ -3,6 +3,7 @@ package gobbtree
 import (
 	"cmp"
 	"sync"
+	"sync/atomic"
 )
 
 const nodeSize = 32
@@ -12,30 +13,41 @@ const minNodeSize = nodeSize / 2
 // Separate columns keep SIMD searches from loading values or child pointers.
 // These are GC-visible Go objects, with no pointer tagging or unsafe reads.
 type node[K cmp.Ordered, V any] struct {
-	n        int
-	prefix   int
-	strings  bool
-	children *[nodeSize]*node[K, V]
-	leaf     *leaf[K, V]
-	codes    [nodeSize]uint64
-	keys     [nodeSize]K
+	n          int
+	prefix     int
+	children   *[nodeSize]*node[K, V]
+	leaf       *leaf[K, V]
+	strings    bool
+	shared     bool
+	codes      [nodeSize]uint64
+	keys       [nodeSize]K
+	image      atomic.Pointer[searchImage[K, V]]
+	parentSlot *atomic.Pointer[searchImage[K, V]]
+	readEdges  *[nodeSize]atomic.Pointer[searchImage[K, V]]
 }
 
 type leaf[K cmp.Ordered, V any] struct {
-	values     [nodeSize]V
-	next, prev *node[K, V]
+	sequence   atomic.Uint64
+	words      *atomicWords
+	wordKind   uint8
 	mu         sync.RWMutex
+	next, prev *node[K, V]
+	values     [nodeSize]V
 }
 
-func newLeaf[K cmp.Ordered, V any]() *node[K, V] {
-	n := &node[K, V]{leaf: new(leaf[K, V])}
+func newLeaf[K cmp.Ordered, V any](shared bool) *node[K, V] {
+	n := &node[K, V]{leaf: new(leaf[K, V]), shared: shared}
+	initWordValues(n)
 	var key K
 	_, n.strings = keyString(key)
 	n.pad()
 	return n
 }
-func newInner[K cmp.Ordered, V any]() *node[K, V] {
-	n := &node[K, V]{children: new([nodeSize]*node[K, V])}
+func newInner[K cmp.Ordered, V any](shared bool) *node[K, V] {
+	n := &node[K, V]{children: new([nodeSize]*node[K, V]), shared: shared}
+	if shared {
+		n.readEdges = new([nodeSize]atomic.Pointer[searchImage[K, V]])
+	}
 	var key K
 	_, n.strings = keyString(key)
 	n.pad()
@@ -65,6 +77,7 @@ func (n *node[K, V]) refit() {
 		n.codes[i] = keyCode(n.keys[i], n.prefix)
 	}
 	n.pad()
+	n.publish()
 }
 
 func (n *node[K, V]) lower(key K) int {
@@ -141,6 +154,7 @@ func (n *node[K, V]) insertLeaf(i int, key K, value V) {
 		n.refit()
 	} else {
 		n.codes[i] = keyCode(key, n.prefix)
+		n.publish()
 	}
 }
 func (n *node[K, V]) deleteLeaf(i int) V {
@@ -155,6 +169,8 @@ func (n *node[K, V]) deleteLeaf(i int) V {
 	n.codes[n.n] = ^uint64(0)
 	if n.strings && (i == 0 || i == n.n) {
 		n.refit()
+	} else {
+		n.publish()
 	}
 	return old
 }
@@ -163,7 +179,7 @@ func (n *node[K, V]) deleteLeaf(i int) V {
 func (n *node[K, V]) split() *node[K, V] {
 	var right *node[K, V]
 	if n.leaf != nil {
-		right = newLeaf[K, V]()
+		right = newLeaf[K, V](n.shared)
 		copy(right.leaf.values[:], n.leaf.values[minNodeSize:])
 		clear(n.leaf.values[minNodeSize:])
 		right.leaf.next = n.leaf.next
@@ -173,7 +189,7 @@ func (n *node[K, V]) split() *node[K, V] {
 		right.leaf.prev = n
 		n.leaf.next = right
 	} else {
-		right = newInner[K, V]()
+		right = newInner[K, V](n.shared)
 		copy(right.children[:], n.children[minNodeSize:])
 		clear(n.children[minNodeSize:])
 	}

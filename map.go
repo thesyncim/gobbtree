@@ -8,14 +8,17 @@ import (
 )
 
 // Map is a concurrent ordered map. Its zero value is ready to use.
-// A structural latch protects routing and leaf links; leaf latches allow
-// independent in-place writes. Splits, merges and new minima take the
-// structural latch exclusively. This deliberately avoids racy seqlock reads.
+// Get uses immutable search images and version validation. Built-in word
+// values use atomic loads; other values use a shared leaf latch. Writers
+// latch leaves independently; splits, merges and new minima take a structural
+// latch exclusively. Scans and callbacks also hold the structural read latch.
 // Do not copy a Map after first use. Callbacks must not reenter the same Map.
 type Map[K cmp.Ordered, V any] struct {
 	structure sync.RWMutex
 	tree      Tree[K, V]
 	count     atomic.Int64
+	root      atomic.Pointer[searchImage[K, V]]
+	version   atomic.Uint64
 }
 
 // New creates an empty concurrent ordered map.
@@ -27,40 +30,14 @@ func (m *Map[K, V]) IsEmpty() bool { return m.count.Load() == 0 }
 func (m *Map[K, V]) Clear() {
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	m.version.Add(1)
 	m.tree.Clear()
+	m.root.Store(nil)
 	m.count.Store(0)
+	m.version.Add(1)
 }
-func (m *Map[K, V]) Get(key K) (V, bool) {
-	m.structure.RLock()
-	if m.tree.root == nil {
-		m.structure.RUnlock()
-		var v V
-		return v, false
-	}
-	n := m.tree.root
-	var code uint64
-	if !n.strings {
-		code = numericCode(key)
-		n = n.findLeafCode(code)
-	} else {
-		n = n.findLeaf(key)
-	}
-	n.leaf.mu.RLock()
-	var i int
-	if !n.strings {
-		i = lowerCode(&n.codes, n.n, code)
-	} else {
-		i = n.lower(key)
-	}
-	var v V
-	ok := i < n.n && ((!n.strings && n.codes[i] == code) || (n.strings && cmp.Compare(n.keys[i], key) == 0))
-	if ok {
-		v = n.leaf.values[i]
-	}
-	n.leaf.mu.RUnlock()
-	m.structure.RUnlock()
-	return v, ok
-}
+func (m *Map[K, V]) Get(key K) (V, bool) { return m.optimisticGet(key) }
+
 func (m *Map[K, V]) Contains(key K) bool { _, ok := m.Get(key); return ok }
 func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
 	m.structure.RLock()
@@ -70,14 +47,16 @@ func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
 		i := n.lower(key)
 		if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
 			old := n.leaf.values[i]
-			n.leaf.values[i] = value
+			n.setValue(i, value)
 			n.leaf.mu.Unlock()
 			m.structure.RUnlock()
 			return old, true
 		}
 		if n.n < nodeSize && i > 0 {
+			n.leaf.advanceSequence()
 			n.insertLeaf(i, key, value)
 			m.count.Add(1)
+			n.leaf.advanceSequence()
 			n.leaf.mu.Unlock()
 			m.structure.RUnlock()
 			var v V
@@ -88,6 +67,8 @@ func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
 	m.structure.RUnlock()
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	held := m.structuralStart(key)
+	defer m.structuralEnd(held)
 	m.tree.length = int(m.count.Load())
 	old, replaced := m.tree.Insert(key, value)
 	if !replaced {
@@ -112,8 +93,10 @@ func (m *Map[K, V]) Delete(key K) (V, bool) {
 		return v, false
 	}
 	if n.n > minNodeSize && i > 0 {
+		n.leaf.advanceSequence()
 		old := n.deleteLeaf(i)
 		m.count.Add(-1)
+		n.leaf.advanceSequence()
 		n.leaf.mu.Unlock()
 		m.structure.RUnlock()
 		return old, true
@@ -122,6 +105,8 @@ func (m *Map[K, V]) Delete(key K) (V, bool) {
 	m.structure.RUnlock()
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	held := m.structuralStart(key)
+	defer m.structuralEnd(held)
 	m.tree.length = int(m.count.Load())
 	old, ok := m.tree.Delete(key)
 	if ok {
@@ -161,7 +146,7 @@ func (m *Map[K, V]) Update(key K, change func(V) V) (V, bool) {
 		i := n.lower(key)
 		if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
 			value := change(n.leaf.values[i])
-			n.leaf.values[i] = value
+			n.setValue(i, value)
 			return value, true
 		}
 	}
@@ -178,6 +163,8 @@ func (m *Map[K, V]) UpdateOrInsert(key K, value V, merge func(V, V) V) (V, bool)
 	if ok {
 		value = merge(old, value)
 	}
+	held := m.structuralStart(key)
+	defer m.structuralEnd(held)
 	m.tree.length = int(m.count.Load())
 	m.tree.Insert(key, value)
 	if !ok {
@@ -194,6 +181,8 @@ func (m *Map[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	if old, ok := m.tree.Get(key); ok {
 		return old, true
 	}
+	held := m.structuralStart(key)
+	defer m.structuralEnd(held)
 	m.tree.length = int(m.count.Load())
 	m.tree.Insert(key, value)
 	m.count.Add(1)
@@ -205,6 +194,8 @@ func (m *Map[K, V]) DeleteIf(key K, predicate func(V) bool) (V, bool) {
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	if v, ok := m.tree.Get(key); ok && predicate(v) {
+		held := m.structuralStart(key)
+		defer m.structuralEnd(held)
 		m.tree.length = int(m.count.Load())
 		m.tree.Delete(key)
 		m.count.Add(-1)
@@ -351,6 +342,13 @@ func (m *Map[K, V]) Last() (K, V, bool) {
 func (m *Map[K, V]) PopFirst() (K, V, bool) {
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	key, _, present := m.tree.First()
+	if !present {
+		var v V
+		return key, v, false
+	}
+	held := m.structuralStart(key)
+	defer m.structuralEnd(held)
 	m.tree.length = int(m.count.Load())
 	k, v, ok := m.tree.PopFirst()
 	if ok {
@@ -361,6 +359,13 @@ func (m *Map[K, V]) PopFirst() (K, V, bool) {
 func (m *Map[K, V]) PopLast() (K, V, bool) {
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	key, _, present := m.tree.Last()
+	if !present {
+		var v V
+		return key, v, false
+	}
+	held := m.structuralStart(key)
+	defer m.structuralEnd(held)
 	m.tree.length = int(m.count.Load())
 	k, v, ok := m.tree.PopLast()
 	if ok {

@@ -61,4 +61,44 @@ fn main() {
         }
         report(&format!("tree_batch8_{label}"), start, sum, rounds);
     }
+    let threads: usize = args.get(3).map_or(0, |v| v.parse().unwrap());
+    if threads > 0 {
+        for (i, q) in queries.iter_mut().enumerate() {
+            *q = mix(mix(i as u64 + 17) % size);
+        }
+        let barrier = std::sync::Barrier::new(threads + 1);
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for worker in 0..threads {
+                let barrier = &barrier;
+                let queries = &queries;
+                let concurrent = &concurrent;
+                handles.push(scope.spawn(move || {
+                    barrier.wait();
+                    let mut sum = 0_u64;
+                    for _ in 0..rounds {
+                        for i in 0..queries.len() {
+                            sum = sum.wrapping_add(
+                                concurrent
+                                    .get_copied(black_box(&queries[(i + worker * 113) & 8191]))
+                                    .unwrap_or(0),
+                            );
+                        }
+                    }
+                    sum
+                }));
+            }
+            let start = Instant::now();
+            barrier.wait();
+            let mut sum = 0_u64;
+            for handle in handles {
+                sum = sum.wrapping_add(handle.join().unwrap());
+            }
+            let elapsed = start.elapsed().as_nanos() as f64 / (threads * rounds * 8192) as f64;
+            println!(
+                "map_parallel{threads}_hit {elapsed:.3} ns/op checksum={}",
+                black_box(sum)
+            );
+        });
+    }
 }

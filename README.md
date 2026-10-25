@@ -45,7 +45,7 @@ With `GOEXPERIMENT=simd`, node search uses Go 1.27's `simd` package, with direct
 
 The upstream reference is pinned to `8adae97a0ed97e5c98fa2790312eb0aec9719846`. This is a Go adaptation of the in-memory ordered map, not a Rust API or memory-layout compatibility layer. Node occupancy is 32; values live only in leaves. Prefixes derive from live node keys and are checked on lookup instead of relying on ancestor fences.
 
-Go synchronization uses a structural `RWMutex` plus leaf latches. Reads are data-race-free. In-place writes on different leaves can overlap; splits, merges, changes to child minima, and certain compound operations exclude other operations. This does **not** reproduce upstream's optimistic lock coupling or its scalability claims. `Len` adds an atomic counter absent from upstream's concurrent map.
+`Get` searches atomically published immutable key images and validates versions before returning. Built-in word values use atomic loads; other values use a shared leaf latch. Writers latch leaves independently, while a structural latch coordinates splits, merges, scans, and callbacks. `Len` uses an atomic counter.
 
 Rust-specific entry/borrow/allocator APIs, custom `InlineKey` strategies, sets, file images, mmap, and the separate store crate are not implemented. Upstream formal proofs do not transfer to this implementation. See the tests and benchmark evidence for the tested boundary; performance is not a universal promise of beating upstream.
 

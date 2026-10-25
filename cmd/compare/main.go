@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/thesyncim/gobbtree"
@@ -21,6 +22,7 @@ func mix(x uint64) uint64 {
 func main() {
 	size := flag.Int("size", 262144, "entries")
 	rounds := flag.Int("rounds", 128, "query repetitions")
+	threads := flag.Int("threads", 0, "additional parallel lookup workers")
 	flag.Parse()
 	if *size <= 0 || *rounds <= 0 {
 		panic("size and rounds must be positive")
@@ -34,6 +36,7 @@ func main() {
 		tree.Insert(key, key)
 		concurrent.Insert(key, key)
 	}
+	runtime.GC()
 	var queries [8192]uint64
 	report := func(name string, start time.Time, sum uint64) {
 		fmt.Printf("%s %.3f ns/op checksum=%d\n", name, float64(time.Since(start).Nanoseconds())/float64(*rounds*len(queries)), sum)
@@ -81,4 +84,40 @@ func main() {
 		}
 		report("tree_batch8_"+label, start, sum)
 	}
+	if *threads > 0 {
+		runtime.GOMAXPROCS(*threads)
+		for i := range queries {
+			queries[i] = mix(mix(uint64(i+17)) % uint64(*size))
+		}
+		sums := make([]uint64, *threads)
+		var ready, done sync.WaitGroup
+		ready.Add(*threads)
+		done.Add(*threads)
+		begin := make(chan struct{})
+		for worker := 0; worker < *threads; worker++ {
+			go func() {
+				defer done.Done()
+				ready.Done()
+				<-begin
+				var sum uint64
+				for r := 0; r < *rounds; r++ {
+					for i := range queries {
+						v, _ := concurrent.Get(queries[(i+worker*113)&8191])
+						sum += v
+					}
+				}
+				sums[worker] = sum
+			}()
+		}
+		ready.Wait()
+		start := time.Now()
+		close(begin)
+		done.Wait()
+		var sum uint64
+		for _, v := range sums {
+			sum += v
+		}
+		fmt.Printf("map_parallel%d_hit %.3f ns/op checksum=%d\n", *threads, float64(time.Since(start).Nanoseconds())/float64(*threads**rounds*len(queries)), sum)
+	}
+
 }

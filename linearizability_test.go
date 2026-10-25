@@ -34,15 +34,37 @@ func linearizable(history []historyOperation) bool {
 			if !ready {
 				continue
 			}
-			if op.result != state[op.key] {
-				continue
-			}
 			next := state
+			expected := state[op.key]
 			switch op.kind {
 			case 0:
 				next[op.key] = Result[int]{op.value, true}
 			case 1:
 				next[op.key] = Result[int]{}
+			case 3:
+				expected = Result[int]{}
+				next = [2]Result[int]{}
+			case 4:
+				count := 0
+				for _, entry := range state {
+					if entry.OK {
+						count++
+					}
+				}
+				expected = Result[int]{count, true}
+			case 5:
+				if expected.OK {
+					expected.Value++
+					next[op.key] = expected
+				}
+			case 6:
+				if !expected.OK {
+					expected.Value = op.value
+					next[op.key] = Result[int]{op.value, true}
+				}
+			}
+			if op.result != expected {
+				continue
 			}
 			if search(done|(1<<i), next) {
 				return true
@@ -53,7 +75,7 @@ func linearizable(history []historyOperation) bool {
 	return search(0, [2]Result[int]{})
 }
 func TestConcurrentLinearizability(t *testing.T) {
-	for round := 0; round < 40; round++ {
+	for round := 0; round < 100; round++ {
 		var m Map[int, int]
 		var tick atomic.Int64
 		var history [12]historyOperation
@@ -64,7 +86,7 @@ func TestConcurrentLinearizability(t *testing.T) {
 				<-start
 				for step := 0; step < 3; step++ {
 					i := worker*3 + step
-					op := historyOperation{kind: (i + round) % 3, key: (worker + step + round) % 2, value: i + 1}
+					op := historyOperation{kind: (i + round) % 7, key: (worker + step + round) % 2, value: i + 1}
 					op.start = tick.Add(1)
 					switch op.kind {
 					case 0:
@@ -73,6 +95,14 @@ func TestConcurrentLinearizability(t *testing.T) {
 						op.result.Value, op.result.OK = m.Delete(op.key)
 					case 2:
 						op.result.Value, op.result.OK = m.Get(op.key)
+					case 3:
+						m.Clear()
+					case 4:
+						op.result = Result[int]{m.Len(), true}
+					case 5:
+						op.result.Value, op.result.OK = m.Update(op.key, func(v int) int { return v + 1 })
+					case 6:
+						op.result.Value, op.result.OK = m.LoadOrStore(op.key, op.value)
 					}
 					op.end = tick.Add(1)
 					history[i] = op
