@@ -15,8 +15,9 @@ import (
 type Map[K cmp.Ordered, V any] struct {
 	version atomic.Uint64
 	root    atomic.Pointer[searchImage[K, V]]
+	routes  atomic.Pointer[publishedRoutes[K, V]]
 	// Keep writer bookkeeping off the cache line loaded by every lookup.
-	_         [48]byte
+	_         [40]byte
 	structure structuralLock
 	tree      Tree[K, V]
 	count     atomic.Int64
@@ -34,6 +35,7 @@ func (m *Map[K, V]) Clear() {
 	m.version.Add(1)
 	m.tree.Clear()
 	m.root.Store(nil)
+	m.routes.Store(nil)
 	m.count.Store(0)
 	m.version.Add(1)
 }

@@ -240,11 +240,16 @@ func (t *wordTree) insertAbsent(id uint32, key, value uint64) {
 	i := t.route(n, key)
 	child := n.inner().children[i]
 	if t.node(child).n == nodeSize {
-		right := t.split(child)
-		t.insertChild(n, i+1, right)
-		if key >= t.node(right).keys[0] {
-			i++
-			child = right
+		if t.node(child).leaf && n.n > 1 {
+			t.makeLeafRoom(n, i, key, value)
+			return
+		} else {
+			right := t.split(child)
+			t.insertChild(n, i+1, right)
+			if key >= t.node(right).keys[0] {
+				i++
+				child = right
+			}
 		}
 	}
 	t.insertAbsent(child, key, value)
@@ -530,4 +535,55 @@ func (t *wordTree) getMany(keys []uint64, dst []Result[uint64]) {
 			dst[start+j] = result
 		}
 	}
+}
+
+// Redistribute into a neighboring leaf before allocating. Two full leaves
+// split into three, keeping occupancy above the half-full split baseline.
+func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) {
+	children := &parent.inner().children
+	leftIndex := index
+	if index > 0 && (index+1 == int(parent.n) || t.node(children[index-1]).n <= t.node(children[index+1]).n) {
+		leftIndex--
+	}
+	leftID, rightID := children[leftIndex], children[leftIndex+1]
+	left, right := t.node(leftID), t.node(rightID)
+	var entries [2*nodeSize + 1]wordEntry
+	count := int(left.n + right.n)
+	copy(entries[:], left.entries()[:left.n])
+	copy(entries[left.n:], right.entries()[:right.n])
+	position := 0
+	for position < count && entries[position].key < key {
+		position++
+	}
+	copy(entries[position+1:count+1], entries[position:count])
+	entries[position] = wordEntry{key, value}
+	count++
+	if count <= 2*nodeSize {
+		cut := count / 2
+		copy(left.entries()[:], entries[:cut])
+		copy(right.entries()[:], entries[cut:count])
+		left.n, right.n = int32(cut), int32(count-cut)
+		t.refit(left)
+		t.refit(right)
+		parent.keys[leftIndex], parent.keys[leftIndex+1] = left.keys[0], right.keys[0]
+		t.refit(parent)
+		return
+	}
+	extraID := t.alloc(true)
+	extra := t.node(extraID)
+	first, second := count/3, 2*count/3
+	copy(left.entries()[:], entries[:first])
+	copy(right.entries()[:], entries[first:second])
+	copy(extra.entries()[:], entries[second:count])
+	left.n, right.n, extra.n = int32(first), int32(second-first), int32(count-second)
+	extra.prev, extra.next = rightID, right.next
+	if right.next != 0 {
+		t.node(right.next).prev = extraID
+	}
+	right.next = extraID
+	t.refit(left)
+	t.refit(right)
+	t.refit(extra)
+	parent.keys[leftIndex], parent.keys[leftIndex+1] = left.keys[0], right.keys[0]
+	t.insertChild(parent, leftIndex+2, extraID)
 }

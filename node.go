@@ -12,7 +12,15 @@ const minNodeSize = nodeSize / 2
 // Internal nodes store one minimum key per child. Leaves alone own values.
 // Separate columns keep SIMD searches from loading values or child pointers.
 // These are GC-visible Go objects, with no pointer tagging or unsafe reads.
+type numericColumns struct {
+	highCodes [nodeSize]uint32
+	tags      [nodeSize]uint8
+	codes     [nodeSize]uint64
+}
+
 type node[K cmp.Ordered, V any] struct {
+	*numericColumns
+	arena                    *nodeArena
 	children                 *[nodeSize]*node[K, V]
 	leaf                     *leaf[K, V]
 	directory                *[256]uint8
@@ -21,34 +29,38 @@ type node[K cmp.Ordered, V any] struct {
 	readEdges                *[nodeSize]atomic.Pointer[searchImage[K, V]]
 	n, prefix                int
 	strings, shared, compact bool
-	highCodes                [nodeSize]uint32
-	tags                     [nodeSize]uint8
-	codes                    [nodeSize]uint64
+	level                    uint8
+	columnsID, pairsID       uint32
 	keys                     [nodeSize]K
 }
 
 type leaf[K cmp.Ordered, V any] struct {
 	sequence   atomic.Uint64
 	words      *atomicWords
+	pairs      *atomicPairs
 	wordKind   uint8
 	mu         sync.RWMutex
 	next, prev *node[K, V]
 	values     [nodeSize]V
 }
 
-func newLeaf[K cmp.Ordered, V any](shared bool) *node[K, V] {
-	n := &node[K, V]{leaf: new(leaf[K, V]), shared: shared}
-	initWordValues(n)
+func newLeaf[K cmp.Ordered, V any](shared bool, arena *nodeArena) *node[K, V] {
+	n := &node[K, V]{arena: arena, leaf: new(leaf[K, V]), shared: shared}
+	n.numericColumns, n.columnsID = arena.columns.alloc()
+	*n.numericColumns = numericColumns{}
 	var key K
 	_, n.strings = keyString(key)
+	initWordValues(n)
 	n.pad()
 	return n
 }
-func newInner[K cmp.Ordered, V any](shared bool) *node[K, V] {
-	n := &node[K, V]{children: new([nodeSize]*node[K, V]), shared: shared}
+func newInner[K cmp.Ordered, V any](shared bool, arena *nodeArena) *node[K, V] {
+	n := &node[K, V]{arena: arena, children: new([nodeSize]*node[K, V]), shared: shared}
 	if shared {
 		n.readEdges = new([nodeSize]atomic.Pointer[searchImage[K, V]])
 	}
+	n.numericColumns, n.columnsID = arena.columns.alloc()
+	*n.numericColumns = numericColumns{}
 	var key K
 	_, n.strings = keyString(key)
 	n.pad()
@@ -239,7 +251,7 @@ func (n *node[K, V]) deleteLeaf(i int) V {
 func (n *node[K, V]) split() *node[K, V] {
 	var right *node[K, V]
 	if n.leaf != nil {
-		right = newLeaf[K, V](n.shared)
+		right = newLeaf[K, V](n.shared, n.arena)
 		copy(right.leaf.values[:], n.leaf.values[minNodeSize:])
 		clear(n.leaf.values[minNodeSize:])
 		right.leaf.next = n.leaf.next
@@ -249,10 +261,11 @@ func (n *node[K, V]) split() *node[K, V] {
 		right.leaf.prev = n
 		n.leaf.next = right
 	} else {
-		right = newInner[K, V](n.shared)
+		right = newInner[K, V](n.shared, n.arena)
 		copy(right.children[:], n.children[minNodeSize:])
 		clear(n.children[minNodeSize:])
 	}
+	right.level = n.level
 	copy(right.keys[:], n.keys[minNodeSize:])
 	clear(n.keys[minNodeSize:])
 	n.n = minNodeSize
@@ -262,6 +275,7 @@ func (n *node[K, V]) split() *node[K, V] {
 	return right
 }
 func (n *node[K, V]) insertChild(i int, child *node[K, V]) {
+	n.level = child.level + 1
 	copy(n.keys[i+1:n.n+1], n.keys[i:n.n])
 	copy(n.children[i+1:n.n+1], n.children[i:n.n])
 	n.keys[i], n.children[i] = child.keys[0], child
@@ -306,4 +320,14 @@ func (n *node[K, V]) routeNumeric(code uint64) int {
 		return max(0, lowerCompact(&n.codes, &n.highCodes, n.n, code+1)-1)
 	}
 	return routeCode(&n.codes, n.n, code)
+}
+
+func (n *node[K, V]) release() {
+	if image := n.image.Load(); image != nil {
+		image.valid.Store(false)
+	}
+	n.arena.columns.release(n.columnsID)
+	if n.pairsID != 0 {
+		n.arena.pairs.release(n.pairsID)
+	}
 }

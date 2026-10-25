@@ -124,6 +124,8 @@ func TestWordNodePointerFree(t *testing.T) {
 		}
 	}
 	check(reflect.TypeFor[wordNode]())
+	check(reflect.TypeFor[numericColumns]())
+	check(reflect.TypeFor[atomicPairs]())
 	if unsafe.Sizeof(wordNode{}) != 576 || unsafe.Offsetof(wordNode{}.keys) != 64 {
 		t.Fatal("numeric node layout changed")
 	}
@@ -188,5 +190,59 @@ func checkWordRoutes(t testing.TB, tr *wordTree) {
 				t.Fatalf("radix bucket %d endpoint %x routes to %d, want %d", bucket, key, id, want)
 			}
 		}
+	}
+}
+
+func TestConcurrentNumericLayout(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) == 8 && unsafe.Sizeof(node[uint64, uint64]{}) > 512 {
+		t.Fatal("numeric writer node exceeded the small-object scan threshold")
+	}
+	if unsafe.Offsetof(searchImage[uint64, uint64]{}.tags)+nodeSize > 64 {
+		t.Fatal("numeric reader tags spilled out of the hot header")
+	}
+	if unsafe.Offsetof(atomicPairs{}.entries) != 64 || unsafe.Sizeof(atomicPairs{}) != 576 {
+		t.Fatal("atomic pairs are not aligned inside their block")
+	}
+}
+
+func TestWordLeafRedistribution(t *testing.T) {
+	for _, order := range []string{"ascending", "descending", "mixed"} {
+		t.Run(order, func(t *testing.T) {
+			var tree Tree[uint64, uint64]
+			const size = 4096
+			keys := make([]uint64, size)
+			for i := range keys {
+				key := uint64(i) * 2
+				if order == "descending" {
+					key = uint64(size-1-i) * 2
+				}
+				if order == "mixed" {
+					key = mixedKey(uint64(i))
+				}
+				keys[i] = key
+				tree.Insert(key, key^123)
+				if i%31 == 0 {
+					checkWordTree(t, tree.words, i+1)
+				}
+			}
+			checkWordTree(t, tree.words, size)
+			for _, key := range keys {
+				if value, ok := tree.Get(key); !ok || value != key^123 {
+					t.Fatalf("lookup %d", key)
+				}
+			}
+			for i, key := range keys {
+				if i%2 == 0 {
+					tree.Delete(key)
+				}
+			}
+			checkWordTree(t, tree.words, size/2)
+			for i, key := range keys {
+				if i%2 == 0 {
+					tree.Insert(key, key^123)
+				}
+			}
+			checkWordTree(t, tree.words, size)
+		})
 	}
 }

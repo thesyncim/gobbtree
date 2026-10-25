@@ -20,17 +20,25 @@ type Result[V any] struct {
 // Tree is an ordered map for a single owner. Its zero value is ready to use.
 // Concurrent reads are safe only when no goroutine modifies the tree.
 type Tree[K cmp.Ordered, V any] struct {
-	root   *node[K, V]
-	words  *wordTree
-	length int
-	shared bool
+	root        *node[K, V]
+	words       *wordTree
+	arena       *nodeArena
+	length      int
+	shared      bool
+	routesDirty bool
 }
 
 // NewTree creates an empty tree without synchronization.
 func NewTree[K cmp.Ordered, V any]() *Tree[K, V] { return new(Tree[K, V]) }
 func (t *Tree[K, V]) Len() int                   { return t.length }
 func (t *Tree[K, V]) IsEmpty() bool              { return t.length == 0 }
-func (t *Tree[K, V]) Clear()                     { t.root = nil; t.words = nil; t.length = 0 }
+func (t *Tree[K, V]) Clear() {
+	t.root = nil
+	t.words = nil
+	t.arena = nil
+	t.length = 0
+	t.routesDirty = false
+}
 
 // Get returns a copy of the value associated with key.
 func (t *Tree[K, V]) Get(key K) (V, bool) {
@@ -119,7 +127,9 @@ func (t *Tree[K, V]) Insert(key K, value V) (V, bool) {
 		return zero, false
 	}
 	if t.root == nil {
-		t.root = newLeaf[K, V](t.shared)
+		t.arena = new(nodeArena)
+		t.root = newLeaf[K, V](t.shared, t.arena)
+		t.routesDirty = true
 	}
 	// Replacements should not split or allocate, even in a full leaf.
 	n := t.root
@@ -148,10 +158,11 @@ func (t *Tree[K, V]) Insert(key K, value V) (V, bool) {
 	}
 	if t.root.n == nodeSize {
 		right := t.root.split()
-		root := newInner[K, V](t.shared)
+		root := newInner[K, V](t.shared, t.arena)
 		root.insertChild(0, t.root)
 		root.insertChild(1, right)
 		t.root = root
+		t.routesDirty = true
 	}
 	t.insertAbsent(t.root, key, value)
 	t.length++
@@ -167,6 +178,7 @@ func (t *Tree[K, V]) insertAbsent(n *node[K, V], key K, value V) {
 	if n.children[i].n == nodeSize {
 		right := n.children[i].split()
 		n.insertChild(i+1, right)
+		t.changedRoutes(n)
 		if cmp.Compare(key, right.keys[0]) >= 0 {
 			i++
 		}
@@ -175,6 +187,7 @@ func (t *Tree[K, V]) insertAbsent(n *node[K, V], key K, value V) {
 	if cmp.Compare(n.keys[i], n.children[i].keys[0]) != 0 {
 		n.keys[i] = n.children[i].keys[0]
 		n.refit()
+		t.changedRoutes(n)
 	}
 }
 
@@ -200,8 +213,13 @@ func (t *Tree[K, V]) Delete(key K) (V, bool) {
 	t.length--
 	if t.root.n == 0 {
 		t.root = nil
+		t.arena = nil
+		t.routesDirty = true
 	} else if t.root.children != nil && t.root.n == 1 {
+		oldRoot := t.root
 		t.root = t.root.children[0]
+		oldRoot.release()
+		t.routesDirty = true
 	}
 	return old, true
 }
@@ -227,9 +245,11 @@ func (t *Tree[K, V]) remove(n *node[K, V], key K) (V, bool) {
 			n.keys[j] = n.children[j].keys[0]
 		}
 		n.refit()
+		t.changedRoutes(n)
 	} else if cmp.Compare(n.keys[i], child.keys[0]) != 0 {
 		n.keys[i] = child.keys[0]
 		n.refit()
+		t.changedRoutes(n)
 	}
 	return old, true
 }
@@ -297,6 +317,7 @@ func (n *node[K, V]) rebalance(i int) {
 	left.n += right.n
 	left.refit()
 	n.removeChild(i + 1)
+	right.release()
 }
 
 func (t *Tree[K, V]) firstLeaf() *node[K, V] {

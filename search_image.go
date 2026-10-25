@@ -8,20 +8,22 @@ import (
 // Integer and float codes fully encode ordering, so their published images
 // do not duplicate full keys. Strings retain keys to resolve window ties.
 type searchImage[K cmp.Ordered, V any] struct {
-	readEdges    *[nodeSize]atomic.Pointer[searchImage[K, V]]
-	wordState    *atomicWords
-	leaf         *leaf[K, V]
-	keys         *[nodeSize]K
-	directory    *[256]uint8
-	highCodes    *[nodeSize]uint32
-	n, prefix    int
-	imageVersion uint64
-	strings      bool
-	valueKind    uint8
-	compact      bool
-	valid        atomic.Bool
-	tags         [nodeSize]uint8
-	codes        [nodeSize]uint64
+	readEdges        *[nodeSize]atomic.Pointer[searchImage[K, V]]
+	pairs            *atomicPairs
+	n                int
+	valid            atomic.Bool
+	valueKind        uint8
+	strings, compact bool
+	_                byte
+	tags             [nodeSize]uint8
+	wordState        *atomicWords
+	leaf             *leaf[K, V]
+	keys             *[nodeSize]K
+	directory        *[256]uint8
+	highCodes        *[nodeSize]uint32
+	codes            *[nodeSize]uint64
+	prefix           int
+	imageVersion     uint64
 }
 
 func (n *searchImage[K, V]) lower(key K) int {
@@ -37,7 +39,7 @@ func (n *searchImage[K, V]) lower(key K) int {
 		}
 	}
 	code := keyCode(key, n.prefix)
-	i := lowerCode(&n.codes, n.n, code)
+	i := lowerCode(n.codes, n.n, code)
 	if i == n.n || n.codes[i] != code || cmp.Compare(n.keys[i], key) >= 0 {
 		return i
 	}
@@ -66,6 +68,21 @@ func (n *searchImage[K, V]) readValue(key K, code uint64) (value V, found, valid
 	if n.readEdges != nil {
 		return value, false, false
 	}
+	if n.pairs != nil {
+		word, ok := n.pairs.get(&n.tags, n.n, code)
+		if !n.valid.Load() {
+			return value, false, false
+		}
+		if ok {
+			if n.valueKind == 1 {
+				value = any(word).(V)
+			} else {
+				value = unpackWord[V](word, n.valueKind)
+			}
+		}
+		return value, ok, true
+	}
+
 	if n.wordState == nil {
 		n.leaf.mu.RLock()
 		defer n.leaf.mu.RUnlock()
@@ -77,7 +94,7 @@ func (n *searchImage[K, V]) readValue(key K, code uint64) (value V, found, valid
 	if n.strings {
 		i = n.lower(key)
 	} else {
-		i = findCode(&n.codes, &n.tags, n.n, code)
+		i = findCode(n.codes, &n.tags, n.n, code)
 	}
 	found = i < n.n && ((!n.strings && n.codes[i] == code) || (n.strings && cmp.Compare(n.keys[i], key) == 0))
 	if state := n.wordState; state != nil {

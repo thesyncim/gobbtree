@@ -13,6 +13,9 @@ type atomicWords struct {
 }
 
 func (l *leaf[K, V]) sequenceValue() uint64 {
+	if l.pairs != nil {
+		return l.pairs.sequence.Load()
+	}
 	if l.words != nil {
 		return l.words.sequence.Load()
 	}
@@ -21,7 +24,9 @@ func (l *leaf[K, V]) sequenceValue() uint64 {
 func (n *node[K, V]) advanceSequence() {
 	l := n.leaf
 	var sequence uint64
-	if l.words != nil {
+	if l.pairs != nil {
+		sequence = l.pairs.sequence.Add(1)
+	} else if l.words != nil {
 		sequence = l.words.sequence.Add(1)
 	} else {
 		sequence = l.sequence.Add(1)
@@ -29,20 +34,28 @@ func (n *node[K, V]) advanceSequence() {
 	n.image.Load().valid.Store(sequence&1 == 0)
 }
 
-// Published key columns are immutable. SIMD reads only these images, never
-// columns a writer can modify. Go's GC keeps old images alive for readers.
+// SIMD reads immutable tags and routing columns. Paired leaf keys and values
+// are atomic; image validity and the structural epoch validate each read.
 func (n *node[K, V]) publish() { n.publishFrom(0) }
 func (n *node[K, V]) publishFrom(first int) {
 	if !n.shared {
 		return
 	}
-	image := &searchImage[K, V]{n: n.n, prefix: n.prefix, strings: n.strings, codes: n.codes, leaf: n.leaf, readEdges: n.readEdges}
+	// No retired image may validate data in a recycled atomic block.
+	if old := n.image.Load(); old != nil && old.valid.Load() {
+		old.valid.Store(false)
+	}
+	image := &searchImage[K, V]{n: n.n, prefix: n.prefix, strings: n.strings, leaf: n.leaf, readEdges: n.readEdges}
+	if n.leaf == nil || n.leaf.pairs == nil {
+		image.codes = new([nodeSize]uint64)
+		*image.codes = n.codes
+	}
 	image.compact = n.compact
 	if n.children != nil && n.compact && n.directory == nil {
 		image.highCodes = new([nodeSize]uint32)
 		*image.highCodes = n.highCodes
 	}
-	if n.leaf != nil && n.leaf.words != nil {
+	if n.leaf != nil && (n.leaf.words != nil || n.leaf.pairs != nil) {
 		image.leaf = nil
 	}
 	image.tags = n.tags
@@ -68,8 +81,14 @@ func (n *node[K, V]) publishFrom(first int) {
 		image.imageVersion = sequence + (sequence & 1)
 		image.valid.Store(sequence&1 == 0)
 		image.wordState = n.leaf.words
+		image.pairs = n.leaf.pairs
 		image.valueKind = n.leaf.wordKind
-		if n.leaf.words != nil {
+		if n.leaf.pairs != nil {
+			for i := first; i < n.n; i++ {
+				n.leaf.pairs.entries[i].key.Store(n.codes[i])
+				n.leaf.pairs.entries[i].value.Store(packWord(n.leaf.values[i]))
+			}
+		} else if n.leaf.words != nil {
 			switch n.leaf.wordKind {
 			case 1:
 				for i := first; i < n.n; i++ {
@@ -93,7 +112,9 @@ func (n *node[K, V]) publishFrom(first int) {
 }
 func (n *node[K, V]) setValue(i int, value V) {
 	n.leaf.values[i] = value
-	if n.leaf.words != nil {
+	if n.leaf.pairs != nil {
+		n.leaf.pairs.entries[i].value.Store(packWord(value))
+	} else if n.leaf.words != nil {
 		n.leaf.words.values[i].Store(packWord(value))
 	}
 }
@@ -232,6 +253,9 @@ func (m *Map[K, V]) structuralEnd(held [3]*node[K, V]) {
 		m.tree.root.parentSlot = &m.root
 		m.root.Store(m.tree.root.image.Load())
 	}
+	if m.tree.routesDirty {
+		m.rebuildRoutes()
+	}
 	m.version.Add(1)
 	for _, n := range held {
 		if n != nil {
@@ -257,6 +281,17 @@ retry:
 			}
 			continue
 		}
+		if routes := m.routes.Load(); routes != nil {
+			index := (code - routes.base) >> routes.shift
+			if index < uint64(len(routes.slots)) {
+				if slot := routes.slots[index]; slot != nil {
+					image = slot.Load()
+					if image == nil {
+						continue retry
+					}
+				}
+			}
+		}
 		// Keys are immutable; child links are atomics. A structural epoch
 		// validates the entire route, including a concurrent move of an edge.
 		for image.readEdges != nil {
@@ -264,15 +299,15 @@ retry:
 			if image.strings {
 				index = image.childIndex(key)
 			} else if image.directory != nil {
-				index = directoryRoute(&image.codes, image.directory, image.n, code)
+				index = directoryRoute(image.codes, image.directory, image.n, code)
 			} else if image.compact {
 				if code == ^uint64(0) {
 					index = image.n - 1
 				} else {
-					index = max(0, lowerCompact(&image.codes, image.highCodes, image.n, code+1)-1)
+					index = max(0, lowerCompact(image.codes, image.highCodes, image.n, code+1)-1)
 				}
 			} else {
-				index = routeCode(&image.codes, image.n, code)
+				index = routeCode(image.codes, image.n, code)
 			}
 			image = image.readEdges[index].Load()
 			if image == nil {
@@ -281,12 +316,40 @@ retry:
 		}
 		var value V
 		var found bool
+		if state := image.pairs; state != nil {
+			i := firstTag(&image.tags, image.n, code)
+			var word, candidate uint64
+			if i < image.n {
+				candidate = state.entries[i].key.Load()
+				if candidate != code {
+					i = state.lower(image.n, code)
+					if i < image.n {
+						candidate = state.entries[i].key.Load()
+					}
+				}
+			}
+			ok := i < image.n && candidate == code
+			if ok {
+				word = state.entries[i].value.Load()
+			}
+			if !image.valid.Load() || m.version.Load() != version {
+				continue
+			}
+			if ok {
+				if image.valueKind == 1 {
+					value = any(word).(V)
+				} else {
+					value = unpackWord[V](word, image.valueKind)
+				}
+			}
+			return value, ok
+		}
 		if state := image.wordState; state != nil {
 			i := 0
 			if image.strings {
 				i = image.lower(key)
 			} else {
-				i = findCode(&image.codes, &image.tags, image.n, code)
+				i = findCode(image.codes, &image.tags, image.n, code)
 			}
 			found = i < image.n && ((!image.strings && image.codes[i] == code) || (image.strings && cmp.Compare(image.keys[i], key) == 0))
 			var word uint64
@@ -315,7 +378,7 @@ retry:
 		if image.strings {
 			i = image.lower(key)
 		} else {
-			i = findCode(&image.codes, &image.tags, image.n, code)
+			i = findCode(image.codes, &image.tags, image.n, code)
 		}
 		found = i < image.n && ((!image.strings && image.codes[i] == code) || (image.strings && cmp.Compare(image.keys[i], key) == 0))
 		if found {
@@ -334,6 +397,11 @@ func initWordValues[K cmp.Ordered, V any](n *node[K, V]) {
 	}
 	n.leaf.wordKind = wordKind[V]()
 	if n.leaf.wordKind != 0 {
-		n.leaf.words = new(atomicWords)
+		if !n.strings {
+			n.leaf.pairs, n.pairsID = n.arena.pairs.alloc()
+			n.leaf.pairs.sequence.Store(0)
+		} else {
+			n.leaf.words = new(atomicWords)
+		}
 	}
 }
