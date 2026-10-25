@@ -2,6 +2,9 @@ name: amd64 SIMD
 on: [push, pull_request]
 permissions:
   contents: read
+concurrency:
+  group: amd64-simd-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   native:
     strategy:
@@ -39,6 +42,11 @@ jobs:
           GODEBUG: cpu.avx512f=off,cpu.avx2=off
           GOBBTREE_EXPECT_WIDTH: '128'
         run: go test -v ./... > perf/avx-tests.txt
+      - name: Explicit 128-bit width
+        env:
+          GODEBUG: simd=128
+          GOBBTREE_EXPECT_WIDTH: '128'
+        run: go test -v ./... > perf/explicit-width-tests.txt
       - name: Emulated fallback
         env:
           GODEBUG: simd=0

@@ -4,9 +4,23 @@ package gobbtree
 
 import (
 	"math/bits"
+	"os"
 	"simd"
 	"simd/archsimd"
+	"strings"
 )
+
+// Direct integer kernels need fewer optional CPU features than portable
+// simd's full API. Use available integer widths by default, while honoring
+// an explicit portable width request as an upper bound.
+var amd64MaxWidth = func() int {
+	for option := range strings.SplitSeq(os.Getenv("GODEBUG"), ",") {
+		if strings.HasPrefix(option, "simd=") {
+			return simd.VectorBitSize()
+		}
+	}
+	return 512
+}()
 
 // Every load stays within the padded 32-slot array. Sorted comparison masks
 // form a prefix of ones, so its first zero is the lower bound.
@@ -14,7 +28,7 @@ func lowerCode(keys *[nodeSize]uint64, n int, key uint64) int {
 	if simd.Emulated() {
 		return lowerCodeScalar(keys, n, key)
 	}
-	if archsimd.X86.AVX512() {
+	if archsimd.X86.AVX512() && amd64MaxWidth >= 512 {
 		target := archsimd.BroadcastUint64x8(key)
 		a := uint32(archsimd.LoadUint64x8(keys[0:8]).Less(target).ToBits())
 		b := uint32(archsimd.LoadUint64x8(keys[8:16]).Less(target).ToBits())
@@ -24,7 +38,7 @@ func lowerCode(keys *[nodeSize]uint64, n int, key uint64) int {
 		archsimd.ClearAVXUpperBits()
 		return min(bits.TrailingZeros32(^mask), n)
 	}
-	if archsimd.X86.AVX2() {
+	if archsimd.X86.AVX2() && amd64MaxWidth >= 256 {
 		// Bias unsigned order once; AVX2 has signed packed qword comparisons.
 		target := archsimd.BroadcastInt64x4(int64(key ^ (1 << 63)))
 		sign := archsimd.BroadcastInt64x4(-1 << 63)
@@ -49,12 +63,12 @@ func lowerCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, key uin
 		return lowerCodeScalar(keys, n, key)
 	}
 	var mask uint32
-	if archsimd.X86.AVX512() {
+	if archsimd.X86.AVX512() && amd64MaxWidth >= 512 {
 		target := archsimd.BroadcastUint32x16(uint32(key >> 32))
 		a := uint32(archsimd.LoadUint32x16(high[:16]).Less(target).ToBits())
 		b := uint32(archsimd.LoadUint32x16(high[16:]).Less(target).ToBits())
 		mask = a | b<<16
-	} else if archsimd.X86.AVX2() {
+	} else if archsimd.X86.AVX2() && amd64MaxWidth >= 256 {
 		target := archsimd.BroadcastInt32x8(int32(uint32(key>>32) ^ (1 << 31)))
 		sign := archsimd.BroadcastInt32x8(-1 << 31)
 		a := uint32(target.Greater(archsimd.LoadUint32x8(high[0:8]).AsInt32x8().Xor(sign)).ToBits())
@@ -78,7 +92,7 @@ func findCode(keys *[nodeSize]uint64, tags *[nodeSize]uint8, n int, key uint64) 
 		return lowerCodeScalar(keys, n, key)
 	}
 	var mask uint32
-	if archsimd.X86.AVX2() {
+	if archsimd.X86.AVX2() && amd64MaxWidth >= 256 {
 		// A leaf has exactly 32 byte tags: one YMM load is the natural tile even
 		// on AVX-512 CPUs, without reading padding beyond the allocation.
 		target := archsimd.BroadcastUint8x32(uint8(key))
@@ -108,10 +122,10 @@ func SIMD() (bool, int) {
 	if simd.Emulated() {
 		return false, 0
 	}
-	if archsimd.X86.AVX512() {
+	if archsimd.X86.AVX512() && amd64MaxWidth >= 512 {
 		return true, 512
 	}
-	if archsimd.X86.AVX2() {
+	if archsimd.X86.AVX2() && amd64MaxWidth >= 256 {
 		return true, 256
 	}
 	return simdPortable()

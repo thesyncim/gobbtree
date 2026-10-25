@@ -12,7 +12,7 @@ import (
 
 func TestSIMDAMD64Dispatch(t *testing.T) {
 	hardware, width := SIMD()
-	t.Logf("hardware=%v width=%d emulated=%v AVX=%v AVX2=%v AVX512=%v GODEBUG=%q", hardware, width, simd.Emulated(), archsimd.X86.AVX(), archsimd.X86.AVX2(), archsimd.X86.AVX512(), os.Getenv("GODEBUG"))
+	t.Logf("hardware=%v width=%d portableWidth=%d emulated=%v AVX=%v AVX2=%v AVX512=%v GODEBUG=%q", hardware, width, simd.VectorBitSize(), simd.Emulated(), archsimd.X86.AVX(), archsimd.X86.AVX2(), archsimd.X86.AVX512(), os.Getenv("GODEBUG"))
 	if simd.Emulated() {
 		if hardware || width != 0 {
 			t.Fatal("emulation selected a hardware kernel")
