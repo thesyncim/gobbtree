@@ -55,7 +55,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build comparison programs
         run: |
-          git worktree add ../simd-baseline ad44a90
+          git worktree add ../simd-baseline 4c929ac
+          cp cmd/compare/main.go ../simd-baseline/cmd/compare/main.go
           (cd ../simd-baseline && go build -o ../compare-baseline ./cmd/compare)
           go build -o ../compare-current ./cmd/compare
           rustc -vV > perf/rust-version.txt
@@ -75,6 +76,7 @@ jobs:
             done
           done
           go test -run '^$' -bench 'BenchmarkLookup|BenchmarkMutation|BenchmarkParallelGet' -benchtime=200ms -count=3 >> perf/public-bench.txt
+          go test -run '^$' -bench BenchmarkConcurrentMaps -cpu=4 -benchtime=250ms -count=3 > perf/standard-maps.txt
       - name: Compare AVX2 and selected width
         run: |
           for repeat in 1 2 3; do

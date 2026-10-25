@@ -31,10 +31,14 @@ func main() {
 	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds)
 	tree := gobbtree.NewTree[uint64, uint64]()
 	concurrent := gobbtree.New[uint64, uint64]()
+	builtin := make(map[uint64]uint64, *size)
+	var synced sync.Map
 	for i := 0; i < *size; i++ {
 		key := mix(uint64(i))
 		tree.Insert(key, key)
 		concurrent.Insert(key, key)
+		builtin[key] = key
+		synced.Store(key, key)
 	}
 	runtime.GC()
 	var queries [8192]uint64
@@ -71,6 +75,25 @@ func main() {
 			}
 		}
 		report("map_"+label, start, sum)
+		sum = 0
+		start = time.Now()
+		for r := 0; r < *rounds; r++ {
+			for _, q := range queries {
+				sum += builtin[q]
+			}
+		}
+		report("builtin_"+label, start, sum)
+		sum = 0
+		start = time.Now()
+		for r := 0; r < *rounds; r++ {
+			for _, q := range queries {
+				if v, ok := synced.Load(q); ok {
+					sum += v.(uint64)
+				}
+			}
+		}
+		report("syncmap_"+label, start, sum)
+
 		var dst [8]gobbtree.Result[uint64]
 		sum = 0
 		start = time.Now()
