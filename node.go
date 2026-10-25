@@ -173,6 +173,30 @@ func (n *node[K, V]) findLeafCode(code uint64) *node[K, V] {
 	}
 	return n
 }
+
+// The shortcut may skip descent only when no ancestor needs its usual split.
+func (n *node[K, V]) findLeafForInsert(code uint64) (*node[K, V], bool) {
+	full := false
+	for n.children != nil {
+		if n.n == nodeSize {
+			full = true
+		}
+		index := 0
+		if n.directory != nil {
+			index = directoryRoute(&n.codes, n.directory, n.n, code)
+		} else if n.compact {
+			if code == ^uint64(0) {
+				index = n.n - 1
+			} else {
+				index = max(0, lowerCompact(&n.codes, &n.highCodes, n.n, code+1)-1)
+			}
+		} else {
+			index = routeCode(&n.codes, n.n, code)
+		}
+		n = n.children[index]
+	}
+	return n, full
+}
 func (n *node[K, V]) insertLeaf(i int, key K, value V) {
 	copy(n.keys[i+1:n.n+1], n.keys[i:n.n])
 	copy(n.codes[i+1:n.n+1], n.codes[i:n.n])

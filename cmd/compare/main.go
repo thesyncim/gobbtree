@@ -21,6 +21,7 @@ func mix(x uint64) uint64 {
 }
 func main() {
 	size := flag.Int("size", 262144, "entries")
+	queryCount := flag.Int("queries", 8192, "query buffer length (power of two)")
 	rounds := flag.Int("rounds", 128, "query repetitions")
 	standard := flag.Bool("standard", false, "include standard-library map lookups")
 	threads := flag.Int("threads", 0, "additional parallel lookup workers")
@@ -28,8 +29,11 @@ func main() {
 	if *size <= 0 || *rounds <= 0 {
 		panic("size and rounds must be positive")
 	}
+	if *queryCount < 8 || *queryCount&(*queryCount-1) != 0 {
+		panic("queries must be a power of two, at least eight")
+	}
 	hardware, width := gobbtree.SIMD()
-	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds)
+	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d queries=%d\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds, *queryCount)
 	tree := gobbtree.NewTree[uint64, uint64]()
 	concurrent := gobbtree.New[uint64, uint64]()
 	var builtin map[uint64]uint64
@@ -47,7 +51,8 @@ func main() {
 		}
 	}
 	runtime.GC()
-	var queries [8192]uint64
+	queries := make([]uint64, *queryCount)
+	queryMask := len(queries) - 1
 	report := func(name string, start time.Time, sum uint64) {
 		fmt.Printf("%s %.3f ns/op checksum=%d\n", name, float64(time.Since(start).Nanoseconds())/float64(*rounds*len(queries)), sum)
 	}
@@ -120,46 +125,105 @@ func main() {
 		for i := range queries {
 			queries[i] = mix(mix(uint64(i+17)) % uint64(*size))
 		}
+		var mutex sync.RWMutex
 		for _, writeEvery := range []int{0, 10} {
-			sums := make([]uint64, *threads)
-			var ready, done sync.WaitGroup
-			ready.Add(*threads)
-			done.Add(*threads)
-			begin := make(chan struct{})
-			for worker := 0; worker < *threads; worker++ {
-				go func() {
-					defer done.Done()
-					ready.Done()
-					<-begin
-					var sum uint64
-					for r := 0; r < *rounds; r++ {
-						for i := range queries {
-							q := queries[(i+worker*113)&8191]
-							if writeEvery != 0 && i%10 == 0 {
-								concurrent.Insert(q, q^uint64(r&1))
-							} else {
-								v, _ := concurrent.Get(q)
-								sum += v &^ 1
-							}
-						}
-					}
-					sums[worker] = sum
-				}()
-			}
-			ready.Wait()
-			start := time.Now()
-			close(begin)
-			done.Wait()
-			elapsed := time.Since(start)
-			var sum uint64
-			for _, v := range sums {
-				sum += v
-			}
 			label := "hit"
 			if writeEvery != 0 {
 				label = "write10"
 			}
-			fmt.Printf("map_parallel%d_%s %.3f ns/op checksum=%d\n", *threads, label, float64(elapsed.Nanoseconds())/float64(*threads**rounds*len(queries)), sum)
+			parallel(fmt.Sprintf("map_parallel%d_%s", *threads, label), *threads, *rounds*len(queries), func(worker int) uint64 {
+				var sum uint64
+				for r := 0; r < *rounds; r++ {
+					for i := range queries {
+						q := queries[(i+worker*113)&queryMask]
+						if writeEvery != 0 && i%10 == 0 {
+							concurrent.Insert(q, q^uint64(r&1))
+						} else {
+							v, _ := concurrent.Get(q)
+							sum += v &^ 1
+						}
+					}
+				}
+				return sum
+			})
+			if *standard {
+				parallel(fmt.Sprintf("syncmap_parallel%d_%s", *threads, label), *threads, *rounds*len(queries), func(worker int) uint64 {
+					var sum uint64
+					for r := 0; r < *rounds; r++ {
+						for i := range queries {
+							q := queries[(i+worker*113)&queryMask]
+							if writeEvery != 0 && i%10 == 0 {
+								synced.Store(q, q^uint64(r&1))
+							} else {
+								v, ok := synced.Load(q)
+								if ok {
+									sum += v.(uint64) &^ 1
+								}
+							}
+						}
+					}
+					return sum
+				})
+				parallel(fmt.Sprintf("rwmap_parallel%d_%s", *threads, label), *threads, *rounds*len(queries), func(worker int) uint64 {
+					var sum uint64
+					for r := 0; r < *rounds; r++ {
+						for i := range queries {
+							q := queries[(i+worker*113)&queryMask]
+							if writeEvery != 0 && i%10 == 0 {
+								mutex.Lock()
+								builtin[q] = q ^ uint64(r&1)
+								mutex.Unlock()
+							} else {
+								mutex.RLock()
+								v := builtin[q]
+								mutex.RUnlock()
+								sum += v &^ 1
+							}
+						}
+					}
+					return sum
+				})
+				if writeEvery == 0 {
+					parallel(fmt.Sprintf("builtin_parallel%d_hit", *threads), *threads, *rounds*len(queries), func(worker int) uint64 {
+						var sum uint64
+						for r := 0; r < *rounds; r++ {
+							for i := range queries {
+								sum += builtin[queries[(i+worker*113)&queryMask]] &^ 1
+							}
+						}
+						return sum
+					})
+				}
+			}
 		}
 	}
+}
+
+// The callback runs once per worker, outside the per-operation dispatch.
+// Worker creation, final checksum reduction and previous-case GC are untimed.
+func parallel(name string, workers, operations int, work func(int) uint64) {
+	runtime.GC()
+	sums := make([]uint64, workers)
+	var ready, done sync.WaitGroup
+	ready.Add(workers)
+	done.Add(workers)
+	begin := make(chan struct{})
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-begin
+			sums[worker] = work(worker)
+		}()
+	}
+	ready.Wait()
+	start := time.Now()
+	close(begin)
+	done.Wait()
+	elapsed := time.Since(start)
+	var sum uint64
+	for _, v := range sums {
+		sum += v
+	}
+	fmt.Printf("%s %.3f ns/op checksum=%d\n", name, float64(elapsed.Nanoseconds())/float64(workers*operations), sum)
 }

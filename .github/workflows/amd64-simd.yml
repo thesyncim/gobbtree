@@ -81,7 +81,7 @@ jobs:
           (cd ../simd-baseline && go test -run '^$' -bench 'BenchmarkMutation|BenchmarkBuild|BenchmarkConcurrentMaps/(4096|262144)/write10/^Map$' -cpu=4 -benchtime=200ms -count=3) > perf/baseline-writes.txt
           for size in 4096 262144; do
             for repeat in 1 2 3; do
-              ../compare-current -standard -size "$size" -rounds 512 >> perf/standard-serial.txt
+              ../compare-current -standard -size "$size" -rounds 512 -threads 4 >> perf/standard-serial.txt
             done
           done
       - name: Compare AVX2 and selected width

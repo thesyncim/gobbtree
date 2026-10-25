@@ -55,12 +55,14 @@ func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
 			return old, true
 		}
 		if n.n < nodeSize {
-			i = n.lower(key)
+			if i == n.n && n.n > 0 && cmp.Compare(key, n.keys[n.n-1]) < 0 {
+				i = n.lower(key)
+			}
 			if i > 0 {
-				n.leaf.advanceSequence()
+				n.advanceSequence()
 				n.insertLeaf(i, key, value)
 				m.count.Add(1)
-				n.leaf.advanceSequence()
+				n.advanceSequence()
 				n.leaf.mu.Unlock()
 				lane.RUnlock()
 				var v V
@@ -99,10 +101,10 @@ func (m *Map[K, V]) Delete(key K) (V, bool) {
 		return v, false
 	}
 	if n.n > minNodeSize && i > 0 {
-		n.leaf.advanceSequence()
+		n.advanceSequence()
 		old := n.deleteLeaf(i)
 		m.count.Add(-1)
-		n.leaf.advanceSequence()
+		n.advanceSequence()
 		n.leaf.mu.Unlock()
 		lane.RUnlock()
 		return old, true

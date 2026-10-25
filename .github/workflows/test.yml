@@ -2,6 +2,9 @@ name: test
 on: [push, pull_request]
 permissions:
   contents: read
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   go:
     strategy:

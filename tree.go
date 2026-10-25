@@ -73,15 +73,23 @@ func (t *Tree[K, V]) Insert(key K, value V) (V, bool) {
 		t.root = newLeaf[K, V](t.shared)
 	}
 	// Replacements should not split or allocate, even in a full leaf.
-	n := t.root.findLeaf(key)
+	n := t.root
+	full := true
+	if n.strings {
+		n = n.findLeaf(key)
+	} else {
+		n, full = n.findLeafForInsert(numericCode(key))
+	}
 	i := n.exact(key)
 	if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
 		old := n.leaf.values[i]
 		n.setValue(i, value)
 		return old, true
 	}
-	if n.n < nodeSize {
-		i = n.lower(key)
+	if !full && n.n < nodeSize {
+		if i == n.n && n.n > 0 && cmp.Compare(key, n.keys[n.n-1]) < 0 {
+			i = n.lower(key)
+		}
 		if i > 0 {
 			n.insertLeaf(i, key, value)
 			t.length++

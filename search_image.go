@@ -17,6 +17,7 @@ type searchImage[K cmp.Ordered, V any] struct {
 	strings      bool
 	valueKind    uint8
 	compact      bool
+	valid        atomic.Bool
 	directory    *[256]uint8
 	highCodes    [nodeSize]uint32
 	tags         [nodeSize]uint8
@@ -85,7 +86,7 @@ func (n *searchImage[K, V]) readValue(key K, code uint64) (value V, found, valid
 		if found {
 			word = state.values[i].Load()
 		}
-		if state.sequence.Load() != n.imageVersion {
+		if !n.valid.Load() {
 			return value, false, false
 		}
 		if found {

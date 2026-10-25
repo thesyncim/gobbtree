@@ -18,15 +18,18 @@ func (l *leaf[K, V]) sequenceValue() uint64 {
 	}
 	return l.sequence.Load()
 }
-func (l *leaf[K, V]) advanceSequence() {
+func (n *node[K, V]) advanceSequence() {
+	l := n.leaf
+	var sequence uint64
 	if l.words != nil {
-		l.words.sequence.Add(1)
+		sequence = l.words.sequence.Add(1)
 	} else {
-		l.sequence.Add(1)
+		sequence = l.sequence.Add(1)
 	}
+	n.image.Load().valid.Store(sequence&1 == 0)
 }
 
-// Published search images are immutable. SIMD reads only these images, never
+// Published key columns are immutable. SIMD reads only these images, never
 // columns a writer can modify. Go's GC keeps old images alive for readers.
 func (n *node[K, V]) publish() { n.publishFrom(0) }
 func (n *node[K, V]) publishFrom(first int) {
@@ -57,6 +60,7 @@ func (n *node[K, V]) publishFrom(first int) {
 	} else {
 		sequence := n.leaf.sequenceValue()
 		image.imageVersion = sequence + (sequence & 1)
+		image.valid.Store(sequence&1 == 0)
 		image.wordState = n.leaf.words
 		image.valueKind = n.leaf.wordKind
 		if n.leaf.words != nil {
@@ -283,7 +287,7 @@ retry:
 			if found {
 				word = state.values[i].Load()
 			}
-			if state.sequence.Load() != image.imageVersion || m.version.Load() != version {
+			if !image.valid.Load() || m.version.Load() != version {
 				continue
 			}
 			if found {
