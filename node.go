@@ -19,6 +19,10 @@ type node[K cmp.Ordered, V any] struct {
 	leaf       *leaf[K, V]
 	strings    bool
 	shared     bool
+	compact    bool
+	directory  *[256]uint8
+	highCodes  [nodeSize]uint32
+	tags       [nodeSize]uint8
 	codes      [nodeSize]uint64
 	keys       [nodeSize]K
 	image      atomic.Pointer[searchImage[K, V]]
@@ -56,6 +60,8 @@ func newInner[K cmp.Ordered, V any](shared bool) *node[K, V] {
 func (n *node[K, V]) pad() {
 	for i := n.n; i < nodeSize; i++ {
 		n.codes[i] = ^uint64(0)
+		n.highCodes[i] = ^uint32(0)
+		n.tags[i] = 0
 	}
 }
 
@@ -75,14 +81,17 @@ func (n *node[K, V]) refit() {
 	}
 	for i := 0; i < n.n; i++ {
 		n.codes[i] = keyCode(n.keys[i], n.prefix)
+		n.highCodes[i] = uint32(n.codes[i] >> 32)
+		n.tags[i] = uint8(n.codes[i])
 	}
 	n.pad()
+	n.refreshNumeric()
 	n.publish()
 }
 
 func (n *node[K, V]) lower(key K) int {
 	if !n.strings {
-		return lowerCode(&n.codes, n.n, numericCode(key))
+		return n.lowerNumeric(numericCode(key))
 	}
 	if n.prefix > 0 {
 		s, _ := keyString(key)
@@ -118,7 +127,7 @@ func (n *node[K, V]) lower(key K) int {
 }
 func (n *node[K, V]) childIndex(key K) int {
 	if !n.strings {
-		return routeCode(&n.codes, n.n, numericCode(key))
+		return n.routeNumeric(numericCode(key))
 	}
 	i := n.lower(key)
 	if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
@@ -140,13 +149,27 @@ func (n *node[K, V]) findLeaf(key K) *node[K, V] {
 // on those codes, with no full-key load or re-encoding at each tree level.
 func (n *node[K, V]) findLeafCode(code uint64) *node[K, V] {
 	for n.children != nil {
-		n = n.children[routeCode(&n.codes, n.n, code)]
+		index := 0
+		if n.directory != nil {
+			index = directoryRoute(&n.codes, n.directory, n.n, code)
+		} else if n.compact {
+			if code == ^uint64(0) {
+				index = n.n - 1
+			} else {
+				index = max(0, lowerCompact(&n.codes, &n.highCodes, n.n, code+1)-1)
+			}
+		} else {
+			index = routeCode(&n.codes, n.n, code)
+		}
+		n = n.children[index]
 	}
 	return n
 }
 func (n *node[K, V]) insertLeaf(i int, key K, value V) {
 	copy(n.keys[i+1:n.n+1], n.keys[i:n.n])
 	copy(n.codes[i+1:n.n+1], n.codes[i:n.n])
+	copy(n.highCodes[i+1:n.n+1], n.highCodes[i:n.n])
+	copy(n.tags[i+1:n.n+1], n.tags[i:n.n])
 	copy(n.leaf.values[i+1:n.n+1], n.leaf.values[i:n.n])
 	n.keys[i], n.leaf.values[i] = key, value
 	n.n++
@@ -154,23 +177,31 @@ func (n *node[K, V]) insertLeaf(i int, key K, value V) {
 		n.refit()
 	} else {
 		n.codes[i] = keyCode(key, n.prefix)
-		n.publish()
+		n.highCodes[i] = uint32(n.codes[i] >> 32)
+		n.tags[i] = uint8(n.codes[i])
+		n.refreshNumeric()
+		n.publishFrom(i)
 	}
 }
 func (n *node[K, V]) deleteLeaf(i int) V {
 	old := n.leaf.values[i]
 	copy(n.keys[i:n.n-1], n.keys[i+1:n.n])
 	copy(n.codes[i:n.n-1], n.codes[i+1:n.n])
+	copy(n.highCodes[i:n.n-1], n.highCodes[i+1:n.n])
+	copy(n.tags[i:n.n-1], n.tags[i+1:n.n])
 	copy(n.leaf.values[i:n.n-1], n.leaf.values[i+1:n.n])
 	n.n--
 	var k K
 	var v V
 	n.keys[n.n], n.leaf.values[n.n] = k, v
 	n.codes[n.n] = ^uint64(0)
+	n.highCodes[n.n] = ^uint32(0)
+	n.tags[n.n] = 0
 	if n.strings && (i == 0 || i == n.n) {
 		n.refit()
 	} else {
-		n.publish()
+		n.refreshNumeric()
+		n.publishFrom(i)
 	}
 	return old
 }
@@ -216,4 +247,34 @@ func (n *node[K, V]) removeChild(i int) {
 	n.keys[n.n] = k
 	n.children[n.n] = nil
 	n.refit()
+}
+
+func (n *node[K, V]) refreshNumeric() {
+	n.compact = !n.strings && n.n > 0 && n.codes[0]>>32 != n.codes[n.n-1]>>32
+	if !n.strings && n.children != nil && n.n >= 4 && n.codes[n.n-1]>>56-n.codes[0]>>56 >= uint64(2*n.n) {
+		if n.directory == nil {
+			n.directory = new([256]uint8)
+		}
+		fillDirectory(n.directory, &n.codes, n.n)
+	} else {
+		n.directory = nil
+	}
+}
+func (n *node[K, V]) lowerNumeric(code uint64) int {
+	if n.compact {
+		return lowerCompact(&n.codes, &n.highCodes, n.n, code)
+	}
+	return lowerCode(&n.codes, n.n, code)
+}
+func (n *node[K, V]) routeNumeric(code uint64) int {
+	if n.directory != nil {
+		return directoryRoute(&n.codes, n.directory, n.n, code)
+	}
+	if n.compact {
+		if code == ^uint64(0) {
+			return n.n - 1
+		}
+		return max(0, lowerCompact(&n.codes, &n.highCodes, n.n, code+1)-1)
+	}
+	return routeCode(&n.codes, n.n, code)
 }

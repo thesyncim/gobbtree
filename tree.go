@@ -36,8 +36,19 @@ func (t *Tree[K, V]) Get(key K) (V, bool) {
 	if t.root != nil {
 		if !t.root.strings {
 			code := numericCode(key)
-			n := t.root.findLeafCode(code)
-			i := lowerCode(&n.codes, n.n, code)
+			n := t.root
+			for n.children != nil {
+				index := 0
+				if n.directory != nil {
+					index = directoryRoute(&n.codes, n.directory, n.n, code)
+				} else if n.compact {
+					index = routeCompact(&n.codes, &n.highCodes, n.n, code)
+				} else {
+					index = routeCode(&n.codes, n.n, code)
+				}
+				n = n.children[index]
+			}
+			i := findCode(&n.codes, &n.tags, n.n, code)
 			if i < n.n && n.codes[i] == code {
 				return n.leaf.values[i], true
 			}
@@ -136,12 +147,15 @@ func (t *Tree[K, V]) remove(n *node[K, V], key K) (V, bool) {
 	}
 	if child.n < minNodeSize {
 		n.rebalance(i)
+		// Rebalancing can change both neighboring minima and child positions.
+		for j := 0; j < n.n; j++ {
+			n.keys[j] = n.children[j].keys[0]
+		}
+		n.refit()
+	} else if cmp.Compare(n.keys[i], child.keys[0]) != 0 {
+		n.keys[i] = child.keys[0]
+		n.refit()
 	}
-	// Rebalancing may replace the child at i or remove the last child.
-	for j := 0; j < n.n; j++ {
-		n.keys[j] = n.children[j].keys[0]
-	}
-	n.refit()
 	return old, true
 }
 
@@ -340,7 +354,7 @@ func (t *Tree[K, V]) GetMany(keys []K, dst []Result[V]) {
 			if n := nodes[j]; n != nil {
 				i := 0
 				if !n.strings {
-					i = lowerCode(&n.codes, n.n, codes[j])
+					i = findCode(&n.codes, &n.tags, n.n, codes[j])
 				} else {
 					i = n.lower(keys[start+j])
 				}

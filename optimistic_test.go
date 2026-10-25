@@ -88,6 +88,19 @@ func TestConcurrentClearAndRebuild(t *testing.T) {
 				if value, ok := m.Get(i % 3000); ok && value != i%3000 {
 					t.Error("wrong value after clear")
 				}
+				if i%64 == 0 {
+					var keys [8]uint64
+					var dst [8]Result[uint64]
+					for j := range keys {
+						keys[j] = (i + uint64(j)*191) % 3000
+					}
+					m.GetMany(keys[:], dst[:])
+					for j, v := range dst {
+						if v.OK && v.Value != keys[j] {
+							t.Error("wrong batch value after clear")
+						}
+					}
+				}
 			}
 		})
 	}
@@ -112,6 +125,41 @@ func TestAtomicFloatBits(t *testing.T) {
 		v, ok := f.Get(0)
 		if !ok || math.Float32bits(v) != bits {
 			t.Fatalf("float32 bits: %x != %x", math.Float32bits(v), bits)
+		}
+	}
+}
+
+func TestOptimisticStringBatch(t *testing.T) {
+	m := New[string, uint64]()
+	model := make(map[string]uint64)
+	keys := make([]string, 3000)
+	for i := range keys {
+		key := fmt.Sprintf("tenant/prefix/%08d/entry\x00", i)
+		keys[i] = key
+		model[key] = uint64(i)
+		m.Insert(key, uint64(i))
+	}
+	for i, key := range keys {
+		if i%3 == 0 {
+			m.Delete(key)
+			delete(model, key)
+		}
+	}
+	for start := 0; start < len(keys); start += 13 {
+		var queries [17]string
+		var dst [17]Result[uint64]
+		for j := range queries {
+			queries[j] = keys[(start+j*173)%len(keys)]
+			if j%5 == 0 {
+				queries[j] += "missing"
+			}
+		}
+		m.GetMany(queries[:], dst[:])
+		for j, key := range queries {
+			want, ok := model[key]
+			if dst[j].Value != want || dst[j].OK != ok {
+				t.Fatalf("string batch %q: %+v", key, dst[j])
+			}
 		}
 	}
 }

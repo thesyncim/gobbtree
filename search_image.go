@@ -16,6 +16,10 @@ type searchImage[K cmp.Ordered, V any] struct {
 	leaf         *leaf[K, V]
 	strings      bool
 	valueKind    uint8
+	compact      bool
+	directory    *[256]uint8
+	highCodes    [nodeSize]uint32
+	tags         [nodeSize]uint8
 	codes        [nodeSize]uint64
 	keys         *[nodeSize]K
 }
@@ -54,4 +58,45 @@ func (n *searchImage[K, V]) childIndex(key K) int {
 		return i
 	}
 	return max(0, i-1)
+}
+
+// readValue validates one published leaf. Its caller also validates the
+// structural epoch covering the route to this image.
+func (n *searchImage[K, V]) readValue(key K, code uint64) (value V, found, valid bool) {
+	if n.readEdges != nil {
+		return value, false, false
+	}
+	if n.wordState == nil {
+		n.leaf.mu.RLock()
+		defer n.leaf.mu.RUnlock()
+		if n.leaf.sequence.Load() != n.imageVersion {
+			return value, false, false
+		}
+	}
+	i := 0
+	if n.strings {
+		i = n.lower(key)
+	} else {
+		i = findCode(&n.codes, &n.tags, n.n, code)
+	}
+	found = i < n.n && ((!n.strings && n.codes[i] == code) || (n.strings && cmp.Compare(n.keys[i], key) == 0))
+	if state := n.wordState; state != nil {
+		var word uint64
+		if found {
+			word = state.values[i].Load()
+		}
+		if state.sequence.Load() != n.imageVersion {
+			return value, false, false
+		}
+		if found {
+			if n.valueKind == 1 {
+				value = any(word).(V)
+			} else {
+				value = unpackWord[V](word, n.valueKind)
+			}
+		}
+	} else if found {
+		value = n.leaf.values[i]
+	}
+	return value, found, true
 }

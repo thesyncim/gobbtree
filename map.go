@@ -14,11 +14,13 @@ import (
 // latch exclusively. Scans and callbacks also hold the structural read latch.
 // Do not copy a Map after first use. Callbacks must not reenter the same Map.
 type Map[K cmp.Ordered, V any] struct {
+	version atomic.Uint64
+	root    atomic.Pointer[searchImage[K, V]]
+	// Keep writer bookkeeping off the cache line loaded by every lookup.
+	_         [48]byte
 	structure sync.RWMutex
 	tree      Tree[K, V]
 	count     atomic.Int64
-	root      atomic.Pointer[searchImage[K, V]]
-	version   atomic.Uint64
 }
 
 // New creates an empty concurrent ordered map.
@@ -211,27 +213,21 @@ func (m *Map[K, V]) GetMany(keys []K, dst []Result[V]) {
 	if len(dst) < len(keys) {
 		panic("gobbtree: GetMany destination too short")
 	}
-	m.structure.RLock()
-	defer m.structure.RUnlock()
 	for start := 0; start < len(keys); start += batchLanes {
 		count := min(batchLanes, len(keys)-start)
-		var nodes [batchLanes]*node[K, V]
+		batch := keys[start : start+count]
+		version := m.version.Load()
+		var images [batchLanes]*searchImage[K, V]
 		var codes [batchLanes]uint64
-		descendBatch(m.tree.root, keys[start:start+count], &nodes, &codes)
-		for j := 0; j < count; j++ {
+		valid := version&1 == 0 && descendPublished(m.root.Load(), batch, &images, &codes)
+		for j, key := range batch {
 			var result Result[V]
-			if n := nodes[j]; n != nil {
-				n.leaf.mu.RLock()
-				i := 0
-				if !n.strings {
-					i = lowerCode(&n.codes, n.n, codes[j])
-				} else {
-					i = n.lower(keys[start+j])
-				}
-				if i < n.n && ((!n.strings && n.codes[i] == codes[j]) || (n.strings && cmp.Compare(n.keys[i], keys[start+j]) == 0)) {
-					result = Result[V]{n.leaf.values[i], true}
-				}
-				n.leaf.mu.RUnlock()
+			current := valid
+			if current && images[j] != nil {
+				result.Value, result.OK, current = images[j].readValue(key, codes[j])
+			}
+			if !current || m.version.Load() != version {
+				result.Value, result.OK = m.Get(key)
 			}
 			dst[start+j] = result
 		}

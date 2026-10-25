@@ -21,3 +21,29 @@ func lowerCodeScalar(keys *[nodeSize]uint64, n int, key uint64) int {
 	}
 	return lo
 }
+
+// Broad numeric nodes index the first key in each top-byte bucket.
+// The directory only narrows the search; full codes settle bucket boundaries.
+func fillDirectory(directory *[256]uint8, codes *[nodeSize]uint64, n int) {
+	i := 0
+	for bucket := 0; bucket < 256; bucket++ {
+		for i < n && codes[i] < uint64(bucket)<<56 {
+			i++
+		}
+		directory[bucket] = uint8(i)
+	}
+}
+func directoryRoute(codes *[nodeSize]uint64, directory *[256]uint8, n int, code uint64) int {
+	i := int(directory[code>>56])
+	for i < n && codes[i] <= code {
+		i++
+	}
+	return max(0, i-1)
+}
+
+func routeCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, code uint64) int {
+	if code == ^uint64(0) {
+		return n - 1
+	}
+	return max(0, lowerCompact(keys, high, n, code+1)-1)
+}

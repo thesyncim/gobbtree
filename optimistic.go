@@ -28,11 +28,19 @@ func (l *leaf[K, V]) advanceSequence() {
 
 // Published search images are immutable. SIMD reads only these images, never
 // columns a writer can modify. Go's GC keeps old images alive for readers.
-func (n *node[K, V]) publish() {
+func (n *node[K, V]) publish() { n.publishFrom(0) }
+func (n *node[K, V]) publishFrom(first int) {
 	if !n.shared {
 		return
 	}
 	image := &searchImage[K, V]{n: n.n, prefix: n.prefix, strings: n.strings, codes: n.codes, leaf: n.leaf, readEdges: n.readEdges}
+	image.compact = n.compact
+	image.highCodes = n.highCodes
+	image.tags = n.tags
+	if n.directory != nil {
+		image.directory = new([256]uint8)
+		*image.directory = *n.directory
+	}
 	if n.strings {
 		image.keys = new([nodeSize]K)
 		*image.keys = n.keys
@@ -52,8 +60,19 @@ func (n *node[K, V]) publish() {
 		image.wordState = n.leaf.words
 		image.valueKind = n.leaf.wordKind
 		if n.leaf.words != nil {
-			for i := 0; i < n.n; i++ {
-				n.leaf.words.values[i].Store(packWord(n.leaf.values[i]))
+			switch n.leaf.wordKind {
+			case 1:
+				for i := first; i < n.n; i++ {
+					n.leaf.words.values[i].Store(any(n.leaf.values[i]).(uint64))
+				}
+			case 2:
+				for i := first; i < n.n; i++ {
+					n.leaf.words.values[i].Store(uint64(any(n.leaf.values[i]).(int)))
+				}
+			default:
+				for i := first; i < n.n; i++ {
+					n.leaf.words.values[i].Store(packWord(n.leaf.values[i]))
+				}
 			}
 		}
 	}
@@ -234,6 +253,14 @@ retry:
 			index := 0
 			if image.strings {
 				index = image.childIndex(key)
+			} else if image.directory != nil {
+				index = directoryRoute(&image.codes, image.directory, image.n, code)
+			} else if image.compact {
+				if code == ^uint64(0) {
+					index = image.n - 1
+				} else {
+					index = max(0, lowerCompact(&image.codes, &image.highCodes, image.n, code+1)-1)
+				}
 			} else {
 				index = routeCode(&image.codes, image.n, code)
 			}
@@ -245,22 +272,18 @@ retry:
 		var value V
 		var found bool
 		if state := image.wordState; state != nil {
-			sequence := state.sequence.Load()
-			if sequence&1 != 0 || sequence != image.imageVersion {
-				continue
-			}
 			i := 0
 			if image.strings {
 				i = image.lower(key)
 			} else {
-				i = lowerCode(&image.codes, image.n, code)
+				i = findCode(&image.codes, &image.tags, image.n, code)
 			}
 			found = i < image.n && ((!image.strings && image.codes[i] == code) || (image.strings && cmp.Compare(image.keys[i], key) == 0))
 			var word uint64
 			if found {
 				word = state.values[i].Load()
 			}
-			if state.sequence.Load() != sequence || m.version.Load() != version {
+			if state.sequence.Load() != image.imageVersion || m.version.Load() != version {
 				continue
 			}
 			if found {
@@ -282,7 +305,7 @@ retry:
 		if image.strings {
 			i = image.lower(key)
 		} else {
-			i = lowerCode(&image.codes, image.n, code)
+			i = findCode(&image.codes, &image.tags, image.n, code)
 		}
 		found = i < image.n && ((!image.strings && image.codes[i] == code) || (image.strings && cmp.Compare(image.keys[i], key) == 0))
 		if found {

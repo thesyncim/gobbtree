@@ -86,7 +86,7 @@ func TestConcurrentLinearizability(t *testing.T) {
 				<-start
 				for step := 0; step < 3; step++ {
 					i := worker*3 + step
-					op := historyOperation{kind: (i + round) % 7, key: (worker + step + round) % 2, value: i + 1}
+					op := historyOperation{kind: (i + round) % 8, key: (worker + step + round) % 2, value: i + 1}
 					op.start = tick.Add(1)
 					switch op.kind {
 					case 0:
@@ -103,6 +103,10 @@ func TestConcurrentLinearizability(t *testing.T) {
 						op.result.Value, op.result.OK = m.Update(op.key, func(v int) int { return v + 1 })
 					case 6:
 						op.result.Value, op.result.OK = m.LoadOrStore(op.key, op.value)
+					case 7:
+						var dst [1]Result[int]
+						m.GetMany([]int{op.key}, dst[:])
+						op.result = dst[0]
 					}
 					op.end = tick.Add(1)
 					history[i] = op
