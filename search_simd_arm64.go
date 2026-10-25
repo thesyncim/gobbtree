@@ -81,3 +81,16 @@ func findCode(keys *[nodeSize]uint64, tags *[nodeSize]uint8, n int, key uint64) 
 	}
 	return lowerCode(keys, n, key)
 }
+
+func firstTag(tags *[nodeSize]uint8, n int, key uint64) int {
+	if simd.Emulated() {
+		return firstTagScalar(tags, n, uint8(key))
+	}
+	target := archsimd.BroadcastUint8x16(uint8(key))
+	a := archsimd.LoadUint8x16(tags[:16]).Equal(target).ToInt8x16().ToBits()
+	b := archsimd.LoadUint8x16(tags[16:]).Equal(target).ToInt8x16().ToBits()
+	pa := archsimd.LoadUint8x16(tagPositions[:16]).OrNot(a)
+	pb := archsimd.LoadUint8x16(tagPositions[16:]).OrNot(b)
+	i := int(pa.Min(pb).ReduceMin())
+	return min(i, n)
+}

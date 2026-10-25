@@ -63,7 +63,7 @@ func descendPublished[K cmp.Ordered, V any](root *searchImage[K, V], keys []K, n
 				if code == ^uint64(0) {
 					index = n.n - 1
 				} else {
-					index = max(0, lowerCompact(&n.codes, &n.highCodes, n.n, code+1)-1)
+					index = max(0, lowerCompact(&n.codes, n.highCodes, n.n, code+1)-1)
 				}
 			} else {
 				index = routeCode(&n.codes, n.n, code)

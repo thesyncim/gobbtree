@@ -21,6 +21,7 @@ type Result[V any] struct {
 // Concurrent reads are safe only when no goroutine modifies the tree.
 type Tree[K cmp.Ordered, V any] struct {
 	root   *node[K, V]
+	words  *wordTree
 	length int
 	shared bool
 }
@@ -29,10 +30,49 @@ type Tree[K cmp.Ordered, V any] struct {
 func NewTree[K cmp.Ordered, V any]() *Tree[K, V] { return new(Tree[K, V]) }
 func (t *Tree[K, V]) Len() int                   { return t.length }
 func (t *Tree[K, V]) IsEmpty() bool              { return t.length == 0 }
-func (t *Tree[K, V]) Clear()                     { t.root = nil; t.length = 0 }
+func (t *Tree[K, V]) Clear()                     { t.root = nil; t.words = nil; t.length = 0 }
 
 // Get returns a copy of the value associated with key.
 func (t *Tree[K, V]) Get(key K) (V, bool) {
+	if words := t.words; words != nil {
+		code := numericCode(key)
+		n := words.rootNode
+		if id := words.routes.lookup(code); id != 0 {
+			n = words.node(id)
+		}
+		for n != nil {
+			if n.leaf {
+				i := firstTag(&n.tags, int(n.n), code)
+				if i < int(n.n) && n.entries()[i].key != code {
+					i = n.lowerEntry(code)
+				}
+				if i < int(n.n) && n.entries()[i].key == code {
+					value := n.entries()[i].value
+					if words.valueKind == 1 {
+						return any(value).(V), true
+					}
+					return unpackWord[V](value, words.valueKind), true
+				}
+				break
+			}
+			index := 0
+			if n.directory != 0 {
+				index = directoryRoute(&n.keys, &words.directories[n.directory-1], int(n.n), code)
+			} else if n.compact {
+				if code == ^uint64(0) {
+					index = int(n.n) - 1
+				} else {
+					index = max(0, lowerCompact(&n.keys, &n.inner().high, int(n.n), code+1)-1)
+				}
+			} else {
+				index = routeCode(&n.keys, int(n.n), code)
+			}
+			n = words.node(n.inner().children[index])
+		}
+		var zero V
+		return zero, false
+	}
+
 	if t.root != nil {
 		if !t.root.strings {
 			code := numericCode(key)
@@ -69,6 +109,15 @@ func (t *Tree[K, V]) Contains(key K) bool { _, ok := t.Get(key); return ok }
 // Insert stores value, returning the previous value and whether it replaced
 // an entry. Equal keys keep the original stored key, as in upstream bbtree.
 func (t *Tree[K, V]) Insert(key K, value V) (V, bool) {
+	if t.words != nil || (t.root == nil && t.initWords()) {
+		old, replaced := t.words.insert(numericCode(key), packWord(value))
+		if replaced {
+			return t.wordValue(old), true
+		}
+		t.length++
+		var zero V
+		return zero, false
+	}
 	if t.root == nil {
 		t.root = newLeaf[K, V](t.shared)
 	}
@@ -131,6 +180,15 @@ func (t *Tree[K, V]) insertAbsent(n *node[K, V], key K, value V) {
 
 // Delete removes an entry, returning its previous value and presence.
 func (t *Tree[K, V]) Delete(key K) (V, bool) {
+	if t.words != nil {
+		old, ok := t.words.delete(numericCode(key))
+		if ok {
+			t.length--
+			return t.wordValue(old), true
+		}
+		var zero V
+		return zero, false
+	}
 	if t.root == nil {
 		var v V
 		return v, false
@@ -262,6 +320,17 @@ func (t *Tree[K, V]) lastLeaf() *node[K, V] {
 	return n
 }
 func (t *Tree[K, V]) First() (K, V, bool) {
+	if t.words != nil {
+		if id := t.words.end(false); id != 0 {
+			n := t.words.node(id)
+			i := 0
+
+			return decodeWordKey[K](n.entries()[i].key, t.words.keyKind), t.wordValue(n.entries()[i].value), true
+		}
+		var k K
+		var v V
+		return k, v, false
+	}
 	if n := t.firstLeaf(); n != nil {
 		return n.keys[0], n.leaf.values[0], true
 	}
@@ -270,6 +339,17 @@ func (t *Tree[K, V]) First() (K, V, bool) {
 	return k, v, false
 }
 func (t *Tree[K, V]) Last() (K, V, bool) {
+	if t.words != nil {
+		if id := t.words.end(true); id != 0 {
+			n := t.words.node(id)
+			i := 0
+			i = int(n.n) - 1
+			return decodeWordKey[K](n.entries()[i].key, t.words.keyKind), t.wordValue(n.entries()[i].value), true
+		}
+		var k K
+		var v V
+		return k, v, false
+	}
 	if n := t.lastLeaf(); n != nil {
 		return n.keys[n.n-1], n.leaf.values[n.n-1], true
 	}
@@ -295,6 +375,11 @@ func (t *Tree[K, V]) PopLast() (K, V, bool) {
 // Scan visits keys in [lower, upper), stopping when visit returns false.
 // Neither visit nor another goroutine may mutate the tree during the scan.
 func (t *Tree[K, V]) Scan(lower, upper K, visit func(K, V) bool) {
+	if t.words != nil {
+		t.words.scan(numericCode(lower), numericCode(upper), false, func(k, v uint64) bool { return visit(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
+		return
+	}
+
 	if t.root == nil || cmp.Compare(lower, upper) >= 0 {
 		return
 	}
@@ -312,6 +397,11 @@ func (t *Tree[K, V]) Scan(lower, upper K, visit func(K, V) bool) {
 
 // ScanReverse visits the same half-open interval as Scan, in descending order.
 func (t *Tree[K, V]) ScanReverse(lower, upper K, visit func(K, V) bool) {
+	if t.words != nil {
+		t.words.scan(numericCode(lower), numericCode(upper), true, func(k, v uint64) bool { return visit(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
+		return
+	}
+
 	if t.root == nil || cmp.Compare(lower, upper) >= 0 {
 		return
 	}
@@ -332,6 +422,11 @@ func (t *Tree[K, V]) ScanReverse(lower, upper K, visit func(K, V) bool) {
 // All iterates all entries in ascending order. Mutation during iteration is forbidden.
 func (t *Tree[K, V]) All() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
+		if t.words != nil {
+			t.words.all(false, func(k, v uint64) bool { return yield(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
+			return
+		}
+
 		for n := t.firstLeaf(); n != nil; n = n.leaf.next {
 			for i := 0; i < n.n; i++ {
 				if !yield(n.keys[i], n.leaf.values[i]) {
@@ -345,6 +440,11 @@ func (t *Tree[K, V]) All() iter.Seq2[K, V] {
 // Reverse iterates all entries in descending order.
 func (t *Tree[K, V]) Reverse() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
+		if t.words != nil {
+			t.words.all(true, func(k, v uint64) bool { return yield(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
+			return
+		}
+
 		for n := t.lastLeaf(); n != nil; n = n.leaf.prev {
 			for i := n.n - 1; i >= 0; i-- {
 				if !yield(n.keys[i], n.leaf.values[i]) {
@@ -361,6 +461,30 @@ func (t *Tree[K, V]) GetMany(keys []K, dst []Result[V]) {
 	if len(dst) < len(keys) {
 		panic("gobbtree: GetMany destination too short")
 	}
+	if t.words != nil {
+		if t.words.keyKind == 1 && t.words.valueKind == 1 {
+			t.words.getMany(any(keys).([]uint64), any(dst).([]Result[uint64]))
+			return
+		}
+		for start := 0; start < len(keys); start += batchLanes {
+			count := min(batchLanes, len(keys)-start)
+			var codes [batchLanes]uint64
+			var values [batchLanes]Result[uint64]
+			for i := 0; i < count; i++ {
+				codes[i] = numericCode(keys[start+i])
+			}
+			t.words.getMany(codes[:count], values[:count])
+			for i := 0; i < count; i++ {
+				var value V
+				if values[i].OK {
+					value = t.wordValue(values[i].Value)
+				}
+				dst[start+i] = Result[V]{value, values[i].OK}
+			}
+		}
+		return
+	}
+
 	for start := 0; start < len(keys); start += batchLanes {
 		count := min(batchLanes, len(keys)-start)
 		var nodes [batchLanes]*node[K, V]

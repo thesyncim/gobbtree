@@ -84,6 +84,17 @@ jobs:
               ../compare-current -standard -size "$size" -rounds 512 -threads 4 >> perf/standard-serial.txt
             done
           done
+      - name: Compare five million entries
+        run: |
+          for repeat in 1 2 3; do
+            echo "repeat=$repeat baseline" >> perf/five-million.txt
+            ../compare-baseline -size 5000000 -queries 1048576 -rounds 4 -threads 4 >> perf/five-million.txt
+            echo "repeat=$repeat current" >> perf/five-million.txt
+            ../compare-current -size 5000000 -queries 1048576 -rounds 4 -threads 4 >> perf/five-million.txt
+            echo "repeat=$repeat Rust" >> perf/five-million.txt
+            internal/oracle/target/release/compare 5000000 4 4 1048576 >> perf/five-million.txt
+          done
+          ../compare-current -standard -size 5000000 -queries 1048576 -rounds 4 -threads 4 > perf/five-million-standard.txt
       - name: Compare AVX2 and selected width
         run: |
           for repeat in 1 2 3; do

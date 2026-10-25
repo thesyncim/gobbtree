@@ -38,7 +38,13 @@ func (n *node[K, V]) publishFrom(first int) {
 	}
 	image := &searchImage[K, V]{n: n.n, prefix: n.prefix, strings: n.strings, codes: n.codes, leaf: n.leaf, readEdges: n.readEdges}
 	image.compact = n.compact
-	image.highCodes = n.highCodes
+	if n.children != nil && n.compact && n.directory == nil {
+		image.highCodes = new([nodeSize]uint32)
+		*image.highCodes = n.highCodes
+	}
+	if n.leaf != nil && n.leaf.words != nil {
+		image.leaf = nil
+	}
 	image.tags = n.tags
 	if n.directory != nil {
 		image.directory = new([256]uint8)
@@ -263,7 +269,7 @@ retry:
 				if code == ^uint64(0) {
 					index = image.n - 1
 				} else {
-					index = max(0, lowerCompact(&image.codes, &image.highCodes, image.n, code+1)-1)
+					index = max(0, lowerCompact(&image.codes, image.highCodes, image.n, code+1)-1)
 				}
 			} else {
 				index = routeCode(&image.codes, image.n, code)

@@ -130,3 +130,26 @@ func SIMD() (bool, int) {
 	}
 	return simdPortable()
 }
+
+func firstTag(tags *[nodeSize]uint8, n int, key uint64) int {
+	if simd.Emulated() {
+		return firstTagScalar(tags, n, uint8(key))
+	}
+	var mask uint32
+	if archsimd.X86.AVX2() && amd64MaxWidth >= 256 {
+		// A leaf has exactly 32 byte tags: one YMM load is the natural tile even
+		// on AVX-512 CPUs, without reading padding beyond the allocation.
+		target := archsimd.BroadcastUint8x32(uint8(key))
+		mask = archsimd.LoadUint8x32(tags[:]).Equal(target).ToBits()
+	} else if archsimd.X86.AVX() {
+		target := archsimd.BroadcastUint8x16(uint8(key))
+		a := uint32(archsimd.LoadUint8x16(tags[:16]).Equal(target).ToBits())
+		b := uint32(archsimd.LoadUint8x16(tags[16:]).Equal(target).ToBits())
+		mask = a | b<<16
+	} else {
+		return firstTagScalar(tags, n, uint8(key))
+	}
+	archsimd.ClearAVXUpperBits()
+	i := bits.TrailingZeros32(mask)
+	return min(i, n)
+}

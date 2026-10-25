@@ -11,6 +11,10 @@ import (
 
 func checkTree[K cmp.Ordered, V any](t testing.TB, tr *Tree[K, V]) {
 	t.Helper()
+	if tr.words != nil {
+		checkWordTree(t, tr.words, tr.length)
+		return
+	}
 	if tr.root == nil {
 		if tr.length != 0 {
 			t.Fatal("nil root with nonzero length")

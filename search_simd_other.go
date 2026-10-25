@@ -10,3 +10,7 @@ func findCode(keys *[nodeSize]uint64, tags *[nodeSize]uint8, n int, key uint64) 
 	return findCodePortable(keys, tags, n, key)
 }
 func SIMD() (bool, int) { return simdPortable() }
+
+func firstTag(tags *[nodeSize]uint8, n int, key uint64) int {
+	return firstTagScalar(tags, n, uint8(key))
+}

@@ -8,21 +8,20 @@ import (
 // Integer and float codes fully encode ordering, so their published images
 // do not duplicate full keys. Strings retain keys to resolve window ties.
 type searchImage[K cmp.Ordered, V any] struct {
-	n            int
-	prefix       int
 	readEdges    *[nodeSize]atomic.Pointer[searchImage[K, V]]
 	wordState    *atomicWords
-	imageVersion uint64
 	leaf         *leaf[K, V]
+	keys         *[nodeSize]K
+	directory    *[256]uint8
+	highCodes    *[nodeSize]uint32
+	n, prefix    int
+	imageVersion uint64
 	strings      bool
 	valueKind    uint8
 	compact      bool
 	valid        atomic.Bool
-	directory    *[256]uint8
-	highCodes    [nodeSize]uint32
 	tags         [nodeSize]uint8
 	codes        [nodeSize]uint64
-	keys         *[nodeSize]K
 }
 
 func (n *searchImage[K, V]) lower(key K) int {

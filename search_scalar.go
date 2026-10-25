@@ -16,3 +16,7 @@ func lowerCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, key uin
 func findCode(keys *[nodeSize]uint64, tags *[nodeSize]uint8, n int, key uint64) int {
 	return lowerCode(keys, n, key)
 }
+
+func firstTag(tags *[nodeSize]uint8, n int, key uint64) int {
+	return firstTagScalar(tags, n, uint8(key))
+}

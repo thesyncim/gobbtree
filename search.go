@@ -47,3 +47,12 @@ func routeCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, code ui
 	}
 	return max(0, lowerCompact(keys, high, n, code+1)-1)
 }
+
+func firstTagScalar(tags *[nodeSize]uint8, n int, tag uint8) int {
+	for i := 0; i < n; i++ {
+		if tags[i] == tag {
+			return i
+		}
+	}
+	return n
+}

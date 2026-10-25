@@ -1,0 +1,192 @@
+package gobbtree
+
+import (
+	"math"
+	"reflect"
+	"testing"
+	"unsafe"
+)
+
+func checkWordTree(t testing.TB, tr *wordTree, length int) {
+	t.Helper()
+	checkWordRoutes(t, tr)
+	if tr.root == 0 {
+		if length != 0 {
+			t.Fatal("empty numeric arena with nonzero length")
+		}
+		return
+	}
+	seen := make(map[uint32]bool)
+	leaves := []uint32{}
+	depth, total := -1, 0
+	var walk func(uint32, int)
+	walk = func(id uint32, level int) {
+		if id == 0 || int((id-1)>>8) >= len(tr.slabs) || int((id-1)&255) >= len(tr.slabs[(id-1)>>8]) {
+			t.Fatalf("invalid node ID %d", id)
+		}
+		if seen[id] {
+			t.Fatal("cyclic or multiply linked numeric node")
+		}
+		seen[id] = true
+		n := tr.node(id)
+		if n.n < 1 || n.n > nodeSize || (level > 0 && n.n < minNodeSize) {
+			t.Fatalf("bad numeric occupancy %d at depth %d", n.n, level)
+		}
+		for i := 0; i < int(n.n); i++ {
+			if i > 0 && n.keyAt(i-1) >= n.keyAt(i) {
+				t.Fatal("unordered numeric node")
+			}
+			if n.tags[i] != uint8(n.keyAt(i)) {
+				t.Fatal("stale numeric tag")
+			}
+		}
+		for i := int(n.n); i < nodeSize; i++ {
+			if n.keyAt(i) != math.MaxUint64 || n.tags[i] != 0 {
+				t.Fatal("invalid numeric padding")
+			}
+		}
+		if n.leaf {
+			if depth < 0 {
+				depth = level
+			}
+			if depth != level {
+				t.Fatal("unequal numeric leaf depth")
+			}
+			if n.directory != 0 {
+				t.Fatal("leaf retained a routing directory")
+			}
+			total += int(n.n)
+			leaves = append(leaves, id)
+			return
+		}
+		if level == 0 && n.n < 2 {
+			t.Fatal("uncollapsed numeric root")
+		}
+		for i := 0; i < nodeSize; i++ {
+			if n.inner().high[i] != uint32(n.keyAt(i)>>32) {
+				t.Fatal("stale numeric high summary")
+			}
+			if i >= int(n.n) {
+				if n.inner().children[i] != 0 {
+					t.Fatal("retained numeric child")
+				}
+				continue
+			}
+			child := n.inner().children[i]
+			walk(child, level+1)
+			if n.keyAt(i) != tr.node(child).keys[0] {
+				t.Fatal("stale numeric minimum")
+			}
+		}
+	}
+	walk(tr.root, 0)
+	for i, id := range leaves {
+		n := tr.node(id)
+		var prev, next uint32
+		if i > 0 {
+			prev = leaves[i-1]
+			p := tr.node(prev)
+			if p.keyAt(int(p.n)-1) >= n.keys[0] {
+				t.Fatal("overlapping numeric leaves")
+			}
+		}
+		if i+1 < len(leaves) {
+			next = leaves[i+1]
+		}
+		if n.prev != prev || n.next != next {
+			t.Fatal("broken numeric leaf links")
+		}
+	}
+	for id := tr.free; id != 0; id = tr.node(id).next {
+		if seen[id] {
+			t.Fatal("live or cyclic free node")
+		}
+		seen[id] = true
+	}
+	if total != length {
+		t.Fatalf("numeric length %d, counted %d", length, total)
+	}
+}
+
+func TestWordNodePointerFree(t *testing.T) {
+	var check func(reflect.Type)
+	check = func(typ reflect.Type) {
+		switch typ.Kind() {
+		case reflect.Struct:
+			for i := 0; i < typ.NumField(); i++ {
+				check(typ.Field(i).Type)
+			}
+		case reflect.Array:
+			check(typ.Elem())
+		case reflect.Int32, reflect.Uint8, reflect.Uint32, reflect.Uint64, reflect.Bool:
+		default:
+			t.Fatalf("GC-scanned field %v", typ)
+		}
+	}
+	check(reflect.TypeFor[wordNode]())
+	if unsafe.Sizeof(wordNode{}) != 576 || unsafe.Offsetof(wordNode{}.keys) != 64 {
+		t.Fatal("numeric node layout changed")
+	}
+}
+func TestWordValues(t *testing.T) {
+	for _, value := range []float64{0, math.Copysign(0, -1), math.Inf(-1), math.Inf(1), math.Float64frombits(0x7ff8000000001234)} {
+		var tr Tree[int64, float64]
+		for _, key := range []int64{math.MinInt64, -1, 0, 1, math.MaxInt64} {
+			tr.Insert(key, value)
+		}
+		if tr.words == nil {
+			t.Fatal("numeric specialization not selected")
+		}
+		for key, got := range tr.All() {
+			if math.Float64bits(got) != math.Float64bits(value) {
+				t.Fatalf("value bits at %d", key)
+			}
+			actual, ok := tr.Get(key)
+			if !ok || math.Float64bits(actual) != math.Float64bits(value) {
+				t.Fatal("lookup changed value bits")
+			}
+		}
+		clone := tr.Clone()
+		tr.Clear()
+		if tr.words != nil || tr.Len() != 0 || clone.Len() != 5 {
+			t.Fatal("numeric clear or clone")
+		}
+	}
+	var tr Tree[uint64, *int]
+	value := 1
+	tr.Insert(1, &value)
+	if tr.words != nil {
+		t.Fatal("reference value hidden in numeric storage")
+	}
+}
+
+func checkWordRoutes(t testing.TB, tr *wordTree) {
+	t.Helper()
+	if tr.root != 0 && tr.rootNode != tr.node(tr.root) {
+		t.Fatal("stale root pointer")
+	}
+	if len(tr.routes.ids) == 0 {
+		return
+	}
+	for bucket, id := range tr.routes.ids {
+		if id == 0 {
+			continue
+		}
+		low := tr.routes.base | uint64(bucket)<<tr.routes.shift
+		high := low | ((uint64(1) << tr.routes.shift) - 1)
+		for _, key := range []uint64{low, high} {
+			want := tr.root
+			for step := 0; step < int(tr.routes.depth); step++ {
+				n := tr.node(want)
+				i := 0
+				for i+1 < int(n.n) && n.keys[i+1] <= key {
+					i++
+				}
+				want = n.inner().children[i]
+			}
+			if id != want {
+				t.Fatalf("radix bucket %d endpoint %x routes to %d, want %d", bucket, key, id, want)
+			}
+		}
+	}
+}

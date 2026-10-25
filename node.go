@@ -13,21 +13,18 @@ const minNodeSize = nodeSize / 2
 // Separate columns keep SIMD searches from loading values or child pointers.
 // These are GC-visible Go objects, with no pointer tagging or unsafe reads.
 type node[K cmp.Ordered, V any] struct {
-	n          int
-	prefix     int
-	children   *[nodeSize]*node[K, V]
-	leaf       *leaf[K, V]
-	strings    bool
-	shared     bool
-	compact    bool
-	directory  *[256]uint8
-	highCodes  [nodeSize]uint32
-	tags       [nodeSize]uint8
-	codes      [nodeSize]uint64
-	keys       [nodeSize]K
-	image      atomic.Pointer[searchImage[K, V]]
-	parentSlot *atomic.Pointer[searchImage[K, V]]
-	readEdges  *[nodeSize]atomic.Pointer[searchImage[K, V]]
+	children                 *[nodeSize]*node[K, V]
+	leaf                     *leaf[K, V]
+	directory                *[256]uint8
+	image                    atomic.Pointer[searchImage[K, V]]
+	parentSlot               *atomic.Pointer[searchImage[K, V]]
+	readEdges                *[nodeSize]atomic.Pointer[searchImage[K, V]]
+	n, prefix                int
+	strings, shared, compact bool
+	highCodes                [nodeSize]uint32
+	tags                     [nodeSize]uint8
+	codes                    [nodeSize]uint64
+	keys                     [nodeSize]K
 }
 
 type leaf[K cmp.Ordered, V any] struct {
