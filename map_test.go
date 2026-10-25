@@ -38,8 +38,12 @@ func TestConcurrentMutation(t *testing.T) {
 			t.Fatal("snapshot content")
 		}
 	}
-	m.tree.length = m.Len()
-	checkTree(t, &m.tree)
+	if words := m.words.Load(); words != nil {
+		checkWordTree(t, &words.tree, m.Len())
+	} else {
+		m.tree.length = m.Len()
+		checkTree(t, &m.tree)
+	}
 	// Same-key updates must not lose increments.
 	m.Insert(-1, 0)
 	for worker := 0; worker < workers; worker++ {
@@ -96,8 +100,12 @@ func TestConcurrentReadsScansAndStructure(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	m.tree.length = m.Len()
-	checkTree(t, &m.tree)
+	if words := m.words.Load(); words != nil {
+		checkWordTree(t, &words.tree, m.Len())
+	} else {
+		m.tree.length = m.Len()
+		checkTree(t, &m.tree)
+	}
 }
 func TestMapCallbacksAndBatch(t *testing.T) {
 	var m Map[string, int]

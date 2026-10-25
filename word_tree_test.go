@@ -21,7 +21,7 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 	depth, total := -1, 0
 	var walk func(uint32, int)
 	walk = func(id uint32, level int) {
-		if id == 0 || int((id-1)>>8) >= len(tr.slabs) || int((id-1)&255) >= len(tr.slabs[(id-1)>>8]) {
+		if id == 0 || int(((id&^wordLeafID)-1)>>8) >= len(tr.slabs) || int(((id&^wordLeafID)-1)&255) >= len(tr.slabs[((id&^wordLeafID)-1)>>8]) {
 			t.Fatalf("invalid node ID %d", id)
 		}
 		if seen[id] {
@@ -36,12 +36,20 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 			if i > 0 && n.keyAt(i-1) >= n.keyAt(i) {
 				t.Fatal("unordered numeric node")
 			}
-			if n.tags[i] != uint8(n.keyAt(i)) {
+			tag := uint8(n.keyAt(i))
+			if tr.shared && !n.leaf {
+				tag = uint8(n.keyAt(i) >> uint(n.sequence.Load()>>7&63))
+			}
+			if n.tags[i] != tag {
 				t.Fatal("stale numeric tag")
 			}
 		}
 		for i := int(n.n); i < nodeSize; i++ {
-			if n.keyAt(i) != math.MaxUint64 || n.tags[i] != 0 {
+			padding := uint8(0)
+			if tr.shared && !n.leaf {
+				padding = 255
+			}
+			if n.keyAt(i) != math.MaxUint64 || n.tags[i] != padding {
 				t.Fatal("invalid numeric padding")
 			}
 		}
@@ -74,7 +82,7 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 			}
 			child := n.inner().children[i]
 			walk(child, level+1)
-			if n.keyAt(i) != tr.node(child).keys[0] {
+			if n.keyAt(i) != tr.node(child).keyAt(0) {
 				t.Fatal("stale numeric minimum")
 			}
 		}
@@ -86,7 +94,7 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 		if i > 0 {
 			prev = leaves[i-1]
 			p := tr.node(prev)
-			if p.keyAt(int(p.n)-1) >= n.keys[0] {
+			if p.keyAt(int(p.n)-1) >= n.keyAt(0) {
 				t.Fatal("overlapping numeric leaves")
 			}
 		}
@@ -97,11 +105,13 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 			t.Fatal("broken numeric leaf links")
 		}
 	}
-	for id := tr.free; id != 0; id = tr.node(id).next {
-		if seen[id] {
-			t.Fatal("live or cyclic free node")
+	for _, head := range []uint32{tr.free, tr.freeInner} {
+		for id := head; id != 0; id = tr.node(id).directory {
+			if seen[id] {
+				t.Fatal("live or cyclic free node")
+			}
+			seen[id] = true
 		}
-		seen[id] = true
 	}
 	if total != length {
 		t.Fatalf("numeric length %d, counted %d", length, total)
@@ -126,7 +136,7 @@ func TestWordNodePointerFree(t *testing.T) {
 	check(reflect.TypeFor[wordNode]())
 	check(reflect.TypeFor[numericColumns]())
 	check(reflect.TypeFor[atomicPairs]())
-	if unsafe.Sizeof(wordNode{}) != 576 || unsafe.Offsetof(wordNode{}.keys) != 64 {
+	if unsafe.Sizeof(wordNode{}) != 576 || unsafe.Offsetof(wordNode{}.payload) != 64 {
 		t.Fatal("numeric node layout changed")
 	}
 }

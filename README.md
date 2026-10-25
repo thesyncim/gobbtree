@@ -139,6 +139,8 @@ python3 internal/rss_compare.py \
 
 The memory driver supports Linux and macOS. It reports peak RSS, RSS after construction, and RSS after Go collection or a Rust settling interval. Each process contains one populated container. Go's runtime and GC headroom remain in the totals; Go heap and scan counters are supplementary. Construction time is recorded as `build_ns`. Set `--size 5000000` for the 5M case.
 
+Built-in integer keys with primitive word values use indexed, GC-noscan slabs in both containers. The concurrent numeric map stores entries once and reads shared numeric fields atomically. Pointer-bearing keys and values remain visible to Go's garbage collector.
+
 CI artifacts include CPU details, selected SIMD backends, generated code, and benchmark results.
 
 ## Validation and upstream

@@ -1,0 +1,223 @@
+package gobbtree
+
+import (
+	"math"
+	"runtime"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"unsafe"
+)
+
+func TestUpperTagBoundaries(t *testing.T) {
+	for seed := uint64(0); seed < 8; seed++ {
+		var tags [nodeSize]uint8
+		for i := range tags {
+			tags[i] = uint8(mixedKey(uint64(i) + seed*71))
+		}
+		slices.Sort(tags[:])
+		for count := 0; count <= nodeSize; count++ {
+			for key := 0; key < 256; key++ {
+				want := 0
+				for want < count && tags[want] <= uint8(key) {
+					want++
+				}
+				var node wordNode
+				node.storeTags(tags)
+				got, mayEqual := upperSharedTag(node.tagWords(), count, uint8(key))
+				if got != want || (want > 0 && tags[want-1] == uint8(key) && !mayEqual) {
+					t.Fatalf("atomic upper tags count=%d key=%d", count, key)
+				}
+				if firstSharedTag(node.tagWords(), count, uint64(key)) != firstTagScalar(&tags, count, uint8(key)) {
+					t.Fatal("atomic first tags")
+				}
+				if got := upperTag(&tags, count, uint8(key)); got != want {
+					t.Fatalf("seed=%d count=%d key=%d got=%d want=%d", seed, count, key, got, want)
+				}
+			}
+		}
+	}
+}
+func TestSharedWordRouting(t *testing.T) {
+	for _, shift := range []uint{0, 16, 32, 48} {
+		var m Map[uint64, uint64]
+		reference := make(map[uint64]uint64)
+		for i := uint64(0); i < 10000; i++ {
+			key := mixedKey(i) >> shift
+			if shift != 0 {
+				key |= uint64(0xabcd) << 48
+			}
+			value := key ^ i
+			old, found := m.Insert(key, value)
+			expected, present := reference[key]
+			if old != expected || found != present {
+				t.Fatal("insert replacement")
+			}
+			reference[key] = value
+		}
+		m.Insert(math.MaxUint64, 0)
+		reference[math.MaxUint64] = 0
+		checkWordTree(t, &m.words.Load().tree, len(reference))
+		for key, value := range reference {
+			if got, ok := m.Get(key); !ok || got != value {
+				t.Fatalf("shift %d key %d", shift, key)
+			}
+		}
+		for i := uint64(10000); i < 20000; i++ {
+			key := mixedKey(i)
+			got, ok := m.Get(key)
+			expected, present := reference[key]
+			if got != expected || ok != present {
+				t.Fatal("miss/prefix routing")
+			}
+		}
+	}
+	if unsafe.Offsetof(wordNode{}.prev)%8 != 0 || unsafe.Offsetof(wordNode{}.tags)%8 != 0 {
+		t.Fatal("unaligned atomic view")
+	}
+}
+func TestSharedWordArenaReuse(t *testing.T) {
+	var m Map[uint64, uint64]
+	const size = 4096
+	const mask = uint64(0x123456789)
+	for key := uint64(0); key < size; key++ {
+		m.Insert(key, key^mask)
+	}
+	words := m.words.Load()
+	m.Get(1) // Activate optimistic readers before pinning a retired view.
+	retired := words.view.Load()
+	var stop atomic.Bool
+	var readers sync.WaitGroup
+	readers.Go(func() {
+		for !stop.Load() {
+			for blockIndex := range retired.blocks {
+				b := retired.blocks[blockIndex].Load()
+				if b == nil {
+					continue
+				}
+				for i := range b.nodes {
+					n := &b.nodes[i]
+					// Retired readers may still load numeric words while the arena reuses
+					// them. All such accesses must stay atomic even across reclamation.
+					_ = n.sequence.Load()
+					_ = n.loadTags()
+					_ = atomic.LoadUint64(&n.keys[0])
+				}
+			}
+		}
+	})
+	readers.Go(func() {
+		for i := uint64(0); !stop.Load(); i++ {
+			key := i % (4 * size)
+			if value, ok := m.Get(key); ok && value != key^mask {
+				t.Error("reused leaf associated the wrong value")
+				return
+			}
+		}
+	})
+	for round := uint64(0); round < 3; round++ {
+		for key := max(uint64(1), round*size); key < (round+1)*size; key++ {
+			m.Delete(key)
+		}
+		runtime.GC()
+		for key := (round + 1) * size; key < (round+2)*size; key++ {
+			m.Insert(key, key^mask)
+		}
+	}
+	stop.Store(true)
+	readers.Wait()
+	runtime.KeepAlive(retired)
+	checkWordTree(t, &words.tree, m.Len())
+}
+
+func TestDeepRoutesAfterBoundaryChanges(t *testing.T) {
+	const size = 230000
+	var m Map[uint64, uint64]
+	for i := uint64(0); i < size; i++ {
+		key := i * 4
+		m.Insert(key, key)
+	}
+	words := m.words.Load()
+	if words.tree.rootNode.level < 4 {
+		t.Fatal("test did not reach the deeper routing directory")
+	}
+	checkWordRoutes(t, &words.tree)
+	var boundaries []uint64
+	for _, slab := range words.tree.slabs {
+		for i := range slab {
+			n := &slab[i]
+			if !n.leaf && n.level == 2 && n.n > 0 {
+				boundaries = append(boundaries, n.keys[0], n.keys[n.n/2])
+			}
+		}
+	}
+	var stop atomic.Bool
+	var readers sync.WaitGroup
+	for worker := uint64(0); worker < 2; worker++ {
+		readers.Go(func() {
+			for i := worker; !stop.Load(); i += 2 {
+				key := ((i*499)%(size/2)*2 + 1) * 4
+				value, ok := m.Get(key)
+				if !ok || value != key {
+					t.Error("unchanged key lost during directory repair")
+					return
+				}
+			}
+		})
+	}
+	for _, boundary := range boundaries {
+		first := (boundary / 4) &^ 1
+		for offset := uint64(0); offset < 8; offset += 2 {
+			key := (first + offset) * 4
+			if key >= size*4 {
+				continue
+			}
+			m.Delete(key)
+			m.Insert(key+1, key+1)
+		}
+	}
+	stop.Store(true)
+	readers.Wait()
+	checkWordTree(t, &words.tree, m.Len())
+	for i := uint64(0); i < size; i++ {
+		key := i * 4
+		value, ok := m.Get(key)
+		if ok && value != key {
+			t.Fatal("wrong value after repair")
+		}
+		if !ok {
+			value, ok = m.Get(key + 1)
+			if !ok || value != key+1 {
+				t.Fatal("key missing from both old and new position")
+			}
+		}
+	}
+}
+
+func TestFirstNumericReaderDuringWrites(t *testing.T) {
+	for round := 0; round < 32; round++ {
+		var m Map[uint64, uint64]
+		var group sync.WaitGroup
+		for worker := uint64(0); worker < 4; worker++ {
+			group.Go(func() {
+				for i := worker; i < 1024; i += 4 {
+					m.Insert(i, i)
+				}
+			})
+		}
+		group.Go(func() {
+			for key := uint64(0); key < 1024; key++ {
+				if value, ok := m.Get(key); ok && value != key {
+					t.Error("first reader observed incomplete entry")
+				}
+			}
+		})
+		group.Wait()
+		for key := uint64(0); key < 1024; key++ {
+			if value, ok := m.Get(key); !ok || value != key {
+				t.Fatal("entry lost across reader activation")
+			}
+		}
+	}
+}

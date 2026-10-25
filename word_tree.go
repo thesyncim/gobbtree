@@ -1,19 +1,23 @@
 package gobbtree
 
-import "unsafe"
+import (
+	"sync"
+	"sync/atomic"
+	"unsafe"
+)
 
 // All fields are numbers. Slabs containing these nodes are GC noscan objects;
 // child and sibling links are indexes, not hidden Go pointers.
 type wordNode struct {
-	n                     int32
+	n                     uint8
 	leaf, compact         bool
 	level                 uint8
-	_                     byte
 	directory, prev, next uint32
 	tags                  [nodeSize]uint8
-	_                     [12]byte
-	keys                  [nodeSize]uint64
+	sequence              atomic.Uint64
+	mu                    sync.Mutex
 	payload               [nodeSize]uint64
+	keys                  [nodeSize]uint64
 }
 
 type wordEntry struct{ key, value uint64 }
@@ -21,7 +25,7 @@ type wordEntry struct{ key, value uint64 }
 func (n *wordNode) entries() *[nodeSize]wordEntry {
 	// The two adjacent 256-byte numeric columns form the 512-byte leaf
 	// view. Its entries contain no pointers and have the same alignment.
-	return (*[nodeSize]wordEntry)(unsafe.Add(unsafe.Pointer(n), unsafe.Offsetof(wordNode{}.keys)))
+	return (*[nodeSize]wordEntry)(unsafe.Add(unsafe.Pointer(n), unsafe.Offsetof(wordNode{}.payload)))
 }
 func (n *wordNode) keyAt(i int) uint64 {
 	if n.leaf {
@@ -64,29 +68,37 @@ var _ [unsafe.Sizeof(wordInner{}) - unsafe.Sizeof([nodeSize]uint64{})]byte
 var _ [unsafe.Sizeof([nodeSize]uint64{}) - unsafe.Sizeof(wordInner{})]byte
 
 type wordTree struct {
-	root, free         uint32
-	rootNode           *wordNode
-	slabs              [][]wordNode
-	used               int
-	directories        [][256]uint8
-	freeDirectories    []uint32
-	keyKind, valueKind uint8
-	routes             wordRoutes
-	routesDirty        bool
+	root, free           uint32
+	freeInner            uint32
+	shared, atomicWrites bool
+	readBlocks           []atomic.Pointer[wordReadBlock]
+	rootNode             *wordNode
+	slabs                [][]wordNode
+	used                 int
+	directories          [][256]uint8
+	freeDirectories      []uint32
+	keyKind, valueKind   uint8
+	routes               wordRoutes
+	routesDirty          bool
+	routeNode            *wordNode
 }
 
 func (t *wordTree) node(id uint32) *wordNode {
-	id--
+	id = (id &^ wordLeafID) - 1
 	return &t.slabs[id>>8][id&255]
 }
 func (t *wordTree) alloc(leaf bool) uint32 {
 	var id uint32
-	if t.free != 0 {
-		id = t.free
-		t.free = t.node(id).next
+	free := &t.freeInner
+	if leaf {
+		free = &t.free
+	}
+	if *free != 0 {
+		id = *free
+		*free = t.node(id).directory
 	} else {
 		if len(t.slabs) == 0 || t.used == len(t.slabs[len(t.slabs)-1]) {
-			if len(t.slabs) >= 1<<24 {
+			if len(t.slabs) >= (1<<23)-1 {
 				panic("gobbtree: numeric arena exhausted")
 			}
 			size := 1
@@ -94,20 +106,52 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 				size = min(256, 2*len(t.slabs[len(t.slabs)-1]))
 			}
 			t.slabs = append(t.slabs, make([]wordNode, size))
+			if t.shared {
+				t.readBlocks = appendWordBlock(t.readBlocks, t.slabs[len(t.slabs)-1])
+			}
 			t.used = 0
 		}
 		id = (uint32(len(t.slabs)-1)<<8 | uint32(t.used)) + 1
 		t.used++
 	}
+	if leaf {
+		id |= wordLeafID
+	}
 	n := t.node(id)
-	*n = wordNode{leaf: leaf}
+	// Shared slots keep their kind and mutex for their entire lifetime.
+	// Reuse is structurally exclusive, while retired readers still use atomics.
+	if t.shared {
+		n.n, n.leaf, n.compact, n.level, n.directory = 0, leaf, false, 0, 0
+		if leaf {
+			n.prev, n.next = 0, 0
+		} else {
+			atomic.StoreUint64(n.prefixWord(), 0)
+		}
+		for i := range n.keys {
+			atomic.StoreUint64(&n.keys[i], 0)
+		}
+		if leaf {
+			for i := range n.payload {
+				atomic.StoreUint64(&n.payload[i], 0)
+			}
+		} else {
+			for i := 0; i < nodeSize; i++ {
+				t.storeChild(n, i, 0)
+			}
+			clear(n.inner().high[:])
+		}
+		n.storeTags([nodeSize]uint8{})
+		n.sequence.Store(0)
+	} else {
+		*n = wordNode{leaf: leaf}
+	}
 	if leaf {
 		for i := range n.entries() {
-			n.entries()[i].key = ^uint64(0)
+			t.storeEntry(n, i, wordEntry{key: ^uint64(0)})
 		}
 	} else {
 		for i := range n.keys {
-			n.keys[i] = ^uint64(0)
+			t.storeKey(n, i, ^uint64(0))
 		}
 	}
 	return id
@@ -117,27 +161,44 @@ func (t *wordTree) release(id uint32) {
 	if n.directory != 0 {
 		t.freeDirectories = append(t.freeDirectories, n.directory)
 	}
-	*n = wordNode{next: t.free}
-	t.free = id
+	free := &t.freeInner
+	if n.leaf {
+		free = &t.free
+	}
+	n.directory = *free
+	*free = id
 }
+
 func (t *wordTree) refit(n *wordNode) {
 	count := int(n.n)
 	if !n.leaf && t.rootNode != nil && (n.level == t.rootNode.level || n.level+t.routes.depth > t.rootNode.level) {
 		t.routesDirty = true
+		if t.routeNode == nil || n.level > t.routeNode.level {
+			t.routeNode = n
+		}
 	}
 	for i := 0; i < count; i++ {
-		n.tags[i] = uint8(n.keyAt(i))
+		if !t.shared {
+			n.tags[i] = uint8(n.keyAt(i))
+		}
 	}
 	if n.leaf {
 		for i := count; i < nodeSize; i++ {
-			n.entries()[i] = wordEntry{key: ^uint64(0)}
-			n.tags[i] = 0
+			t.storeEntry(n, i, wordEntry{key: ^uint64(0)})
+			if !t.shared {
+				n.tags[i] = 0
+			}
+		}
+		if t.shared {
+			n.publishNumeric()
 		}
 		return
 	}
 	for i := count; i < nodeSize; i++ {
-		n.keys[i] = ^uint64(0)
-		n.tags[i] = 0
+		t.storeKey(n, i, ^uint64(0))
+		if !t.shared {
+			n.tags[i] = 0
+		}
 	}
 
 	inner := n.inner()
@@ -160,6 +221,9 @@ func (t *wordTree) refit(n *wordNode) {
 		t.freeDirectories = append(t.freeDirectories, n.directory)
 		n.directory = 0
 	}
+	if t.shared {
+		n.publishNumeric()
+	}
 }
 func (t *wordTree) route(n *wordNode, key uint64) int {
 	if n.directory != 0 {
@@ -170,16 +234,15 @@ func (t *wordTree) route(n *wordNode, key uint64) int {
 	}
 	return routeCode(&n.keys, int(n.n), key)
 }
-func (t *wordTree) leafFor(key uint64) (uint32, bool) {
-	id := t.root
-	full := false
+func (t *wordTree) leafFor(key uint64) uint32 {
+	id := t.routes.lookup(key)
+	if id == 0 {
+		id = t.root
+	}
 	for {
 		n := t.node(id)
 		if n.leaf {
-			return id, full
-		}
-		if n.n == nodeSize {
-			full = true
+			return id
 		}
 		id = n.inner().children[t.route(n, key)]
 	}
@@ -187,12 +250,15 @@ func (t *wordTree) leafFor(key uint64) (uint32, bool) {
 
 func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
 	count := int(n.n)
-	entries := n.entries()
-	copy(entries[i+1:count+1], entries[i:count])
-	copy(n.tags[i+1:count+1], n.tags[i:count])
-	entries[i] = wordEntry{key, value}
-	n.tags[i] = uint8(key)
+	t.moveEntries(n, i+1, i, count-i)
+	t.storeEntry(n, i, wordEntry{key, value})
 	n.n++
+	if t.shared {
+		n.publishNumeric()
+	} else {
+		copy(n.tags[i+1:count+1], n.tags[i:count])
+		n.tags[i] = uint8(key)
+	}
 }
 
 func (t *wordTree) insert(key, value uint64) (uint64, bool) {
@@ -200,15 +266,19 @@ func (t *wordTree) insert(key, value uint64) (uint64, bool) {
 		t.root = t.alloc(true)
 		t.rootNode = t.node(t.root)
 	}
-	id, full := t.leafFor(key)
+	id := t.leafFor(key)
 	n := t.node(id)
 	i := n.exactEntry(key)
 	if i < int(n.n) && n.entries()[i].key == key {
 		old := n.entries()[i].value
-		n.entries()[i].value = value
+		if t.shared {
+			atomic.StoreUint64(&n.entries()[i].value, value)
+		} else {
+			n.entries()[i].value = value
+		}
 		return old, true
 	}
-	if !full && n.n < nodeSize {
+	if n.n < nodeSize {
 		if i == int(n.n) && n.n > 0 && key < n.entries()[n.n-1].key {
 			i = n.lowerEntry(key)
 		}
@@ -246,15 +316,15 @@ func (t *wordTree) insertAbsent(id uint32, key, value uint64) {
 		} else {
 			right := t.split(child)
 			t.insertChild(n, i+1, right)
-			if key >= t.node(right).keys[0] {
+			if key >= t.node(right).keyAt(0) {
 				i++
 				child = right
 			}
 		}
 	}
 	t.insertAbsent(child, key, value)
-	if n.keys[i] != t.node(child).keys[0] {
-		n.keys[i] = t.node(child).keys[0]
+	if n.keys[i] != t.node(child).keyAt(0) {
+		t.storeKey(n, i, t.node(child).keyAt(0))
 		t.refit(n)
 	}
 }
@@ -264,16 +334,16 @@ func (t *wordTree) split(id uint32) uint32 {
 	right := t.node(rightID)
 	right.level = n.level
 	if n.leaf {
-		copy(right.entries()[:], n.entries()[minNodeSize:])
+		t.copyEntries(right, 0, n.entries()[minNodeSize:])
 		right.next, right.prev = n.next, id
 		if n.next != 0 {
 			t.node(n.next).prev = rightID
 		}
 		n.next = rightID
 	} else {
-		copy(right.keys[:], n.keys[minNodeSize:])
-		copy(right.inner().children[:], n.inner().children[minNodeSize:])
-		clear(n.inner().children[minNodeSize:])
+		t.copyKeys(right, 0, n.keys[minNodeSize:])
+		t.copyChildren(right, 0, n.inner().children[minNodeSize:])
+		t.clearChildren(n, minNodeSize)
 	}
 	n.n, right.n = minNodeSize, nodeSize-minNodeSize
 	t.refit(n)
@@ -283,19 +353,18 @@ func (t *wordTree) split(id uint32) uint32 {
 func (t *wordTree) insertChild(n *wordNode, i int, child uint32) {
 	n.level = t.node(child).level + 1
 	count := int(n.n)
-	copy(n.keys[i+1:count+1], n.keys[i:count])
-	children := &n.inner().children
-	copy(children[i+1:count+1], children[i:count])
-	n.keys[i], children[i] = t.node(child).keys[0], child
+	t.moveKeys(n, i+1, i, count-i)
+	t.moveChildren(n, i+1, i, count-i)
+	t.storeKey(n, i, t.node(child).keyAt(0))
+	t.storeChild(n, i, child)
 	n.n++
 	t.refit(n)
 }
 func (t *wordTree) removeChild(n *wordNode, i int) {
 	count := int(n.n)
-	copy(n.keys[i:count-1], n.keys[i+1:count])
-	children := &n.inner().children
-	copy(children[i:count-1], children[i+1:count])
-	children[count-1] = 0
+	t.moveKeys(n, i, i+1, count-i-1)
+	t.moveChildren(n, i, i+1, count-i-1)
+	t.storeChild(n, count-1, 0)
 	n.n--
 	t.refit(n)
 }
@@ -309,10 +378,12 @@ func (t *wordTree) delete(key uint64) (uint64, bool) {
 	}
 	root := t.node(t.root)
 	if root.n == 0 {
-		t.root, t.free, t.used = 0, 0, 0
+		t.root, t.free, t.freeInner, t.used = 0, 0, 0, 0
+		t.readBlocks = nil
 		t.rootNode = nil
 		t.routes = wordRoutes{}
 		t.routesDirty = false
+		t.routeNode = nil
 		t.slabs = nil
 		t.directories = nil
 		t.freeDirectories = nil
@@ -337,11 +408,17 @@ func (t *wordTree) remove(id uint32, key uint64) (uint64, bool) {
 			return 0, false
 		}
 		value := entries[i].value
-		copy(entries[i:n.n-1], entries[i+1:n.n])
-		copy(n.tags[i:n.n-1], n.tags[i+1:n.n])
+		t.moveEntries(n, i, i+1, int(n.n)-i-1)
+		if !t.shared {
+			copy(n.tags[i:n.n-1], n.tags[i+1:n.n])
+		}
 		n.n--
-		entries[n.n] = wordEntry{key: ^uint64(0)}
-		n.tags[n.n] = 0
+		t.storeEntry(n, int(n.n), wordEntry{key: ^uint64(0)})
+		if t.shared {
+			n.publishNumeric()
+		} else {
+			n.tags[n.n] = 0
+		}
 		return value, true
 	}
 
@@ -354,11 +431,11 @@ func (t *wordTree) remove(id uint32, key uint64) (uint64, bool) {
 	if t.node(child).n < minNodeSize {
 		t.rebalance(n, i)
 		for j := 0; j < int(n.n); j++ {
-			n.keys[j] = t.node(n.inner().children[j]).keys[0]
+			t.storeKey(n, j, t.node(n.inner().children[j]).keyAt(0))
 		}
 		t.refit(n)
-	} else if n.keys[i] != t.node(child).keys[0] {
-		n.keys[i] = t.node(child).keys[0]
+	} else if n.keys[i] != t.node(child).keyAt(0) {
+		t.storeKey(n, i, t.node(child).keyAt(0))
 		t.refit(n)
 	}
 	return value, true
@@ -370,16 +447,14 @@ func (t *wordTree) rebalance(parent *wordNode, i int) {
 		left := t.node(children[i-1])
 		count := int(child.n)
 		if child.leaf {
-			p := child.entries()
-			copy(p[1:count+1], p[:count])
-			p[0] = left.entries()[left.n-1]
+			t.moveEntries(child, 1, 0, count)
+			t.storeEntry(child, 0, left.entries()[left.n-1])
 		} else {
-			copy(child.keys[1:count+1], child.keys[:count])
-			child.keys[0] = left.keys[left.n-1]
-			p := &child.inner().children
-			copy(p[1:count+1], p[:count])
-			p[0] = left.inner().children[left.n-1]
-			left.inner().children[left.n-1] = 0
+			t.moveKeys(child, 1, 0, count)
+			t.storeKey(child, 0, left.keys[left.n-1])
+			t.moveChildren(child, 1, 0, count)
+			t.storeChild(child, 0, left.inner().children[left.n-1])
+			t.storeChild(left, int(left.n)-1, 0)
 		}
 		left.n--
 		child.n++
@@ -390,14 +465,14 @@ func (t *wordTree) rebalance(parent *wordNode, i int) {
 	if i+1 < int(parent.n) && t.node(children[i+1]).n > minNodeSize {
 		right := t.node(children[i+1])
 		if child.leaf {
-			child.entries()[child.n] = right.entries()[0]
-			copy(right.entries()[:right.n-1], right.entries()[1:right.n])
+			t.storeEntry(child, int(child.n), right.entries()[0])
+			t.moveEntries(right, 0, 1, int(right.n)-1)
 		} else {
-			child.keys[child.n] = right.keys[0]
-			copy(right.keys[:right.n-1], right.keys[1:right.n])
-			child.inner().children[child.n] = right.inner().children[0]
-			copy(right.inner().children[:right.n-1], right.inner().children[1:right.n])
-			right.inner().children[right.n-1] = 0
+			t.storeKey(child, int(child.n), right.keyAt(0))
+			t.moveKeys(right, 0, 1, int(right.n)-1)
+			t.storeChild(child, int(child.n), right.inner().children[0])
+			t.moveChildren(right, 0, 1, int(right.n)-1)
+			t.storeChild(right, int(right.n)-1, 0)
 		}
 		right.n--
 		child.n++
@@ -411,14 +486,14 @@ func (t *wordTree) rebalance(parent *wordNode, i int) {
 	leftID, rightID := children[i], children[i+1]
 	left, right := t.node(leftID), t.node(rightID)
 	if left.leaf {
-		copy(left.entries()[left.n:], right.entries()[:right.n])
+		t.copyEntries(left, int(left.n), right.entries()[:right.n])
 		left.next = right.next
 		if right.next != 0 {
 			t.node(right.next).prev = leftID
 		}
 	} else {
-		copy(left.keys[left.n:], right.keys[:right.n])
-		copy(left.inner().children[left.n:], right.inner().children[:right.n])
+		t.copyKeys(left, int(left.n), right.keys[:right.n])
+		t.copyChildren(left, int(left.n), right.inner().children[:right.n])
 	}
 	left.n += right.n
 	t.refit(left)
@@ -449,7 +524,7 @@ func (t *wordTree) scan(lower, upper uint64, reverse bool, visit func(uint64, ui
 	if reverse {
 		key = upper
 	}
-	id, _ := t.leafFor(key)
+	id := t.leafFor(key)
 	n := t.node(id)
 	i := n.lowerEntry(key)
 	if reverse {
@@ -560,22 +635,23 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	count++
 	if count <= 2*nodeSize {
 		cut := count / 2
-		copy(left.entries()[:], entries[:cut])
-		copy(right.entries()[:], entries[cut:count])
-		left.n, right.n = int32(cut), int32(count-cut)
+		t.copyEntries(left, 0, entries[:cut])
+		t.copyEntries(right, 0, entries[cut:count])
+		left.n, right.n = uint8(cut), uint8(count-cut)
 		t.refit(left)
 		t.refit(right)
-		parent.keys[leftIndex], parent.keys[leftIndex+1] = left.keys[0], right.keys[0]
+		t.storeKey(parent, leftIndex, left.keyAt(0))
+		t.storeKey(parent, leftIndex+1, right.keyAt(0))
 		t.refit(parent)
 		return
 	}
 	extraID := t.alloc(true)
 	extra := t.node(extraID)
 	first, second := count/3, 2*count/3
-	copy(left.entries()[:], entries[:first])
-	copy(right.entries()[:], entries[first:second])
-	copy(extra.entries()[:], entries[second:count])
-	left.n, right.n, extra.n = int32(first), int32(second-first), int32(count-second)
+	t.copyEntries(left, 0, entries[:first])
+	t.copyEntries(right, 0, entries[first:second])
+	t.copyEntries(extra, 0, entries[second:count])
+	left.n, right.n, extra.n = uint8(first), uint8(second-first), uint8(count-second)
 	extra.prev, extra.next = rightID, right.next
 	if right.next != 0 {
 		t.node(right.next).prev = extraID
@@ -584,6 +660,7 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	t.refit(left)
 	t.refit(right)
 	t.refit(extra)
-	parent.keys[leftIndex], parent.keys[leftIndex+1] = left.keys[0], right.keys[0]
+	t.storeKey(parent, leftIndex, left.keyAt(0))
+	t.storeKey(parent, leftIndex+1, right.keyAt(0))
 	t.insertChild(parent, leftIndex+2, extraID)
 }

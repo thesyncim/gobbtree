@@ -7,17 +7,19 @@ import (
 )
 
 // Map is a concurrent ordered map. Its zero value is ready to use.
-// Get uses immutable search images and version validation. Built-in word
-// values use atomic loads; other values use a shared leaf latch. Writers
+// Get validates optimistic reads of numeric arenas or immutable search images.
+// Built-in word values use atomic loads; other values use a leaf latch. Writers
 // latch leaves independently; splits, merges and new minima take a structural
 // latch exclusively. Scans and callbacks also hold the structural read latch.
 // Do not copy a Map after first use. Callbacks must not reenter the same Map.
 type Map[K cmp.Ordered, V any] struct {
-	version atomic.Uint64
-	root    atomic.Pointer[searchImage[K, V]]
-	routes  atomic.Pointer[publishedRoutes[K, V]]
+	version      atomic.Uint64
+	root         atomic.Pointer[searchImage[K, V]]
+	routes       atomic.Pointer[publishedRoutes[K, V]]
+	words        atomic.Pointer[wordMap]
+	wordDisabled atomic.Bool
 	// Keep writer bookkeeping off the cache line loaded by every lookup.
-	_         [40]byte
+	_         [28]byte
 	structure structuralLock
 	tree      Tree[K, V]
 	count     atomic.Int64
@@ -30,6 +32,10 @@ func New[K cmp.Ordered, V any]() *Map[K, V] { return new(Map[K, V]) }
 func (m *Map[K, V]) Len() int      { return int(m.count.Load()) }
 func (m *Map[K, V]) IsEmpty() bool { return m.count.Load() == 0 }
 func (m *Map[K, V]) Clear() {
+	if words := m.numericMap(); words != nil {
+		words.clear()
+		return
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	m.version.Add(1)
@@ -39,10 +45,20 @@ func (m *Map[K, V]) Clear() {
 	m.count.Store(0)
 	m.version.Add(1)
 }
-func (m *Map[K, V]) Get(key K) (V, bool) { return m.optimisticGet(key) }
+func (m *Map[K, V]) Get(key K) (V, bool) {
+	if words := m.numericMap(); words != nil {
+		value, found := words.get(numericCode(key))
+		return mapWordValue[V](value, found, words.valueKind)
+	}
+	return m.optimisticGet(key)
+}
 
 func (m *Map[K, V]) Contains(key K) bool { _, ok := m.Get(key); return ok }
 func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
+	if words := m.numericMap(); words != nil {
+		old, found := words.insert(numericCode(key), packWord(value))
+		return mapWordValue[V](old, found, words.valueKind)
+	}
 	lane := m.structure.lane(structuralLaneCode(key))
 	lane.RLock()
 	if m.tree.root != nil {
@@ -86,6 +102,10 @@ func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
 	return old, replaced
 }
 func (m *Map[K, V]) Delete(key K) (V, bool) {
+	if words := m.numericMap(); words != nil {
+		old, found := words.delete(numericCode(key))
+		return mapWordValue[V](old, found, words.valueKind)
+	}
 	lane := m.structure.lane(structuralLaneCode(key))
 	lane.RLock()
 	if m.tree.root == nil {
@@ -125,9 +145,12 @@ func (m *Map[K, V]) Delete(key K) (V, bool) {
 	return old, ok
 }
 
-// Read calls visit under a shared leaf latch if key exists. Values are copies.
+// Read calls visit under a leaf latch if key exists. Values are copies.
 // A panic releases both latches before propagating to the caller.
 func (m *Map[K, V]) Read(key K, visit func(K, V)) bool {
+	if words := m.numericMap(); words != nil {
+		return words.read(numericCode(key), func(k, v uint64) { visit(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind)) })
+	}
 	lane := m.structure.lane(structuralLaneCode(key))
 	lane.RLock()
 	defer lane.RUnlock()
@@ -148,6 +171,10 @@ func (m *Map[K, V]) Read(key K, visit func(K, V)) bool {
 // Update atomically replaces an existing value with change(old), returning
 // the new value. A panic in change leaves the stored value unchanged.
 func (m *Map[K, V]) Update(key K, change func(V) V) (V, bool) {
+	if words := m.numericMap(); words != nil {
+		value, found := words.update(numericCode(key), func(v uint64) uint64 { return packWord(change(unpackWord[V](v, words.valueKind))) })
+		return mapWordValue[V](value, found, words.valueKind)
+	}
 	lane := m.structure.lane(structuralLaneCode(key))
 	lane.RLock()
 	defer lane.RUnlock()
@@ -169,6 +196,12 @@ func (m *Map[K, V]) Update(key K, change func(V) V) (V, bool) {
 // UpdateOrInsert inserts value if absent, otherwise stores merge(old,value).
 // It returns the old value and whether an existing entry was updated.
 func (m *Map[K, V]) UpdateOrInsert(key K, value V, merge func(V, V) V) (V, bool) {
+	if words := m.numericMap(); words != nil {
+		old, found := words.updateOrInsert(numericCode(key), packWord(value), func(a, b uint64) uint64 {
+			return packWord(merge(unpackWord[V](a, words.valueKind), unpackWord[V](b, words.valueKind)))
+		})
+		return mapWordValue[V](old, found, words.valueKind)
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	old, ok := m.tree.Get(key)
@@ -188,6 +221,10 @@ func (m *Map[K, V]) UpdateOrInsert(key K, value V, merge func(V, V) V) (V, bool)
 // LoadOrStore returns the existing value if present, or stores and returns value.
 // loaded is true exactly when the value was already present.
 func (m *Map[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
+	if words := m.numericMap(); words != nil {
+		actual, loaded := words.loadOrStore(numericCode(key), packWord(value))
+		return unpackWord[V](actual, words.valueKind), loaded
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	if old, ok := m.tree.Get(key); ok {
@@ -203,6 +240,10 @@ func (m *Map[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 
 // DeleteIf removes key only if predicate accepts its current value.
 func (m *Map[K, V]) DeleteIf(key K, predicate func(V) bool) (V, bool) {
+	if words := m.numericMap(); words != nil {
+		old, found := words.deleteIf(numericCode(key), func(v uint64) bool { return predicate(unpackWord[V](v, words.valueKind)) })
+		return mapWordValue[V](old, found, words.valueKind)
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	if v, ok := m.tree.Get(key); ok && predicate(v) {
@@ -222,6 +263,13 @@ func (m *Map[K, V]) DeleteIf(key K, predicate func(V) bool) (V, bool) {
 func (m *Map[K, V]) GetMany(keys []K, dst []Result[V]) {
 	if len(dst) < len(keys) {
 		panic("gobbtree: GetMany destination too short")
+	}
+	if words := m.numericMap(); words != nil {
+		for i, key := range keys {
+			v, found := words.get(numericCode(key))
+			dst[i].Value, dst[i].OK = mapWordValue[V](v, found, words.valueKind)
+		}
+		return
 	}
 	for start := 0; start < len(keys); start += batchLanes {
 		count := min(batchLanes, len(keys)-start)
@@ -258,6 +306,12 @@ func (m *Map[K, V]) InsertMany(entries []Entry[K, V], dst []Result[V]) {
 // weakly consistent under concurrent writes, not a snapshot. Callbacks run
 // under latches and must not reenter this map. Returning false stops early.
 func (m *Map[K, V]) Scan(lower, upper K, visit func(K, V) bool) {
+	if words := m.numericMap(); words != nil {
+		words.walk(numericCode(lower), numericCode(upper), false, true, func(k, v uint64) bool {
+			return visit(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
+		})
+		return
+	}
 	m.structure.RLock()
 	defer m.structure.RUnlock()
 	if m.tree.root == nil || cmp.Compare(lower, upper) >= 0 {
@@ -270,6 +324,12 @@ func (m *Map[K, V]) Scan(lower, upper K, visit func(K, V) bool) {
 	}
 }
 func (m *Map[K, V]) ScanReverse(lower, upper K, visit func(K, V) bool) {
+	if words := m.numericMap(); words != nil {
+		words.walk(numericCode(lower), numericCode(upper), true, true, func(k, v uint64) bool {
+			return visit(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
+		})
+		return
+	}
 	m.structure.RLock()
 	defer m.structure.RUnlock()
 	if m.tree.root == nil || cmp.Compare(lower, upper) >= 0 {
@@ -303,6 +363,13 @@ func (n *node[K, V]) scanLeaf(lower, upper K, reverse bool, visit func(K, V) boo
 // All visits every entry in key order, with the same callback and consistency
 // rules as Scan. Use Snapshot to iterate without holding map latches.
 func (m *Map[K, V]) All() iter.Seq2[K, V] {
+	if words := m.numericMap(); words != nil {
+		return func(yield func(K, V) bool) {
+			words.walk(0, 0, false, false, func(k, v uint64) bool {
+				return yield(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
+			})
+		}
+	}
 	return func(yield func(K, V) bool) {
 		m.structure.RLock()
 		defer m.structure.RUnlock()
@@ -327,6 +394,16 @@ func (n *node[K, V]) visitLeaf(yield func(K, V) bool) bool {
 // Snapshot returns a consistent ascending copy of the entries, allocating
 // one slice. Writers are excluded while the slice is copied.
 func (m *Map[K, V]) Snapshot() []Entry[K, V] {
+	if words := m.numericMap(); words != nil {
+		m.structure.Lock()
+		defer m.structure.Unlock()
+		out := make([]Entry[K, V], 0, m.Len())
+		words.tree.all(false, func(k, v uint64) bool {
+			out = append(out, Entry[K, V]{decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind)})
+			return true
+		})
+		return out
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	out := make([]Entry[K, V], 0, m.Len())
@@ -336,16 +413,28 @@ func (m *Map[K, V]) Snapshot() []Entry[K, V] {
 	return out
 }
 func (m *Map[K, V]) First() (K, V, bool) {
+	if words := m.numericMap(); words != nil {
+		k, v, found := words.edge(false, false)
+		return mapWordEntry[K, V](k, v, found, words)
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	return m.tree.First()
 }
 func (m *Map[K, V]) Last() (K, V, bool) {
+	if words := m.numericMap(); words != nil {
+		k, v, found := words.edge(true, false)
+		return mapWordEntry[K, V](k, v, found, words)
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	return m.tree.Last()
 }
 func (m *Map[K, V]) PopFirst() (K, V, bool) {
+	if words := m.numericMap(); words != nil {
+		k, v, found := words.edge(false, true)
+		return mapWordEntry[K, V](k, v, found, words)
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	key, _, present := m.tree.First()
@@ -363,6 +452,10 @@ func (m *Map[K, V]) PopFirst() (K, V, bool) {
 	return k, v, ok
 }
 func (m *Map[K, V]) PopLast() (K, V, bool) {
+	if words := m.numericMap(); words != nil {
+		k, v, found := words.edge(true, true)
+		return mapWordEntry[K, V](k, v, found, words)
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	key, _, present := m.tree.Last()

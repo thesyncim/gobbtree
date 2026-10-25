@@ -11,6 +11,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     env:
       GOEXPERIMENT: simd
       GOAMD64: v1
@@ -55,7 +56,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build comparison programs
         run: |
-          git worktree add ../simd-baseline 4c929ac
+          git worktree add ../simd-baseline 7c0820c
           cp cmd/compare/main.go ../simd-baseline/cmd/compare/main.go
           cp standard_benchmark_test.go mutation_benchmark_test.go ../simd-baseline/
           (cd ../simd-baseline && go build -o ../compare-baseline ./cmd/compare)
@@ -64,7 +65,7 @@ jobs:
           rustc -vV > perf/rust-version.txt
           cargo build --release --locked --manifest-path internal/oracle/Cargo.toml --bin compare --bin memory
           go test -c -o ../simd.test
-          go tool objdump -s 'gobbtree.(lowerCode|lowerCompact|findCode|firstTag)$' ../simd.test > perf/generated-code.txt
+          go tool objdump -s 'gobbtree.(lowerCode|lowerCompact|findCode|firstTag|upperTag|firstSharedTag|upperSharedTag)$' ../simd.test > perf/generated-code.txt
       - name: Compare public operations on the same CPU
         run: |
           for size in 4096 262144; do
@@ -76,6 +77,10 @@ jobs:
       - name: Compare five million entries
         run: |
           python3 internal/cpu_compare.py --go ../compare-current --baseline ../compare-baseline --rust internal/oracle/target/release/compare --size 5000000 --queries 1048576 --rounds 4 --threads 4 --repeat 3 --standard > perf/five-million.jsonl
+      - name: Compare fifty million entries
+        run: |
+          python3 internal/cpu_compare.py --go ../compare-current --rust internal/oracle/target/release/compare --size 50000000 --queries 1048576 --rounds 4 --threads 4 --repeat 3 > perf/fifty-million.jsonl
+          python3 internal/rss_compare.py --go ../memory-current --rust internal/oracle/target/release/memory --size 50000000 --repeat 3 --kinds tree map > perf/memory-fifty-million.jsonl
       - name: Compare process memory
         run: python3 internal/rss_compare.py --go ../memory-current --rust internal/oracle/target/release/memory > perf/memory.jsonl
       - name: Compare AVX2 and selected width

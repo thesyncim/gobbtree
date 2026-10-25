@@ -67,6 +67,8 @@ def main():
             commands = [("go", [str(args.go.resolve()), "-kind", kind, "-size", str(args.size)])]
             if kind in ("tree", "map"):
                 commands.append(("rust", [str(args.rust.resolve()), kind, str(args.size)]))
+            rotation = repeat % len(commands)
+            commands = commands[rotation:] + commands[:rotation]
             for language, command in commands:
                 result = measure(command)
                 for stage in result["stages"]:

@@ -6,12 +6,14 @@ import (
 	"testing"
 )
 
+type legacyNumericKey uint64
+
 func TestPublishedRoutesTrackStructure(t *testing.T) {
-	var m Map[uint64, uint64]
+	var m Map[legacyNumericKey, uint64]
 	const size = 20000
-	keys := make([]uint64, size)
+	keys := make([]legacyNumericKey, size)
 	for i := range keys {
-		keys[i] = mixedKey(uint64(i))
+		keys[i] = legacyNumericKey(mixedKey(uint64(i)))
 		m.Insert(keys[i], uint64(i))
 	}
 	check := func() {
@@ -101,15 +103,15 @@ func TestPublishedRoutesConcurrentRebuild(t *testing.T) {
 }
 
 func TestRetiredNumericImagesRemainInvalidAfterArenaReuse(t *testing.T) {
-	var m Map[uint64, uint64]
+	var m Map[legacyNumericKey, uint64]
 	const size = 4096
 	const mask = uint64(0x9e3779b97f4a7c15)
-	for key := uint64(0); key < size; key++ {
-		m.Insert(key, key^mask)
+	for key := legacyNumericKey(0); key < size; key++ {
+		m.Insert(key, uint64(key)^mask)
 	}
 	type retired struct {
-		image *searchImage[uint64, uint64]
-		key   uint64
+		image *searchImage[legacyNumericKey, uint64]
+		key   legacyNumericKey
 	}
 	var images []retired
 	for n := m.tree.firstLeaf(); n != nil; n = n.leaf.next {
@@ -120,15 +122,15 @@ func TestRetiredNumericImagesRemainInvalidAfterArenaReuse(t *testing.T) {
 	readers.Go(func() {
 		for !stop.Load() {
 			for _, old := range images {
-				value, found, valid := old.image.readValue(old.key, old.key)
-				if valid && found && value != old.key^mask {
+				value, found, valid := old.image.readValue(old.key, uint64(old.key))
+				if valid && found && value != uint64(old.key)^mask {
 					t.Error("retired image validated reused key/value storage")
 					return
 				}
 			}
 		}
 	})
-	for key := uint64(1); key < size; key++ {
+	for key := legacyNumericKey(1); key < size; key++ {
 		m.Delete(key)
 	}
 	arena := m.tree.arena
@@ -139,8 +141,8 @@ func TestRetiredNumericImagesRemainInvalidAfterArenaReuse(t *testing.T) {
 	for _, old := range images {
 		reused[old.image.pairs] = true
 	}
-	for key := uint64(size); key < 2*size; key++ {
-		m.Insert(key, key^mask)
+	for key := legacyNumericKey(size); key < 2*size; key++ {
+		m.Insert(key, uint64(key)^mask)
 	}
 	stop.Store(true)
 	readers.Wait()
@@ -158,8 +160,8 @@ func TestRetiredNumericImagesRemainInvalidAfterArenaReuse(t *testing.T) {
 			t.Fatal("retired image became valid again")
 		}
 	}
-	for key := uint64(size); key < 2*size; key++ {
-		if value, ok := m.Get(key); !ok || value != key^mask {
+	for key := legacyNumericKey(size); key < 2*size; key++ {
+		if value, ok := m.Get(key); !ok || value != uint64(key)^mask {
 			t.Fatalf("reused leaf lookup %d", key)
 		}
 	}

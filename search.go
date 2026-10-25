@@ -56,3 +56,16 @@ func firstTagScalar(tags *[nodeSize]uint8, n int, tag uint8) int {
 	}
 	return n
 }
+
+func upperTagScalar(tags *[nodeSize]uint8, n int, key uint8) int {
+	lo, hi := 0, n
+	for lo < hi {
+		mid := int(uint(lo+hi) >> 1)
+		if tags[mid] <= key {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
