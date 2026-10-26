@@ -199,14 +199,18 @@ func (t *wordTree) release(id uint32) {
 	*free = id
 }
 
-// An interior separator update leaves the count, key domain, padding, and
-// compression shift unchanged. Update just its summaries on the owner path.
+// Updating an adjacent pair of interior separators leaves the count, key
+// domain, padding, and compression shifts unchanged. Update just its summaries.
 func (t *wordTree) refitSeparators(n *wordNode, first, last int) {
-	if t.shared || first == 0 || last == int(n.n)-1 || n.directory != 0 {
+	if first == 0 || last == int(n.n)-1 || n.directory != 0 {
 		t.refit(n)
 		return
 	}
 	t.invalidateRoutes(n)
+	if t.shared {
+		t.refitSharedSeparators(n, first, last)
+		return
+	}
 	inner := n.inner()
 	for i := first; i <= last; i++ {
 		n.tags[i] = uint8(n.keys[i])
@@ -795,12 +799,14 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	}
 	leftID, rightID := children[leftIndex], children[leftIndex+1]
 	left, right := t.node(leftID), t.node(rightID)
+	borrowedOuter := false
 	if int(left.n)+int(right.n) == 2*nodeSize {
 		borrowed := -1
 		if t.shared {
 			borrowed = t.borrowOuterLeaf(parent, index)
 		}
 		if borrowed >= 0 {
+			borrowedOuter = true
 			leftIndex = borrowed
 			left, right = t.node(children[leftIndex]), t.node(children[leftIndex+1])
 		} else {
@@ -841,7 +847,12 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	t.refit(right)
 	t.storeKey(parent, leftIndex, left.keyAt(0))
 	t.storeKey(parent, leftIndex+1, right.keyAt(0))
-	t.refitSeparators(parent, leftIndex, leftIndex+1)
+	if borrowedOuter {
+		// Borrowing can also change the outer sibling's separator.
+		t.refit(parent)
+	} else {
+		t.refitSeparators(parent, leftIndex, leftIndex+1)
+	}
 }
 
 // Move some free space across a full sibling before allocating another leaf.

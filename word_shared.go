@@ -38,6 +38,35 @@ func (n *wordNode) storeTags(tags [nodeSize]uint8) {
 	atomic.StoreUint64(&dst[2], src[2])
 	atomic.StoreUint64(&dst[3], src[3])
 }
+
+// The structural writer excludes other internal-node writers. Optimistic
+// readers validate its global epoch, and every tag word they load stays atomic.
+func (t *wordTree) refitSharedSeparators(n *wordNode, first, last int) {
+	shift := uint(n.sequence.Load() >> 7 & 63)
+	inner := n.inner()
+	if !t.atomicWrites {
+		for i := first; i <= last; i++ {
+			n.tags[i] = uint8(n.keys[i] >> shift)
+			inner.inline[i] = uint16(n.keys[i] >> n.shift)
+		}
+		return
+	}
+	tags := n.tags
+	for i := first; i <= last; i++ {
+		tags[i] = uint8(n.keys[i] >> shift)
+		inner.inline[i] = uint16(n.keys[i] >> n.shift)
+	}
+	// Native word views preserve byte order and the existing aligned atomic
+	// tag representation. An adjacent pair touches only one or two words.
+	src := (*[4]uint64)(unsafe.Pointer(&tags))
+	dst := n.tagWords()
+	firstWord, lastWord := first>>3, last>>3
+	atomic.StoreUint64(&dst[firstWord], src[firstWord])
+	if lastWord != firstWord {
+		atomic.StoreUint64(&dst[lastWord], src[lastWord])
+	}
+}
+
 func loadSharedTags(src *[4]uint64) [nodeSize]uint8 {
 	words := [4]uint64{atomic.LoadUint64(&src[0]), atomic.LoadUint64(&src[1]), atomic.LoadUint64(&src[2]), atomic.LoadUint64(&src[3])}
 	return *(*[nodeSize]uint8)(unsafe.Pointer(&words))
