@@ -312,3 +312,40 @@ func TestSmallNumericCacheDuringValueUpdates(t *testing.T) {
 		t.Fatal("value-only writes must preserve the cache")
 	}
 }
+
+func TestSharedLeafTagEdits(t *testing.T) {
+	for count := 0; count < nodeSize; count++ {
+		var original [nodeSize]uint8
+		for i := 0; i < count; i++ {
+			original[i] = uint8(i*17 + 5)
+		}
+		for position := 0; position <= count; position++ {
+			for busy := uint64(0); busy < 2; busy++ {
+				n := wordNode{leaf: true, n: uint8(count + 1)}
+				n.storeTags(original)
+				epoch := 7*wordSequenceStep | busy
+				n.sequence.Store(epoch | uint64(count)<<1)
+				n.insertTag(position, 0x1234ff)
+				var expected [nodeSize]uint8
+				for i := 0; i <= count; i++ {
+					switch {
+					case i < position:
+						expected[i] = original[i]
+					case i == position:
+						expected[i] = 255
+					default:
+						expected[i] = original[i-1]
+					}
+				}
+				if n.loadTags() != expected || n.sequence.Load() != epoch|uint64(count+1)<<1 {
+					t.Fatalf("insert tags: count=%d position=%d busy=%d", count, position, busy)
+				}
+				n.n--
+				n.deleteTag(position)
+				if n.loadTags() != original || n.sequence.Load() != epoch|uint64(count)<<1 {
+					t.Fatalf("delete tags: count=%d position=%d busy=%d", count, position, busy)
+				}
+			}
+		}
+	}
+}

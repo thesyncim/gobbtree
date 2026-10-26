@@ -64,6 +64,24 @@ func (n *wordNode) publishNumeric() {
 	sequence := n.sequence.Load()
 	n.sequence.Store(sequence&^(wordSequenceStep-2) | uint64(n.n)<<1 | uint64(shift)<<7)
 }
+
+// The leaf or structural lock excludes other writers while tags are copied.
+// Atomic publication preserves the optimistic readers' epoch validation.
+func (n *wordNode) insertTag(i int, key uint64) {
+	tags := n.tags
+	copy(tags[i+1:n.n], tags[i:n.n-1])
+	tags[i] = uint8(key)
+	n.storeTags(tags)
+	n.sequence.Store(n.sequence.Load()&^(wordSequenceStep-2) | uint64(n.n)<<1)
+}
+func (n *wordNode) deleteTag(i int) {
+	tags := n.tags
+	copy(tags[i:n.n], tags[i+1:n.n+1])
+	tags[n.n] = 0
+	n.storeTags(tags)
+	n.sequence.Store(n.sequence.Load()&^(wordSequenceStep-2) | uint64(n.n)<<1)
+}
+
 func (n *wordNode) beginLeafWrite() { n.sequence.Add(1) }
 func (n *wordNode) endLeafWrite()   { n.sequence.Add(wordSequenceStep - 1) }
 

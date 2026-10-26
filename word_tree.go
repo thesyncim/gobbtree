@@ -93,7 +93,8 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 	if leaf {
 		free = &t.free
 	}
-	if *free != 0 {
+	reused := *free != 0
+	if reused {
 		id = *free
 		*free = t.node(id).directory
 	} else {
@@ -118,9 +119,9 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 		id |= wordLeafID
 	}
 	n := t.node(id)
-	// Shared slots keep their kind and mutex for their entire lifetime.
-	// Reuse is structurally exclusive, while retired readers still use atomics.
-	if t.shared {
+	// Once optimistic reads start, shared slots keep their kind and mutex.
+	// Before that barrier, the structural lock excludes every reader and writer.
+	if t.shared && t.atomicWrites {
 		n.n, n.leaf, n.compact, n.level, n.directory = 0, leaf, false, 0, 0
 		if leaf {
 			n.prev, n.next = 0, 0
@@ -142,8 +143,10 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 		}
 		n.storeTags([nodeSize]uint8{})
 		n.sequence.Store(0)
-	} else {
+	} else if reused {
 		*n = wordNode{leaf: leaf}
+	} else {
+		n.leaf = leaf
 	}
 	if leaf {
 		for i := range n.entries() {
@@ -254,7 +257,7 @@ func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
 	t.storeEntry(n, i, wordEntry{key, value})
 	n.n++
 	if t.shared {
-		n.publishNumeric()
+		n.insertTag(i, key)
 	} else {
 		copy(n.tags[i+1:count+1], n.tags[i:count])
 		n.tags[i] = uint8(key)
@@ -415,7 +418,7 @@ func (t *wordTree) remove(id uint32, key uint64) (uint64, bool) {
 		n.n--
 		t.storeEntry(n, int(n.n), wordEntry{key: ^uint64(0)})
 		if t.shared {
-			n.publishNumeric()
+			n.deleteTag(i)
 		} else {
 			n.tags[n.n] = 0
 		}
@@ -612,8 +615,7 @@ func (t *wordTree) getMany(keys []uint64, dst []Result[uint64]) {
 	}
 }
 
-// Redistribute into a neighboring leaf before allocating. Two full leaves
-// split into three, keeping occupancy above the half-full split baseline.
+// Redistribute into a neighboring leaf, moving only the boundary entries.
 func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) {
 	children := &parent.inner().children
 	leftIndex := index
@@ -622,36 +624,66 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	}
 	leftID, rightID := children[leftIndex], children[leftIndex+1]
 	left, right := t.node(leftID), t.node(rightID)
-	var entries [2*nodeSize + 1]wordEntry
-	count := int(left.n + right.n)
-	copy(entries[:], left.entries()[:left.n])
-	copy(entries[left.n:], right.entries()[:right.n])
-	position := 0
-	for position < count && entries[position].key < key {
-		position++
-	}
-	copy(entries[position+1:count+1], entries[position:count])
-	entries[position] = wordEntry{key, value}
-	count++
-	if count <= 2*nodeSize {
-		cut := count / 2
-		t.copyEntries(left, 0, entries[:cut])
-		t.copyEntries(right, 0, entries[cut:count])
-		left.n, right.n = uint8(cut), uint8(count-cut)
-		t.refit(left)
-		t.refit(right)
-		t.storeKey(parent, leftIndex, left.keyAt(0))
-		t.storeKey(parent, leftIndex+1, right.keyAt(0))
-		t.refit(parent)
+	if int(left.n)+int(right.n) == 2*nodeSize {
+		t.splitLeafPair(parent, leftIndex, key, value)
 		return
 	}
+	leftCount, rightCount := int(left.n), int(right.n)
+	rank := 0
+	if key < right.entries()[0].key {
+		rank = left.lowerEntry(key)
+	} else {
+		rank = leftCount + right.lowerEntry(key)
+	}
+	cut := (leftCount + rightCount + 1) / 2
+	before := cut
+	if rank < cut {
+		before--
+	}
+	if before < leftCount {
+		moved := leftCount - before
+		t.moveEntries(right, moved, 0, rightCount)
+		t.copyEntries(right, 0, left.entries()[before:leftCount])
+	} else if before > leftCount {
+		moved := before - leftCount
+		t.copyEntries(left, leftCount, right.entries()[:moved])
+		t.moveEntries(right, 0, moved, rightCount-moved)
+	}
+	left.n, right.n = uint8(before), uint8(leftCount+rightCount-before)
+	target, position := left, rank
+	if rank >= cut {
+		target, position = right, rank-before
+	}
+	t.moveEntries(target, position+1, position, int(target.n)-position)
+	t.storeEntry(target, position, wordEntry{key, value})
+	target.n++
+	t.refit(left)
+	t.refit(right)
+	t.storeKey(parent, leftIndex, left.keyAt(0))
+	t.storeKey(parent, leftIndex+1, right.keyAt(0))
+	t.refit(parent)
+}
+
+// Two full leaves split into three; only this path needs a merged scratch buffer.
+func (t *wordTree) splitLeafPair(parent *wordNode, index int, key, value uint64) {
+	leftID, rightID := parent.inner().children[index], parent.inner().children[index+1]
+	left, right := t.node(leftID), t.node(rightID)
+	var entries [2*nodeSize + 1]wordEntry
+	copy(entries[:nodeSize], left.entries()[:])
+	copy(entries[nodeSize:], right.entries()[:])
+	position := 0
+	for position < 2*nodeSize && entries[position].key < key {
+		position++
+	}
+	copy(entries[position+1:], entries[position:2*nodeSize])
+	entries[position] = wordEntry{key, value}
 	extraID := t.alloc(true)
 	extra := t.node(extraID)
-	first, second := count/3, 2*count/3
+	const first, second = (2*nodeSize + 1) / 3, 2 * (2*nodeSize + 1) / 3
 	t.copyEntries(left, 0, entries[:first])
 	t.copyEntries(right, 0, entries[first:second])
-	t.copyEntries(extra, 0, entries[second:count])
-	left.n, right.n, extra.n = uint8(first), uint8(second-first), uint8(count-second)
+	t.copyEntries(extra, 0, entries[second:])
+	left.n, right.n, extra.n = first, second-first, 2*nodeSize+1-second
 	extra.prev, extra.next = rightID, right.next
 	if right.next != 0 {
 		t.node(right.next).prev = extraID
@@ -660,7 +692,7 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	t.refit(left)
 	t.refit(right)
 	t.refit(extra)
-	t.storeKey(parent, leftIndex, left.keyAt(0))
-	t.storeKey(parent, leftIndex+1, right.keyAt(0))
-	t.insertChild(parent, leftIndex+2, extraID)
+	t.storeKey(parent, index, left.keyAt(0))
+	t.storeKey(parent, index+1, right.keyAt(0))
+	t.insertChild(parent, index+2, extraID)
 }
