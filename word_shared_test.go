@@ -221,3 +221,94 @@ func TestFirstNumericReaderDuringWrites(t *testing.T) {
 		}
 	}
 }
+
+func TestSmallNumericReadCache(t *testing.T) {
+	for _, mutation := range []struct {
+		name  string
+		apply func(*Map[uint64, uint64])
+	}{
+		{"insert", func(m *Map[uint64, uint64]) { m.Insert(1000, 1000) }},
+		{"delete", func(m *Map[uint64, uint64]) { m.Delete(75) }},
+		{"load", func(m *Map[uint64, uint64]) { m.LoadOrStore(1000, 1000) }},
+		{"merge", func(m *Map[uint64, uint64]) { m.UpdateOrInsert(1000, 1000, func(a, b uint64) uint64 { return b }) }},
+		{"predicate", func(m *Map[uint64, uint64]) { m.DeleteIf(75, func(v uint64) bool { return true }) }},
+		{"first", func(m *Map[uint64, uint64]) { m.PopFirst() }},
+		{"last", func(m *Map[uint64, uint64]) { m.PopLast() }},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			var m Map[uint64, uint64]
+			for key := uint64(0); key < 200; key++ {
+				m.Insert(key, key)
+			}
+			for key := uint64(0); key < 200; key++ {
+				if v, ok := m.Get(key); !ok || v != key {
+					t.Fatal("initial read")
+				}
+			}
+			words := m.words.Load()
+			cache := words.view.Load().cache
+			if cache == nil {
+				t.Fatal("small read cache missing")
+			}
+			m.Insert(50, 500)
+			m.Update(51, func(v uint64) uint64 { return 510 })
+			m.UpdateOrInsert(52, 520, func(a, b uint64) uint64 { return b })
+			for key := uint64(50); key <= 52; key++ {
+				if v, ok := m.Get(key); !ok || v != key*10 {
+					t.Fatal("stale cached value")
+				}
+			}
+			if words.view.Load().cache != cache {
+				t.Fatal("value replacement retired read cache")
+			}
+			mutation.apply(&m)
+			if words.view.Load().cache != nil {
+				t.Fatal("key mutation kept stale cache")
+			}
+			for _, entry := range m.Snapshot() {
+				if v, ok := m.Get(entry.Key); !ok || v != entry.Value {
+					t.Fatal("lookup after cache retirement")
+				}
+			}
+			runtime.KeepAlive(cache)
+		})
+	}
+}
+
+func TestSmallNumericCacheDuringValueUpdates(t *testing.T) {
+	var m Map[uint64, uint64]
+	const size = 4096
+	for i := uint64(0); i < size; i++ {
+		key := mixedKey(i)
+		m.Insert(key, key)
+	}
+	m.Get(mixedKey(0))
+	cache := m.words.Load().view.Load().cache
+	var group sync.WaitGroup
+	for worker := uint64(0); worker < 6; worker++ {
+		group.Go(func() {
+			for round := uint64(0); round < 4; round++ {
+				for i := uint64(0); i < size; i++ {
+					key := mixedKey((i + worker*113) % size)
+					if worker < 2 {
+						m.Insert(key, key^(round&1))
+					} else if value, found := m.Get(key); !found || value&^1 != key&^1 {
+						t.Error("cache fill raced with value replacement")
+						return
+					}
+				}
+			}
+		})
+	}
+	group.Wait()
+	for i := uint64(0); i < size; i++ {
+		key := mixedKey(i)
+		m.Insert(key, key+7)
+		if value, found := m.Get(key); !found || value != key+7 {
+			t.Fatal("completed replacement left a stale cached value")
+		}
+	}
+	if cache == nil || m.words.Load().view.Load().cache != cache {
+		t.Fatal("value-only writes must preserve the cache")
+	}
+}

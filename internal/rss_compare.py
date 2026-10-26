@@ -20,7 +20,7 @@ def measure(command):
         )
         try:
             stages = []
-            for phase in range(2):
+            for phase in range(3):
                 line = process.stdout.readline()
                 if not line:
                     errors.seek(0)
@@ -61,7 +61,7 @@ def main():
     args = parser.parse_args()
     if args.size < 0 or args.repeat < 1:
         parser.error("size must be nonnegative and repeat positive")
-    checksum = None
+    checksums = {}
     for repeat in range(args.repeat):
         for kind in args.kinds:
             commands = [("go", [str(args.go.resolve()), "-kind", kind, "-size", str(args.size)])]
@@ -72,9 +72,8 @@ def main():
             for language, command in commands:
                 result = measure(command)
                 for stage in result["stages"]:
-                    if checksum is None:
-                        checksum = stage["checksum"]
-                    if stage["checksum"] != checksum or stage["entries"] != args.size:
+                    phase = "built" if stage["phase"] == "built" else "read"
+                    if checksums.setdefault(phase, stage["checksum"]) != stage["checksum"] or stage["entries"] != args.size:
                         raise RuntimeError("mismatched dataset/checksum")
                 print(json.dumps({"language": language, "kind": kind, "repeat": repeat, **result}), flush=True)
 

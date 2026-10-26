@@ -127,7 +127,7 @@ python3 internal/cpu_compare.py \
   --standard
 ```
 
-Each backend runs in a fresh process. The drivers use `uint64`/`u64` keys and values. Go and Rust receive identical keys, query streams, and operation counts; the driver checks checksums and rotates execution order. Parallel timings exclude worker creation and final checksum reduction. Built-in `map` is read directly for read-only tests and protected by `RWMutex` for concurrent writes.
+Each backend runs in a fresh process. The drivers use `uint64`/`u64` keys and values. Rust uses the pinned upstream benchmark’s mimalloc allocator, full LTO, and native CPU tuning; Go uses its normal allocator and GC settings. Go and Rust receive identical keys, query streams, and operation counts; the driver checks checksums and rotates execution order. Parallel timings exclude worker creation and final checksum reduction. Built-in `map` is read directly for read-only tests and protected by `RWMutex` for concurrent writes.
 
 Measure **real process memory**, separately from CPU timings:
 
@@ -137,9 +137,9 @@ python3 internal/rss_compare.py \
   --size 50000000 --repeat 3
 ```
 
-The memory driver supports Linux and macOS. It reports peak RSS, RSS after construction, and RSS after Go collection or a Rust settling interval. Each process contains one populated container. Go's runtime and GC headroom remain in the totals; Go heap and scan counters are supplementary. Construction time is recorded as `build_ns`. Set `--size 5000000` for the 5M case.
+The memory driver supports Linux and macOS. It reports peak RSS, RSS after construction, after reading every entry once, and after Go collection or a Rust settling interval. The full read pass includes any lazily allocated read caches in the memory totals. Each process contains one populated container. Go's runtime and GC headroom remain in the totals; Go heap and scan counters are supplementary. Construction time is recorded as `build_ns`. Set `--size 5000000` for the 5M case.
 
-Built-in integer keys with primitive word values use indexed, GC-noscan slabs in both containers. The concurrent numeric map stores entries once and reads shared numeric fields atomically. Pointer-bearing keys and values remain visible to Go's garbage collector.
+Built-in integer keys with primitive word values use indexed, GC-noscan slabs in both containers. The concurrent numeric map reads shared numeric fields atomically. Small maps with stable keys can retain an immutable read cache; large maps use a single copy of their entries. Pointer-bearing keys and values remain visible to Go's garbage collector.
 
 CI artifacts include CPU details, selected SIMD backends, generated code, and benchmark results.
 

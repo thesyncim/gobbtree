@@ -1,3 +1,13 @@
+// Match the allocator used by the pinned upstream benchmark executable.
+#[cfg(not(feature = "system-allocator"))]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+const ALLOCATOR_NAME: &str = if cfg!(feature = "system-allocator") {
+    "system"
+} else {
+    "mimalloc"
+};
+
 use bbtree::{unsync, BBTreeMap};
 use std::{hint::black_box, time::Instant};
 fn mix(mut x: u64) -> u64 {
@@ -32,7 +42,7 @@ fn main() {
             concurrent.insert(k, k).unwrap();
         }
     }
-    println!("upstream 8adae97 n={size} rounds={rounds} queries={query_count} kind={kind}");
+    println!("upstream 8adae97 allocator={ALLOCATOR_NAME} n={size} rounds={rounds} queries={query_count} kind={kind}");
     let mut queries = vec![0_u64; query_count];
     for hit in [true, false] {
         let label = if hit { "hit" } else { "miss" };

@@ -1,6 +1,7 @@
 package gobbtree
 
 import (
+	"math/bits"
 	"runtime"
 	"sync/atomic"
 )
@@ -11,6 +12,7 @@ type wordReadView struct {
 	ready  bool
 	blocks []atomic.Pointer[wordReadBlock]
 	routes wordRoutes
+	cache  *wordReadCache
 }
 type wordMap struct {
 	version            atomic.Uint64
@@ -22,8 +24,8 @@ type wordMap struct {
 	tree               wordTree
 }
 
-// Only directory headers are published. Nodes contain one copy of their data;
-// readers access shared numeric fields atomically and validate leaf/structure epochs.
+// Publish the shared arena directories; an optional small-map cache is attached
+// after reader activation. Arena reads validate leaf and structural epochs.
 func (m *wordMap) publish() {
 	if m.tree.root == 0 {
 		m.view.Store(nil)
@@ -40,6 +42,9 @@ func (m *wordMap) publish() {
 		return
 	}
 	view := &wordReadView{root: m.tree.root, level: m.tree.rootNode.level, ready: m.tree.atomicWrites, blocks: blocks, routes: routes}
+	if previous != nil {
+		view.cache = previous.cache
+	}
 
 	m.view.Store(view)
 }
@@ -50,8 +55,25 @@ func (m *wordMap) finishStructure() { m.publish(); m.version.Add(1) }
 func (m *wordMap) enableReads() {
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	if m.tree.atomicWrites {
+		return
+	}
 	m.tree.atomicWrites = true
 	m.publish()
+	if current := m.view.Load(); current != nil && m.count.Load() <= smallReadCacheLimit {
+		view := *current
+		nodes := 0
+		for _, slab := range m.tree.slabs {
+			nodes += len(slab)
+		}
+		view.cache = &wordReadCache{nodes: make([]wordNode, nodes)}
+		if root := m.tree.rootNode; root.level > 0 {
+			width := bits.Len64(root.keys[0] ^ root.keys[root.n-1])
+			radixBits := min(width, bits.Len64(uint64(m.count.Load()-1)/2))
+			view.cache.routes = wordRoutes{base: root.keys[0] & (^uint64(0) << width), shift: uint8(width - radixBits), ids: make([]uint32, 1<<radixBits)}
+		}
+		m.view.Store(&view)
+	}
 }
 func (m *wordMap) get(key uint64) (uint64, bool) {
 retry:
@@ -72,6 +94,89 @@ retry:
 			m.enableReads()
 			continue
 		}
+		if view.cache != nil {
+			id := view.cache.routes.lookupAtomic(key)
+			direct := id != 0
+			low, high := uint64(0), ^uint64(0)
+			if !direct {
+				id = view.routes.lookupAtomic(key)
+				if id == 0 {
+					id = view.root
+				} else {
+					low = view.routes.base | ((key-view.routes.base)>>view.routes.shift)<<view.routes.shift
+					high = low | ((uint64(1) << view.routes.shift) - 1)
+				}
+			}
+			for depth := 0; depth <= int(view.level); depth++ {
+				n := view.cache.node(id)
+				if n == nil {
+					continue retry
+				}
+				if n.sequence.Load() == 0 {
+					n = m.cacheNode(view.cache, id)
+					if n == nil {
+						continue retry
+					}
+				}
+				if id&wordLeafID != 0 {
+					if !direct {
+						routes := &view.cache.routes
+						bucket := (key - routes.base) >> routes.shift
+						if bucket < uint64(len(routes.ids)) {
+							first := routes.base | bucket<<routes.shift
+							last := first | ((uint64(1) << routes.shift) - 1)
+							if first >= low && last <= high {
+								atomic.StoreUint32(&routes.ids[bucket], id)
+							}
+						}
+					}
+					count := int(n.n)
+					i := firstTag(&n.tags, count, key)
+					var candidate uint64
+					if i < count {
+						candidate = n.entries()[i].key
+						if candidate < key {
+							i = n.lowerEntry(key)
+							if i < count {
+								candidate = n.entries()[i].key
+							}
+						}
+					}
+					found := i < count && candidate == key
+					var value uint64
+					if found {
+						value = atomic.LoadUint64(&n.entries()[i].value)
+					}
+					if m.version.Load() != version {
+						continue retry
+					}
+					return value, found
+				}
+				shift := uint(n.level)
+				prefix := *n.prefixWord() >> shift
+				projection := key >> shift
+				var i int
+				if projection < prefix {
+					i = 0
+				} else if projection > prefix|255 {
+					i = int(n.n) - 1
+				} else {
+					i = max(0, upperTag(&n.tags, int(n.n), uint8(projection))-1)
+					for i > 0 && n.tags[i] == uint8(projection) && n.keys[i] > key {
+						i--
+					}
+				}
+				if i > 0 {
+					low = n.keys[i]
+				}
+				if i+1 < int(n.n) {
+					high = n.keys[i+1] - 1
+				}
+				id = n.inner().children[i]
+			}
+			continue retry
+		}
+
 		id := view.routes.lookupAtomic(key)
 		if id == 0 {
 			id = view.root
@@ -149,6 +254,11 @@ retry:
 	}
 }
 func (m *wordMap) leafFor(key uint64) uint32 {
+	if view := m.view.Load(); view != nil && view.cache != nil {
+		if id := view.cache.routes.lookupAtomic(key); id != 0 {
+			return id
+		}
+	}
 	if m.tree.root == 0 {
 		return 0
 	}
@@ -173,7 +283,7 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 		i := n.exactEntry(key)
 		if i < int(n.n) && n.entries()[i].key == key {
 			old := n.entries()[i].value
-			atomic.StoreUint64(&n.entries()[i].value, value)
+			m.storeValue(id, n, i, value)
 			n.mu.Unlock()
 			lane.RUnlock()
 			return old, true
@@ -183,6 +293,7 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 				i = n.lowerEntry(key)
 			}
 			if i > 0 {
+				m.disableReadCache()
 				n.beginLeafWrite()
 				m.tree.insertLeaf(n, i, key, value)
 				m.count.Add(1)
@@ -197,6 +308,7 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	lane.RUnlock()
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	m.disableReadCache()
 	m.version.Add(1)
 	defer m.finishStructure()
 	old, replaced := m.tree.insert(key, value)
@@ -218,6 +330,7 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 			return 0, false
 		}
 		if n.n > minNodeSize && i > 0 {
+			m.disableReadCache()
 			n.beginLeafWrite()
 			value, found := m.tree.remove(id, key)
 			m.count.Add(-1)
@@ -234,6 +347,7 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 	lane.RUnlock()
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	m.disableReadCache()
 	m.version.Add(1)
 	defer m.finishStructure()
 	value, found := m.tree.delete(key)
@@ -245,6 +359,7 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 func (m *wordMap) clear() {
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	m.disableReadCache()
 	m.version.Add(1)
 	defer m.finishStructure()
 	m.tree = wordTree{shared: true, keyKind: m.keyKind, valueKind: m.valueKind}
@@ -284,7 +399,7 @@ func (m *wordMap) update(key uint64, change func(uint64) uint64) (uint64, bool) 
 		return 0, false
 	}
 	value := change(n.entries()[i].value)
-	atomic.StoreUint64(&n.entries()[i].value, value)
+	m.storeValue(id, n, i, value)
 	return value, true
 }
 func (m *wordMap) lookupLocked(key uint64) (uint64, bool) {
@@ -302,17 +417,22 @@ func (m *wordMap) lookupLocked(key uint64) (uint64, bool) {
 func (m *wordMap) updateOrInsert(key, value uint64, merge func(uint64, uint64) uint64) (uint64, bool) {
 	m.structure.Lock()
 	defer m.structure.Unlock()
-	old, found := m.lookupLocked(key)
-	if found {
-		value = merge(old, value)
+	if id := m.leafFor(key); id != 0 {
+		n := m.tree.node(id)
+		i := n.exactEntry(key)
+		if i < int(n.n) && n.entries()[i].key == key {
+			old := n.entries()[i].value
+			value = merge(old, value)
+			m.storeValue(id, n, i, value)
+			return old, true
+		}
 	}
+	m.disableReadCache()
 	m.version.Add(1)
 	defer m.finishStructure()
 	m.tree.insert(key, value)
-	if !found {
-		m.count.Add(1)
-	}
-	return old, found
+	m.count.Add(1)
+	return 0, false
 }
 func (m *wordMap) loadOrStore(key, value uint64) (uint64, bool) {
 	m.structure.Lock()
@@ -320,6 +440,7 @@ func (m *wordMap) loadOrStore(key, value uint64) (uint64, bool) {
 	if old, found := m.lookupLocked(key); found {
 		return old, true
 	}
+	m.disableReadCache()
 	m.version.Add(1)
 	defer m.finishStructure()
 	m.tree.insert(key, value)
@@ -333,6 +454,7 @@ func (m *wordMap) deleteIf(key uint64, predicate func(uint64) bool) (uint64, boo
 	if !found || !predicate(old) {
 		return 0, false
 	}
+	m.disableReadCache()
 	m.version.Add(1)
 	defer m.finishStructure()
 	m.tree.delete(key)
@@ -407,6 +529,7 @@ func (m *wordMap) edge(last, pop bool) (uint64, uint64, bool) {
 	}
 	entry := n.entries()[i]
 	if pop {
+		m.disableReadCache()
 		m.version.Add(1)
 		defer m.finishStructure()
 		m.tree.delete(entry.key)

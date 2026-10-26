@@ -28,6 +28,7 @@ func main() {
 		panic("negative size")
 	}
 	var keep any
+	var readAll func()
 	var sum uint64
 	var buildNS int64
 	start := time.Now()
@@ -39,12 +40,14 @@ func main() {
 			t.Insert(k, k)
 		}
 		buildNS = time.Since(start).Nanoseconds()
-		for i := 0; i < min(1024, *size); i++ {
-			v, ok := t.Get(mix(uint64(i)))
-			if !ok {
-				panic("missing key")
+		readAll = func() {
+			for i := 0; i < *size; i++ {
+				v, ok := t.Get(mix(uint64(i)))
+				if !ok {
+					panic("missing key")
+				}
+				sum += v
 			}
-			sum += v
 		}
 		keep = t
 	case "map":
@@ -54,12 +57,14 @@ func main() {
 			t.Insert(k, k)
 		}
 		buildNS = time.Since(start).Nanoseconds()
-		for i := 0; i < min(1024, *size); i++ {
-			v, ok := t.Get(mix(uint64(i)))
-			if !ok {
-				panic("missing key")
+		readAll = func() {
+			for i := 0; i < *size; i++ {
+				v, ok := t.Get(mix(uint64(i)))
+				if !ok {
+					panic("missing key")
+				}
+				sum += v
 			}
-			sum += v
 		}
 		keep = t
 	case "builtin":
@@ -69,12 +74,14 @@ func main() {
 			t[k] = k
 		}
 		buildNS = time.Since(start).Nanoseconds()
-		for i := 0; i < min(1024, *size); i++ {
-			v, ok := t[mix(uint64(i))]
-			if !ok {
-				panic("missing key")
+		readAll = func() {
+			for i := 0; i < *size; i++ {
+				v, ok := t[mix(uint64(i))]
+				if !ok {
+					panic("missing key")
+				}
+				sum += v
 			}
-			sum += v
 		}
 		keep = t
 	case "syncmap":
@@ -84,12 +91,14 @@ func main() {
 			t.Store(k, k)
 		}
 		buildNS = time.Since(start).Nanoseconds()
-		for i := 0; i < min(1024, *size); i++ {
-			v, ok := t.Load(mix(uint64(i)))
-			if !ok {
-				panic("missing key")
+		readAll = func() {
+			for i := 0; i < *size; i++ {
+				v, ok := t.Load(mix(uint64(i)))
+				if !ok {
+					panic("missing key")
+				}
+				sum += v.(uint64)
 			}
-			sum += v.(uint64)
 		}
 		keep = t
 	default:
@@ -121,6 +130,9 @@ func main() {
 		}
 	}
 	report("built")
+	wait()
+	readAll()
+	report("read")
 	wait()
 	runtime.GC()
 	report("collected")
