@@ -81,6 +81,11 @@ type wordTree struct {
 	routes                  wordRoutes
 	routesDirty             bool
 	routeNode               *wordNode
+	// A deletion that leaves ancestors unchanged can be undone without
+	// another descent. Every following mutation consumes or invalidates it.
+	deletedLeaf  *wordNode
+	deletedKey   uint64
+	deletedIndex int
 }
 
 func (t *wordTree) node(id uint32) *wordNode {
@@ -281,6 +286,9 @@ func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
 }
 
 func (t *wordTree) insert(key, value uint64) (uint64, bool) {
+	if !t.shared {
+		t.deletedLeaf = nil
+	}
 	if t.root == 0 {
 		t.root = t.alloc(true)
 		t.rootNode = t.node(t.root)
@@ -297,6 +305,10 @@ func (t *wordTree) insert(key, value uint64) (uint64, bool) {
 		}
 		return old, true
 	}
+	return t.insertNew(n, i, key, value)
+}
+
+func (t *wordTree) insertNew(n *wordNode, i int, key, value uint64) (uint64, bool) {
 	if n.n < nodeSize {
 		if i == int(n.n) && n.n > 0 && key < n.entries()[n.n-1].key {
 			i = n.lowerEntry(key)
@@ -304,6 +316,20 @@ func (t *wordTree) insert(key, value uint64) (uint64, bool) {
 		if i > 0 {
 			t.insertLeaf(n, i, key, value)
 			return 0, false
+		}
+	}
+	// A cached leaf parent can absorb a split or a new separator without
+	// visiting ancestors, provided its own minimum and capacity stay valid.
+	if !t.shared {
+		if id := t.routes.lookup(key); id != 0 {
+			parent := t.node(id)
+			if parent.n < nodeSize && key >= parent.keys[0] {
+				t.insertAbsent(id, key, value)
+				if t.routesDirty {
+					t.rebuildRoutes()
+				}
+				return 0, false
+			}
 		}
 	}
 	if t.node(t.root).n == nodeSize {
@@ -416,6 +442,9 @@ func (t *wordTree) removeChild(n *wordNode, i int) {
 	t.refit(n)
 }
 func (t *wordTree) deleteOwner(key uint64) (uint64, bool) {
+	if !t.shared {
+		t.deletedLeaf = nil
+	}
 	if t.root == 0 {
 		return 0, false
 	}
@@ -427,12 +456,17 @@ func (t *wordTree) deleteOwner(key uint64) (uint64, bool) {
 	// A nonminimum entry in a leaf above minimum occupancy can be removed
 	// without changing any ancestor.
 	if i > 0 && n.n > minNodeSize {
-		return t.removeLeaf(n, i), true
+		value := t.removeLeaf(n, i)
+		t.deletedLeaf, t.deletedKey, t.deletedIndex = n, key, i
+		return value, true
 	}
 	return t.delete(key)
 }
 
 func (t *wordTree) delete(key uint64) (uint64, bool) {
+	if !t.shared {
+		t.deletedLeaf = nil
+	}
 	if t.root == 0 {
 		return 0, false
 	}

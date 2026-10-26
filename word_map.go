@@ -301,8 +301,7 @@ func (m *wordMap) leafFor(key uint64) uint32 {
 	}
 }
 func (m *wordMap) insert(key, value uint64) (uint64, bool) {
-	lane := m.structure.lane(key)
-	lane.RLock()
+	guard := m.structure.acquire(key)
 	if id := m.leafFor(key); id != 0 {
 		n := m.tree.node(id)
 		n.mu.Lock()
@@ -311,7 +310,11 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 			old := n.entries()[i].value
 			m.storeValue(id, n, i, value)
 			n.mu.Unlock()
-			lane.RUnlock()
+			if guard.lane != nil {
+				guard.lane.RUnlock()
+			} else {
+				guard.g.writer.Unlock()
+			}
 			return old, true
 		}
 		if n.n < nodeSize {
@@ -329,13 +332,21 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 					n.endLeafWrite()
 				}
 				n.mu.Unlock()
-				lane.RUnlock()
+				if guard.lane != nil {
+					guard.lane.RUnlock()
+				} else {
+					guard.g.writer.Unlock()
+				}
 				return 0, false
 			}
 		}
 		n.mu.Unlock()
 	}
-	lane.RUnlock()
+	if guard.lane != nil {
+		guard.lane.RUnlock()
+	} else {
+		guard.g.writer.Unlock()
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	m.disableReadCache()
@@ -352,15 +363,18 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	return old, replaced
 }
 func (m *wordMap) delete(key uint64) (uint64, bool) {
-	lane := m.structure.lane(key)
-	lane.RLock()
+	guard := m.structure.acquire(key)
 	if id := m.leafFor(key); id != 0 {
 		n := m.tree.node(id)
 		n.mu.Lock()
 		i := n.exactEntry(key)
 		if i == int(n.n) || n.entries()[i].key != key {
 			n.mu.Unlock()
-			lane.RUnlock()
+			if guard.lane != nil {
+				guard.lane.RUnlock()
+			} else {
+				guard.g.writer.Unlock()
+			}
 			return 0, false
 		}
 		if n.n > minNodeSize && i > 0 {
@@ -374,15 +388,27 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 				n.endLeafWrite()
 			}
 			n.mu.Unlock()
-			lane.RUnlock()
+			if guard.lane != nil {
+				guard.lane.RUnlock()
+			} else {
+				guard.g.writer.Unlock()
+			}
 			return value, true
 		}
 		n.mu.Unlock()
 	} else {
-		lane.RUnlock()
+		if guard.lane != nil {
+			guard.lane.RUnlock()
+		} else {
+			guard.g.writer.Unlock()
+		}
 		return 0, false
 	}
-	lane.RUnlock()
+	if guard.lane != nil {
+		guard.lane.RUnlock()
+	} else {
+		guard.g.writer.Unlock()
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	m.disableReadCache()
@@ -404,9 +430,8 @@ func (m *wordMap) clear() {
 	m.count.Store(0)
 }
 func (m *wordMap) read(key uint64, visit func(uint64, uint64)) bool {
-	lane := m.structure.lane(key)
-	lane.RLock()
-	defer lane.RUnlock()
+	guard := m.structure.acquire(key)
+	defer guard.unlock()
 	id := m.leafFor(key)
 	if id == 0 {
 		return false
@@ -422,9 +447,8 @@ func (m *wordMap) read(key uint64, visit func(uint64, uint64)) bool {
 	return true
 }
 func (m *wordMap) update(key uint64, change func(uint64) uint64) (uint64, bool) {
-	lane := m.structure.lane(key)
-	lane.RLock()
-	defer lane.RUnlock()
+	guard := m.structure.acquire(key)
+	defer guard.unlock()
 	id := m.leafFor(key)
 	if id == 0 {
 		return 0, false

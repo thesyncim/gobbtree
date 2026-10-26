@@ -117,14 +117,63 @@ func (t *Tree[K, V]) Contains(key K) bool { _, ok := t.Get(key); return ok }
 // Insert stores value, returning the previous value and whether it replaced
 // an entry. Equal keys keep the original stored key, as in upstream bbtree.
 func (t *Tree[K, V]) Insert(key K, value V) (V, bool) {
-	if t.words != nil || (t.root == nil && t.initWords()) {
-		old, replaced := t.words.insert(numericCode(key), packWord(value))
-		if replaced {
-			return t.wordValue(old), true
+	if words := t.words; words != nil {
+		code, packed := numericCode(key), packWord(value)
+		if leaf := words.deletedLeaf; leaf != nil {
+			words.deletedLeaf = nil
+			if code == words.deletedKey {
+				words.insertLeaf(leaf, words.deletedIndex, code, packed)
+				t.length++
+				var zero V
+				return zero, false
+			}
+		}
+		n := words.rootNode
+		if n == nil {
+			words.insert(code, packed)
+		} else {
+			if id := words.routes.lookup(code); id != 0 {
+				n = words.node(id)
+			}
+			for !n.leaf {
+				index := 0
+				if n.directory != 0 {
+					index = directoryRoute(&n.keys, &words.directories[n.directory-1], int(n.n), code)
+				} else if n.compact {
+					if code == ^uint64(0) {
+						index = int(n.n) - 1
+					} else {
+						index = max(0, lowerCompact(&n.keys, &n.inner().high, int(n.n), code+1)-1)
+					}
+				} else {
+					index = routeCode(&n.keys, int(n.n), code)
+				}
+				n = words.node(n.inner().children[index])
+			}
+			i := firstTag(&n.tags, int(n.n), code)
+			if i < int(n.n) && n.entries()[i].key != code {
+				i = n.lowerEntry(code)
+			}
+			if i < int(n.n) && n.entries()[i].key == code {
+				old := n.entries()[i].value
+				n.entries()[i].value = packed
+				if words.valueKind == 1 {
+					return any(old).(V), true
+				}
+				return unpackWord[V](old, words.valueKind), true
+			}
+			words.insertNew(n, i, code, packed)
 		}
 		t.length++
 		var zero V
 		return zero, false
+	}
+	return t.insertGeneric(key, value)
+}
+
+func (t *Tree[K, V]) insertGeneric(key K, value V) (V, bool) {
+	if t.root == nil && t.initWords() {
+		return t.Insert(key, value)
 	}
 	if t.root == nil {
 		t.arena = new(nodeArena)

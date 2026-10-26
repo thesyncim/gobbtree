@@ -3,6 +3,8 @@ package gobbtree
 import (
 	"math"
 	"reflect"
+	"slices"
+	"sort"
 	"testing"
 	"unsafe"
 )
@@ -89,6 +91,83 @@ func TestOwnerDeleteWithCollidingTags(t *testing.T) {
 		t.Fatal("could not reuse the empty tree")
 	}
 	checkTree(t, &tr)
+}
+
+func TestOwnerReinsertHintInvalidation(t *testing.T) {
+	for _, action := range []string{"immediate", "read", "insert", "replace", "delete", "miss", "pop-first", "pop-last", "split-append", "clear"} {
+		t.Run(action, func(t *testing.T) {
+			tr := NewTree[uint64, uint64]()
+			want := make(map[uint64]uint64)
+			for i := uint64(0); i < 2048; i++ {
+				key := mixedKey(i)
+				tr.Insert(key, i)
+				want[key] = i
+			}
+			var key uint64
+			found := false
+			for k := range tr.All() {
+				n := tr.words.node(tr.words.leafFor(k))
+				if n.n > minNodeSize && n.lowerEntry(k) > 0 {
+					key, found = k, true
+					break
+				}
+			}
+			if !found {
+				t.Fatal("no eligible deletion")
+			}
+			tr.Delete(key)
+			delete(want, key)
+			if tr.words.deletedLeaf == nil {
+				t.Fatal("deletion did not retain its position")
+			}
+			switch action {
+			case "read":
+				for k, v := range want {
+					if got, ok := tr.Get(k); !ok || got != v {
+						t.Fatal("read changed after delete")
+					}
+				}
+			case "insert":
+				tr.Insert(mixedKey(99999), 17)
+				want[mixedKey(99999)] = 17
+			case "replace":
+				k, _, _ := tr.Last()
+				tr.Insert(k, 17)
+				want[k] = 17
+			case "delete":
+				k, _, _ := tr.First()
+				tr.Delete(k)
+				delete(want, k)
+			case "miss":
+				tr.Delete(mixedKey(99999))
+			case "pop-first":
+				k, _, _ := tr.PopFirst()
+				delete(want, k)
+			case "pop-last":
+				k, _, _ := tr.PopLast()
+				delete(want, k)
+			case "split-append":
+				other := tr.SplitOff(1 << 63)
+				tr.Append(other)
+			case "clear":
+				tr.Clear()
+				clear(want)
+			}
+			if old, replaced := tr.Insert(key, 123); replaced || old != 0 {
+				t.Fatal("reinsert reported an existing entry")
+			}
+			want[key] = 123
+			if tr.Len() != len(want) {
+				t.Fatal("length mismatch")
+			}
+			for k, v := range want {
+				if got, ok := tr.Get(k); !ok || got != v {
+					t.Fatalf("key=%x got=%d,%v want=%d", k, got, ok, v)
+				}
+			}
+			checkTree(t, tr)
+		})
+	}
 }
 
 func checkWordTree(t testing.TB, tr *wordTree, length int) {
@@ -400,5 +479,56 @@ func TestWordLeafRedistribution(t *testing.T) {
 			}
 			checkWordTree(t, tree.words, size)
 		})
+	}
+}
+
+func TestWordLeafSearchBounds(t *testing.T) {
+	for distribution := 0; distribution < 6; distribution++ {
+		for count := 0; count <= nodeSize; count++ {
+			keys := make([]uint64, count)
+			for i := range keys {
+				switch distribution {
+				case 0:
+					keys[i] = uint64(i)
+				case 1:
+					keys[i] = math.MaxUint64 - uint64(i)
+				case 2:
+					keys[i] = uint64(i) << 47
+				case 3:
+					keys[i] = 0xa700000000000000 | uint64(i)<<16
+				case 4:
+					keys[i] = uint64(i)
+					if i == count-1 {
+						keys[i] = math.MaxUint64
+					}
+				case 5:
+					keys[i] = mixedKey(uint64(i))
+				}
+			}
+			slices.Sort(keys)
+			n := &wordNode{leaf: true, n: uint8(count)}
+			for i, key := range keys {
+				n.entries()[i] = wordEntry{key: key}
+			}
+			(&wordTree{}).refit(n)
+			probes := []uint64{0, math.MaxUint64}
+			for _, key := range keys {
+				probes = append(probes, key, key-1, key+1)
+			}
+			for i := 0; i < 100; i++ {
+				probes = append(probes, mixedKey(uint64(i+100)))
+			}
+			for _, key := range probes {
+				want := sort.Search(len(keys), func(i int) bool { return keys[i] >= key })
+				if got := n.lowerEntry(key); got != want {
+					t.Fatalf("distribution=%d count=%d key=%x lower=%d want=%d", distribution, count, key, got, want)
+				}
+				got := n.exactEntry(key)
+				found := got < count && n.entries()[got].key == key
+				if found != (want < count && keys[want] == key) {
+					t.Fatalf("distribution=%d count=%d key=%x exact=%d", distribution, count, key, got)
+				}
+			}
+		}
 	}
 }
