@@ -58,6 +58,11 @@ func (m *wordMap) enableReads() {
 	if m.tree.atomicWrites {
 		return
 	}
+	// Invalidate readers that capture the intermediate ready arena view.
+	// They must not survive cache attachment: replacements update live and
+	// cached values separately. Complete the epoch before unlocking on exit.
+	m.version.Add(1)
+	defer m.version.Add(1)
 	m.tree.atomicWrites = true
 	m.publish()
 	if current := m.view.Load(); current != nil {

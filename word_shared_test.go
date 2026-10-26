@@ -223,6 +223,55 @@ func TestFirstNumericReaderDuringWrites(t *testing.T) {
 	}
 }
 
+func TestReaderActivationInvalidatesUncachedValueRead(t *testing.T) {
+	var m Map[uint64, uint64]
+	const key, oldValue, newValue = uint64(7), uint64(11), uint64(12)
+	m.Insert(key, oldValue)
+	words := m.words.Load()
+	// A Get can load its version before activation and then capture the ready
+	// arena view published immediately before the cached view.
+	version := words.version.Load()
+	if version&1 != 0 {
+		t.Fatal("initial structural epoch is odd")
+	}
+	if value, found := m.Get(key); !found || value != oldValue {
+		t.Fatal("initial cached read")
+	}
+	view := words.view.Load()
+	if view.cache == nil || view.uncached == nil || !view.uncached.ready {
+		t.Fatal("activation did not retain the ready arena view")
+	}
+	// With one key, the root is the leaf addressed by both published views.
+	leaf := wordSlabNode(view.uncached.blocks[0].Load(), 0)
+	func() {
+		words.structure.RLock()
+		defer words.structure.RUnlock()
+		leaf.mu.Lock()
+		defer leaf.mu.Unlock()
+		// Stage storeValue between its live and cached value stores, retaining
+		// the writer's leaf latch. This needs no concurrent scheduling or hook.
+		atomic.StoreUint64(&leaf.entries()[0].value, newValue)
+		defer words.storeValue(view.root, leaf, 0, newValue)
+		sequence := leaf.sequence.Load()
+		value := atomic.LoadUint64(&leaf.entries()[0].value)
+		accepted := sequence&1 == 0 && leaf.sequence.Load() == sequence && words.version.Load() == version
+		if value != newValue {
+			t.Fatal("staged arena read did not see the replacement")
+		}
+		// This later public Get can still observe the prior cached copy. The
+		// earlier arena read therefore must fail Get's final epoch validation.
+		if value, found := m.Get(key); !found || value != oldValue {
+			t.Fatal("staged cached read did not see the prior value")
+		}
+		if accepted {
+			t.Fatal("pre-activation reader accepted the new live value before a later Get returned the old cached value")
+		}
+	}()
+	if value, found := m.Get(key); !found || value != newValue {
+		t.Fatal("completed replacement left the cache stale")
+	}
+}
+
 func TestSmallNumericReadCache(t *testing.T) {
 	for _, mutation := range []struct {
 		name  string
