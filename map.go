@@ -32,6 +32,9 @@ func New[K cmp.Ordered, V any]() *Map[K, V] { return new(Map[K, V]) }
 func (m *Map[K, V]) Len() int      { return int(m.count.Load()) }
 func (m *Map[K, V]) IsEmpty() bool { return m.count.Load() == 0 }
 func (m *Map[K, V]) Clear() {
+	if m.structure.state.Load() == nil {
+		return
+	}
 	if words := m.numericMap(); words != nil {
 		words.clear()
 		return
@@ -48,6 +51,10 @@ func (m *Map[K, V]) Clear() {
 func (m *Map[K, V]) Get(key K) (V, bool) {
 	words := m.words.Load()
 	if words == nil && !m.wordDisabled.Load() {
+		if m.count.Load() == 0 {
+			var zero V
+			return zero, false
+		}
 		words = m.initNumericMap()
 	}
 	if words != nil {
@@ -138,6 +145,10 @@ func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
 func (m *Map[K, V]) Delete(key K) (V, bool) {
 	words := m.words.Load()
 	if words == nil && !m.wordDisabled.Load() {
+		if m.count.Load() == 0 {
+			var zero V
+			return zero, false
+		}
 		words = m.initNumericMap()
 	}
 	if words != nil {
@@ -315,8 +326,15 @@ func (m *Map[K, V]) GetMany(keys []K, dst []Result[V]) {
 	if len(dst) < len(keys) {
 		panic("gobbtree: GetMany destination too short")
 	}
+	if len(keys) == 0 {
+		return
+	}
 	words := m.words.Load()
 	if words == nil && !m.wordDisabled.Load() {
+		if m.count.Load() == 0 {
+			clear(dst[:len(keys)])
+			return
+		}
 		words = m.initNumericMap()
 	}
 	if words != nil {
