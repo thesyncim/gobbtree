@@ -131,13 +131,13 @@ Kernels use Go's `simd` and `simd/archsimd` APIs. Runtime CPU checks select a su
 
 ## Benchmarks
 
-Apple M4 Max (ARM64), Go 1.27.3 with Go SIMD, and Rust 1.97.1 with native CPU tuning, full LTO, and mimalloc. Measured sources: [Go `55907ff`](https://github.com/thesyncim/gobbtree/commit/55907ff08815d434de96af13b89e75e603680dd5) and [Rust `8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). Timings and memory figures are medians of three fresh-process runs using identical datasets and checked results. 4K and 262K denote 4,096 and 262,144 entries.
+Apple M4 Max (ARM64), Go 1.27.3 with Go SIMD, and Rust 1.97.1 with native CPU tuning, full LTO, and mimalloc. Measured sources: [Go `8603359`](https://github.com/thesyncim/gobbtree/commit/860335918e56d22262b88feb7960463a91e967b9) and [Rust `8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). Timings and memory figures are medians of three fresh-process runs using identical datasets and checked results. 4K and 262K denote 4,096 and 262,144 entries.
 
 ### Operation time
 
-![Change in Go operation time versus Rust across four sizes and eight workloads](benchmarks/cpu-arm64.svg)
+![Change in Go operation time versus Rust across four sizes and multiple workloads](benchmarks/cpu-arm64.svg)
 
-Each cell shows the **percentage change in Go time versus Rust**. Negative means faster Go; positive means slower Go. Gray cells are within 5%. Batch timings are per key. Delete + insert is one pair. Parallel cases use four workers; the mixed case replaces existing values on 10% of operations.
+Each cell shows the **percentage change in Go time versus Rust**. Negative means faster Go; positive means slower Go. Gray cells are within 5%. Batch timings are per key. Churn timings cover one deletion and one insertion; the two rows distinguish reinserting the same key from inserting a different key. Different-key churn uses unique keys spread throughout the tree and checks that every deletion succeeds and every insertion adds a new key. Parallel cases use four workers; the mixed case replaces existing values on 10% of operations.
 
 <details>
 <summary>Exact timings — Go / Rust, ns/op; lower is better</summary>
@@ -146,25 +146,27 @@ Each cell shows the **percentage change in Go time versus Rust**. Negative means
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 12.73 / 12.97 | 17.86 / 23.92 | 53.65 / 92.15 | 99.66 / 120.78 |
-| Read miss | 12.47 / 12.32 | 16.67 / 22.30 | 41.91 / 75.36 | 81.23 / 113.46 |
-| Batch hit · 8 keys | 12.20 / 12.62 | 15.35 / 23.11 | 42.54 / 53.10 | 72.06 / 72.82 |
-| Batch miss · 8 keys | 12.28 / 12.50 | 15.15 / 20.75 | 36.16 / 42.65 | 63.88 / 58.68 |
-| Replace value | 21.28 / 13.82 | 33.45 / 27.39 | 106.89 / 94.83 | 238.76 / 133.85 |
-| Delete + insert | 87.02 / 80.48 | 123.14 / 114.92 | 266.33 / 251.34 | 498.36 / 348.67 |
+| Read hit | 10.89 / 11.32 | 16.88 / 21.66 | 48.81 / 79.41 | 83.95 / 116.97 |
+| Read miss | 11.32 / 10.76 | 15.79 / 20.13 | 36.80 / 65.35 | 66.20 / 102.90 |
+| Batch hit · 8 keys | 10.50 / 11.46 | 14.46 / 22.27 | 39.03 / 49.15 | 60.22 / 66.71 |
+| Batch miss · 8 keys | 10.60 / 11.02 | 13.58 / 20.01 | 31.35 / 37.90 | 52.99 / 55.05 |
+| Replace value | 17.02 / 12.34 | 27.03 / 24.60 | 78.11 / 81.20 | 153.48 / 110.69 |
+| Delete + reinsert same key | 45.71 / 67.95 | 65.58 / 103.91 | 152.70 / 224.83 | 267.75 / 299.46 |
+| Delete + insert new key | 92.76 / 88.56 | 126.55 / 133.27 | 279.89 / 333.42 | 476.61 / 482.18 |
 
 **Map**
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 10.34 / 13.97 | 14.65 / 26.84 | 81.87 / 89.61 | 135.41 / 109.96 |
-| Read miss | 10.03 / 13.28 | 13.12 / 24.07 | 59.08 / 66.07 | 108.38 / 93.91 |
-| Batch hit · 8 keys | 9.66 / 14.24 | 13.58 / 22.95 | 61.70 / 55.08 | 83.82 / 70.89 |
-| Batch miss · 8 keys | 9.54 / 13.22 | 12.04 / 20.85 | 50.02 / 43.36 | 69.64 / 58.07 |
-| Replace value | 18.89 / 15.24 | 29.27 / 29.48 | 108.31 / 107.70 | 161.85 / 150.74 |
-| Delete + insert | 105.68 / 77.66 | 127.25 / 110.62 | 263.26 / 249.74 | 448.60 / 324.19 |
-| 4 workers · reads | 2.69 / 4.71 | 3.79 / 7.26 | 23.97 / 22.76 | 33.67 / 34.75 |
-| 4 workers · 10% writes | 7.35 / 7.75 | 5.33 / 8.97 | 25.35 / 24.07 | 34.94 / 38.66 |
+| Read hit | 9.02 / 12.71 | 13.56 / 24.86 | 74.94 / 77.28 | 125.34 / 102.17 |
+| Read miss | 9.17 / 11.40 | 12.63 / 22.53 | 48.61 / 57.73 | 91.40 / 89.67 |
+| Batch hit · 8 keys | 8.89 / 12.79 | 12.77 / 22.50 | 53.67 / 50.35 | 78.35 / 68.62 |
+| Batch miss · 8 keys | 8.92 / 11.53 | 11.53 / 20.09 | 43.90 / 39.43 | 61.37 / 55.45 |
+| Replace value | 17.20 / 14.24 | 28.83 / 28.28 | 89.96 / 96.15 | 154.38 / 143.45 |
+| Delete + reinsert same key | 97.35 / 67.78 | 122.09 / 101.17 | 231.86 / 220.50 | 344.92 / 303.38 |
+| Delete + insert new key | 127.07 / 92.30 | 165.35 / 130.03 | 383.65 / 324.69 | 605.30 / 470.68 |
+| 4 workers · reads | 2.51 / 3.70 | 3.93 / 6.95 | 21.25 / 23.36 | 32.51 / 32.26 |
+| 4 workers · 10% writes | 4.68 / 4.80 | 4.50 / 6.87 | 22.56 / 24.57 | 34.02 / 37.24 |
 
 </details>
 
@@ -183,14 +185,14 @@ Construction measures inserting all entries into an empty container. Small cases
 
 | Container | Entries | Peak RSS, MB | After reads, MB | Collected / settled RSS, MB | Build, seconds |
 |---|---:|---:|---:|---:|---:|
-| Tree | 4K | 5.60 / 2.15 | 4.78 / 2.13 | 5.60 / 2.13 | 0.0006 / 0.0002 |
-| Tree | 262K | 11.67 / 9.03 | 11.27 / 9.01 | 11.67 / 9.01 | 0.0354 / 0.0190 |
-| Tree | 5M | 114.84 / 136.45 | 114.84 / 136.43 | 114.84 / 136.43 | 1.0365 / 0.7528 |
-| Tree | 50M | 1,091.19 / 1,347.78 | 1,091.14 / 1,347.76 | 1,091.19 / 1,347.76 | 18.4510 / 12.2963 |
-| Map | 4K | 5.59 / 2.15 | 4.83 / 2.13 | 5.59 / 2.13 | 0.0007 / 0.0002 |
-| Map | 262K | 17.87 / 9.03 | 17.79 / 9.01 | 17.87 / 9.01 | 0.0463 / 0.0288 |
-| Map | 5M | 117.44 / 136.48 | 117.34 / 136.46 | 117.44 / 136.46 | 1.2258 / 0.7523 |
-| Map | 50M | 1,091.94 / 1,348.17 | 1,091.91 / 1,348.16 | 1,091.94 / 1,348.16 | 19.4369 / 11.9766 |
+| Tree | 4K | 5.59 / 2.15 | 4.78 / 2.13 | 5.59 / 2.13 | 0.0009 / 0.0004 |
+| Tree | 262K | 11.70 / 9.03 | 11.24 / 9.01 | 11.70 / 9.01 | 0.0398 / 0.0286 |
+| Tree | 5M | 114.97 / 136.45 | 114.84 / 136.43 | 114.97 / 136.43 | 0.7815 / 0.6394 |
+| Tree | 50M | 1,091.35 / 1,347.78 | 1,091.27 / 1,347.76 | 1,091.35 / 1,347.76 | 12.6424 / 10.0838 |
+| Map | 4K | 5.64 / 2.15 | 4.83 / 2.13 | 5.64 / 2.13 | 0.0012 / 0.0004 |
+| Map | 262K | 17.86 / 9.03 | 17.74 / 9.01 | 17.86 / 9.01 | 0.0471 / 0.0288 |
+| Map | 5M | 117.44 / 136.48 | 117.37 / 136.46 | 117.44 / 136.46 | 0.9335 / 0.6311 |
+| Map | 50M | 1,091.81 / 1,348.17 | 1,091.72 / 1,348.16 | 1,091.81 / 1,348.16 | 14.9605 / 10.1443 |
 
 </details>
 
@@ -200,7 +202,7 @@ Background CPU activity was observed on the host; small timing gaps are inconclu
 
 Performance work compares the Go implementation with a pinned, optimized Rust build, plus Go's built-in `map` and `sync.Map`. Results depend on the workload, entry count, CPU, and concurrency level.
 
-To reproduce the recorded results, use source checkpoint `55907ff` in a separate checkout. Build the drivers from its repository root:
+To reproduce the recorded results, use source checkpoint `8603359` in a separate checkout. Build the drivers from its repository root:
 
 ```sh
 GOEXPERIMENT=simd go build -o compare-go ./cmd/compare
@@ -215,10 +217,16 @@ Run the **50-million-entry** CPU comparison:
 python3 internal/cpu_compare.py \
   --go ./compare-go --rust internal/oracle/target/release/compare \
   --size 50000000 --queries 1048576 --rounds 4 --threads 4 --repeat 3 \
-  --mutations
+  --mutations --distinct
 ```
 
-Each backend runs in a fresh process. The drivers use `uint64`/`u64` keys and values. Rust uses the pinned upstream benchmark’s mimalloc allocator, full LTO, and native CPU tuning; Go uses its normal allocator and GC settings. Go and Rust receive identical keys, query streams, and operation counts; the driver checks checksums and rotates execution order. Eight-key batches use each library’s public batch API. `--mutations` includes existing-key replacements and delete/insert pairs after the read cases. Parallel timings exclude worker creation and final checksum reduction. Add `--standard` to compare Go's built-in `map` and `sync.Map`; built-in `map` is read directly for read-only tests and protected by `RWMutex` for concurrent writes.
+Each backend runs in a fresh process. The drivers use `uint64`/`u64` keys and values. Rust uses the pinned upstream benchmark’s mimalloc allocator, full LTO, and native CPU tuning; Go uses its normal allocator and GC settings.
+
+Go and Rust receive identical keys, query streams, and operation counts; the driver checks checksums and rotates execution order. Eight-key batches use each library’s public batch API.
+
+`--mutations` includes existing-key replacements and same-key delete/reinsert pairs after the read cases. `--distinct` adds successful deletion followed by insertion of a different key, using unique, disjoint key sets; operation counts and expected checksums are checked independently.
+
+Parallel timings exclude worker creation and final checksum reduction. Add `--standard` to compare Go's built-in `map` and `sync.Map`; built-in `map` is read directly for read-only tests and protected by `RWMutex` for concurrent writes.
 
 For 5M entries, change `--size` to `5000000`. For the smaller cases, use `--size 4096` or `--size 262144` with `--queries 8192 --rounds 512`.
 

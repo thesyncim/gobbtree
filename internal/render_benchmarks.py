@@ -2,7 +2,9 @@
 
 Requires matplotlib; run from the repository root.
 """
+import argparse
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 from statistics import median
@@ -19,7 +21,8 @@ LABELS = ["4K", "262K", "5M", "50M"]
 CASES = [
     ("hit", "Read hit"), ("miss", "Read miss"),
     ("batch8_hit", "Batch hit · 8 keys"), ("batch8_miss", "Batch miss · 8 keys"),
-    ("replace", "Replace value"), ("churn_pair", "Delete + insert"),
+    ("replace", "Replace value"), ("churn_pair", "Delete + reinsert same key"),
+    ("churn_new_pair", "Delete + insert new key"),
     ("parallel4_hit", "4 workers · reads"),
     ("parallel4_write10", "4 workers · 10% writes"),
 ]
@@ -28,7 +31,16 @@ INK, MUTED, GRID, BG = "#172b43", "#5e7084", "#e2e8ef", "#f7f9fc"
 
 
 def main():
-    report = json.loads(REPORT.read_text())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--report", type=Path, default=REPORT)
+    parser.add_argument("--preview-dir", type=Path)
+    args = parser.parse_args()
+    report = json.loads(args.report.read_text())
+    go_source, rust_source = report["go_source"], report["rust_source"]
+    go_short, rust_short = go_source[:7], rust_source[:7]
+    go_version = report["toolchains"]["go"].removeprefix("go")
+    rust_version = report["toolchains"]["rust"]
+    report_link = args.report.resolve().relative_to(ROOT).as_posix()
     cpu, rss = defaultdict(list), defaultdict(list)
     for row in report["cpu"]:
         if row["language"] in ("go", "rust") and row["kind"] in ("tree", "map"):
@@ -38,6 +50,12 @@ def main():
     for row in report["rss"]:
         if row["language"] in ("go", "rust"):
             rss[row["stages"][0]["entries"], row["kind"], row["language"]].append(row)
+    available = {key[3] for key in cpu}
+    cases = {kind: [(case, label) for case, label in CASES
+                    if case in available and (kind == "map" or not case.startswith("parallel"))]
+             for kind in ("tree", "map")}
+    extra_tree = 48*(len(cases["tree"])-6)
+    extra_total = extra_tree + 48*(len(cases["map"])-8)
     assert all(len(values) == 3 for values in cpu.values())
     assert len(rss) == 16 and all(len(values) == 3 for values in rss.values())
 
@@ -66,12 +84,15 @@ def main():
                     metadata={"Date": None, "Title": title,
                               "Creator": "gobbtree benchmark renderer"})
         path.write_text("\n".join(line.rstrip() for line in path.read_text().splitlines()) + "\n")
+        if args.preview_dir:
+            args.preview_dir.mkdir(parents=True, exist_ok=True)
+            fig.savefig(args.preview_dir / f"{name}.png", facecolor=BG, dpi=100)
         plt.close(fig)
 
     # One matrix keeps every workload label next to its four comparisons.
-    fig = plt.figure(figsize=(900/72, 1115/72))
+    fig = plt.figure(figsize=(900/72, (1115+extra_total)/72))
     ax = fig.add_axes([0, 0, 1, 1])
-    ax.set(xlim=(0, 900), ylim=(1115, 0))
+    ax.set(xlim=(0, 900), ylim=(1115+extra_total, 0))
     ax.axis("off")
 
     def label(x, y, value, size=17, color=INK, weight="normal", align="left"):
@@ -90,10 +111,10 @@ def main():
     centers = [407, 537, 667, 797]
     for x, name in zip(centers, LABELS):
         label(x, 199, name + " entries", size=17, weight="bold", align="center")
-    for kind, heading, first in [("tree", 238, 282), ("map", 588, 632)]:
+    for kind, heading, first in [("tree", 238, 282), ("map", 588+extra_tree, 632+extra_tree)]:
         label(40, heading, "TREE · single owner" if kind == "tree" else "MAP · concurrent",
               size=20, weight="bold")
-        for row, (case, title) in enumerate(CASES[:6 if kind == "tree" else 8]):
+        for row, (case, title) in enumerate(cases[kind]):
             y = first + row*48
             label(40, y, title)
             for x, size in zip(centers, SIZES):
@@ -104,9 +125,9 @@ def main():
                 ax.add_patch(Rectangle((x-59, y-21), 118, 42, facecolor=fill, edgecolor="none"))
                 value = "0%" if round(change, 1) == 0 else f"{change:+.1f}%"
                 label(x, y, value, size=22, color=ink, weight="bold", align="center")
-    label(40, 1030, "Batch: per key · delete + insert: one pair · parallel: 4 workers", size=14)
-    label(40, 1058, "Small timing gaps are inconclusive: host CPU activity was present.", size=14, color=MUTED)
-    label(40, 1087, "Go 1.27.3 / 55907ff · Rust 1.97.1 / 8adae97 · (Go time ÷ Rust time − 1) × 100", size=13, color=MUTED)
+    label(40, 1030+extra_total, "Batch: per key · delete + insert: one pair · parallel: 4 workers", size=14)
+    label(40, 1058+extra_total, "Small timing gaps are inconclusive: host CPU activity was present.", size=14, color=MUTED)
+    label(40, 1087+extra_total, f"Go {go_version} / {go_short} · Rust {rust_version} / {rust_short} · (Go time ÷ Rust time − 1) × 100", size=13, color=MUTED)
     save(fig, "cpu-arm64", "Percentage change in Go operation time versus Rust")
 
     # Four roomy panels per figure; keep memory and build time separate.
@@ -143,23 +164,23 @@ def main():
         fig.text(.095, .09, "Each panel starts at zero and uses its own scale.", fontsize=15)
         detail = "Includes the runtime, GC headroom, and populated read caches." if metric == "peak" else "Construction timings are subject to background CPU activity."
         fig.text(.095, .06, detail, fontsize=14, color=MUTED)
-        fig.text(.095, .025, "M4 Max · 3 runs · Go 1.27.3 / 55907ff · Rust 1.97.1 / 8adae97", fontsize=13, color=MUTED)
+        fig.text(.095, .025, f"M4 Max · 3 runs · Go {go_version} / {go_short} · Rust {rust_version} / {rust_short}", fontsize=13, color=MUTED)
         save(fig, "memory-arm64" if metric == "peak" else "build-arm64", title)
 
     text = ["## Benchmarks", "",
-            "Apple M4 Max (ARM64), Go 1.27.3 with Go SIMD, and Rust 1.97.1 with native CPU tuning, full LTO, and mimalloc. "
-            "Measured sources: [Go `55907ff`](https://github.com/thesyncim/gobbtree/commit/55907ff08815d434de96af13b89e75e603680dd5) "
-            "and [Rust `8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). "
+            f"Apple M4 Max (ARM64), Go {go_version} with Go SIMD, and Rust {rust_version} with native CPU tuning, full LTO, and mimalloc. "
+            f"Measured sources: [Go `{go_short}`](https://github.com/thesyncim/gobbtree/commit/{go_source}) "
+            f"and [Rust `{rust_short}`](https://github.com/XiangpengHao/bbtree/tree/{rust_source}). "
             "Timings and memory figures are medians of three fresh-process runs using identical datasets and checked results. "
             "4K and 262K denote 4,096 and 262,144 entries.", "",
             "### Operation time", "",
-            "![Change in Go operation time versus Rust across four sizes and eight workloads](benchmarks/cpu-arm64.svg)", "",
+            "![Change in Go operation time versus Rust across four sizes and multiple workloads](benchmarks/cpu-arm64.svg)", "",
             "Each cell shows the **percentage change in Go time versus Rust**. Negative means faster Go; positive means slower Go. Gray cells are within 5%. "
-            "Batch timings are per key. Delete + insert is one pair. Parallel cases use four workers; the mixed case replaces existing values on 10% of operations.", "",
+            "Batch timings are per key. Churn timings cover one deletion and one insertion; the two rows distinguish reinserting the same key from inserting a different key. Different-key churn uses unique keys spread throughout the tree and checks that every deletion succeeds and every insertion adds a new key. Parallel cases use four workers; the mixed case replaces existing values on 10% of operations.", "",
             "<details>", "<summary>Exact timings — Go / Rust, ns/op; lower is better</summary>", ""]
     for kind in ("tree", "map"):
         text += [f"**{kind.title()}**", "", "| Workload | 4K | 262K | 5M | 50M |", "|---|---:|---:|---:|---:|"]
-        for case, label in CASES[:6 if kind == "tree" else 8]:
+        for case, label in cases[kind]:
             cells = [f"{time(size, kind, 'go', case):.2f} / {time(size, kind, 'rust', case):.2f}" for size in SIZES]
             text.append("| " + label + " | " + " | ".join(cells) + " |")
         text.append("")
@@ -182,12 +203,14 @@ def main():
     text += ["", "</details>", "",
              "Background CPU activity was observed on the host; small timing gaps are inconclusive. "
              "These are ARM64 measurements. Native amd64 results are available as [CI artifacts](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml). "
-             "The [raw report](benchmarks/arm64-2026-10-26.json) also includes Go’s built-in `map` and `sync.Map` CPU comparisons through 5M entries.", ""]
+             f"The [raw report]({report_link}) also includes Go’s built-in `map` and `sync.Map` CPU comparisons through 5M entries.", ""]
     readme = ROOT / "README.md"
     old = readme.read_text()
     start = old.index("## Benchmarks")
     end = old.index("## Reproduce the comparisons", start)
-    readme.write_text(old[:start] + "\n".join(text) + "\n" + old[end:])
+    updated = old[:start] + "\n".join(text) + "\n" + old[end:]
+    updated = re.sub(r"use source checkpoint `[0-9a-f]+`", f"use source checkpoint `{go_short}`", updated)
+    readme.write_text(updated)
 
 
 if __name__ == "__main__":
