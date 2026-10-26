@@ -168,6 +168,17 @@ func (t *Tree[K, V]) Insert(key K, value V) (V, bool) {
 				}
 				return unpackWord[V](old, words.valueKind), true
 			}
+			if count := int(n.n); count < nodeSize {
+				if i == count && count > 0 && code < n.entries()[count-1].key {
+					i = n.lowerEntry(code)
+				}
+				if i > 0 {
+					n.insertLeafPlain(i, code, packed)
+					t.length++
+					var zero V
+					return zero, false
+				}
+			}
 			words.insertNew(n, i, code, packed)
 		}
 		t.length++

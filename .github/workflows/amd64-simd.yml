@@ -56,10 +56,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build comparison programs
         run: |
-          git worktree add ../simd-baseline 1371568
+          git worktree add ../simd-baseline cf9a945c47ad464a64efa142542d7f1bc5cea14d
           cp cmd/compare/main.go ../simd-baseline/cmd/compare/main.go
           cp standard_benchmark_test.go mutation_benchmark_test.go ../simd-baseline/
-          (cd ../simd-baseline && go build -o ../compare-baseline ./cmd/compare)
+          (cd ../simd-baseline && go build -o ../compare-baseline ./cmd/compare && go build -o ../memory-baseline ./cmd/memory)
+          git rev-parse HEAD > perf/go-source.txt
+          git -C ../simd-baseline rev-parse HEAD > perf/baseline-source.txt
           go build -o ../compare-current ./cmd/compare
           go build -o ../memory-current ./cmd/memory
           rustc -vV > perf/rust-version.txt
@@ -82,7 +84,7 @@ jobs:
       - name: Compare fifty million entries
         run: |
           python3 internal/cpu_compare.py --go ../compare-current --baseline ../compare-baseline --rust internal/oracle/target/release/compare --size 50000000 --queries 1048576 --rounds 4 --threads 4 --repeat 3 --mutations --distinct > perf/fifty-million.jsonl
-          python3 internal/rss_compare.py --go ../memory-current --rust internal/oracle/target/release/memory --size 50000000 --repeat 3 --kinds tree map > perf/memory-fifty-million.jsonl
+          python3 internal/rss_compare.py --go ../memory-current --baseline ../memory-baseline --rust internal/oracle/target/release/memory --size 50000000 --repeat 3 --kinds tree map > perf/memory-fifty-million.jsonl
       - name: Compare process memory
         run: python3 internal/rss_compare.py --go ../memory-current --rust internal/oracle/target/release/memory > perf/memory.jsonl
       - name: Compare AVX2 and selected width

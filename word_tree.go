@@ -287,7 +287,24 @@ func (t *wordTree) leafFor(key uint64) uint32 {
 	}
 }
 
+func (n *wordNode) insertLeafPlain(i int, key, value uint64) {
+	count := int(n.n)
+	entries := n.entries()
+	copy(entries[i+1:count+1], entries[i:count])
+	entries[i] = wordEntry{key, value}
+	copy(n.tags[i+1:count+1], n.tags[i:count])
+	n.tags[i] = uint8(key)
+	n.n++
+}
+
 func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
+	if !t.atomicWrites {
+		n.insertLeafPlain(i, key, value)
+		if t.shared {
+			n.sequence.Store(uint64(n.n) << 1)
+		}
+		return
+	}
 	count := int(n.n)
 	t.moveEntries(n, i+1, i, count-i)
 	t.storeEntry(n, i, wordEntry{key, value})
