@@ -7,6 +7,36 @@ import subprocess
 from pathlib import Path
 
 
+MASK64 = (1 << 64) - 1
+
+
+def mix(value):
+    value = ((value ^ (value >> 30)) * 0xbf58476d1ce4e5b9) & MASK64
+    value = ((value ^ (value >> 27)) * 0x94d049bb133111eb) & MASK64
+    return value ^ (value >> 31)
+
+
+def replacement_checksum(size, query_count, rounds):
+    """Derive full previous-value sums, including repeated queries in a round."""
+    total = delta = unique_delta = 0
+    seen = set()
+    for i in range(query_count):
+        key = mix(mix(i + 17) % size)
+        total += key
+        change = 1 if (key & 1) == 0 else -1  # (key ^ 1) - key
+        delta += change
+        if key not in seen:
+            seen.add(key)
+            unique_delta += change
+    # For a key occurring c times per round, round zero returns key c times.
+    # Each later round first returns the previous round's value, then c-1
+    # copies of its own value. Thus the flipped value is returned
+    # floor((rounds-1)/2) + (c-1)*floor(rounds/2) times per distinct key.
+    repeated_delta = delta - unique_delta
+    flipped_delta = (rounds // 2) * repeated_delta + ((rounds - 1) // 2) * unique_delta
+    return (rounds * total + flipped_delta) & MASK64
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--go", required=True, type=Path)
@@ -27,14 +57,11 @@ def main():
     if args.queries < 8 or args.queries & (args.queries - 1):
         parser.error("queries must be a power of two, at least eight")
     checksums = {}
+    if args.mutations:
+        checksums["replace"] = replacement_checksum(args.size, args.queries, args.rounds)
     distinct_queries = min(args.queries, args.size)
     distinct_rounds = args.rounds * (args.queries // distinct_queries)
     if args.distinct:
-        mask = (1 << 64) - 1
-        def mix(value):
-            value = ((value ^ (value >> 30)) * 0xbf58476d1ce4e5b9) & mask
-            value = ((value ^ (value >> 27)) * 0x94d049bb133111eb) & mask
-            return value ^ (value >> 31)
         step = 0x9e3779b97f4a7c15 % args.size
         while math.gcd(step,args.size) != 1:
             step += 1
@@ -42,7 +69,7 @@ def main():
         original = sum(mix(i) for i in indices)
         alternate = sum(mix(i + args.size) for i in indices)
         del indices
-        checksums["churn_new_pair"] = (original*((distinct_rounds+1)//2) + alternate*(distinct_rounds//2)) & mask
+        checksums["churn_new_pair"] = (original*((distinct_rounds+1)//2) + alternate*(distinct_rounds//2)) & MASK64
     kinds = list(dict.fromkeys(args.kinds)) + (["builtin", "syncmap"] if args.standard else [])
     for repeat in range(args.repeat):
         for kind in kinds:
@@ -72,8 +99,9 @@ def main():
                     name, elapsed, checksum = match.groups()
                     equivalent = re.sub(r"^(tree_batch8|map_batch8|tree|map|builtin|syncmap|rwmap)_", "", name)
                     checksum = int(checksum)
-                    if checksums.setdefault(equivalent, checksum) != checksum:
-                        raise RuntimeError(f"checksum mismatch for {language} {name}")
+                    expected = checksums.setdefault(equivalent, checksum)
+                    if expected != checksum:
+                        raise RuntimeError(f"checksum mismatch for {language} {name}: got {checksum}, want {expected}")
                     cases.append({"name": name, "ns_per_op": float(elapsed), "checksum": checksum})
                 if not cases:
                     raise RuntimeError("benchmark returned no operations")

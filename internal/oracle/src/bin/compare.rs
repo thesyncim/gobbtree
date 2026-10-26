@@ -21,6 +21,17 @@ fn report(name: &str, start: Instant, sum: u64, rounds: usize, queries: usize) {
     let elapsed = start.elapsed().as_nanos() as f64 / (rounds * queries) as f64;
     println!("{name} {elapsed:.3} ns/op checksum={}", black_box(sum));
 }
+// Keep final-value validation outside the reported replacement time.
+fn verify_replacements(queries: &[u64], rounds: usize, get: impl Fn(&u64) -> Option<u64>) {
+    let mask = ((rounds - 1) & 1) as u64;
+    for q in queries {
+        assert_eq!(
+            get(q),
+            Some(*q ^ mask),
+            "replacement final value for key {q}"
+        );
+    }
+}
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let size: u64 = args.get(1).map_or(262144, |v| v.parse().unwrap());
@@ -185,13 +196,15 @@ fn main() {
                             sum = sum.wrapping_add(tree.remove(q).unwrap_or(0) & !1);
                             tree.insert(*q, *q);
                         } else {
-                            sum = sum.wrapping_add(
-                                tree.insert(*q, *q ^ (r as u64 & 1)).unwrap_or(0) & !1,
-                            );
+                            sum =
+                                sum.wrapping_add(tree.insert(*q, *q ^ (r as u64 & 1)).unwrap_or(0));
                         }
                     }
                 }
                 report(&format!("tree_{label}"), start, sum, rounds, query_count);
+                if !churn {
+                    verify_replacements(&queries, rounds, |q| tree.get(q).copied());
+                }
             }
             if do_map {
                 for q in &queries {
@@ -209,13 +222,15 @@ fn main() {
                                 concurrent
                                     .insert(*q, *q ^ (r as u64 & 1))
                                     .unwrap()
-                                    .unwrap_or(0)
-                                    & !1,
+                                    .unwrap_or(0),
                             );
                         }
                     }
                 }
                 report(&format!("map_{label}"), start, sum, rounds, query_count);
+                if !churn {
+                    verify_replacements(&queries, rounds, |q| concurrent.get_copied(q));
+                }
             }
         }
     }

@@ -270,11 +270,14 @@ func main() {
 							tree.Insert(q, q)
 						} else {
 							v, _ := tree.Insert(q, q^uint64(r&1))
-							sum += v &^ 1
+							sum += v
 						}
 					}
 				}
 				report("tree_"+label, start, sum)
+				if !churn {
+					verifyReplacements("tree", queries, *rounds, tree.Get)
+				}
 			}
 			if doMap {
 				for _, q := range queries {
@@ -291,11 +294,14 @@ func main() {
 							concurrent.Insert(q, q)
 						} else {
 							v, _ := concurrent.Insert(q, q^uint64(r&1))
-							sum += v &^ 1
+							sum += v
 						}
 					}
 				}
 				report("map_"+label, start, sum)
+				if !churn {
+					verifyReplacements("map", queries, *rounds, concurrent.Get)
+				}
 			}
 			if doBuiltin {
 				for _, q := range queries {
@@ -307,16 +313,23 @@ func main() {
 				for r := 0; r < *rounds; r++ {
 					for _, q := range queries {
 						v := builtin[q]
-						sum += v &^ 1
 						if churn {
+							sum += v &^ 1
 							delete(builtin, q)
 							builtin[q] = q
 						} else {
+							sum += v
 							builtin[q] = q ^ uint64(r&1)
 						}
 					}
 				}
 				report("builtin_"+label, start, sum)
+				if !churn {
+					verifyReplacements("builtin", queries, *rounds, func(q uint64) (uint64, bool) {
+						v, ok := builtin[q]
+						return v, ok
+					})
+				}
 			}
 			if doSync {
 				for _, q := range queries {
@@ -333,11 +346,20 @@ func main() {
 							synced.Store(q, q)
 						} else {
 							v, _ := synced.Swap(q, q^uint64(r&1))
-							sum += v.(uint64) &^ 1
+							sum += v.(uint64)
 						}
 					}
 				}
 				report("syncmap_"+label, start, sum)
+				if !churn {
+					verifyReplacements("syncmap", queries, *rounds, func(q uint64) (uint64, bool) {
+						v, ok := synced.Load(q)
+						if !ok {
+							return 0, false
+						}
+						return v.(uint64), true
+					})
+				}
 			}
 		}
 	}
@@ -422,6 +444,17 @@ func main() {
 			if concurrent.Len() != *size {
 				panic("distinct churn changed map size")
 			}
+		}
+	}
+}
+
+// Verify every touched key after reporting elapsed time. Checking the full value
+// makes the final writes observable without adding reads to the timed workload.
+func verifyReplacements(name string, queries []uint64, rounds int, get func(uint64) (uint64, bool)) {
+	mask := uint64((rounds - 1) & 1)
+	for _, q := range queries {
+		if got, ok := get(q); !ok || got != q^mask {
+			panic(fmt.Sprintf("%s replacement final value for key %d: got %d present=%v want %d", name, q, got, ok, q^mask))
 		}
 	}
 }
