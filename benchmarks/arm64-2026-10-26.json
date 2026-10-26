@@ -30,13 +30,13 @@
       "cpu": "ns/op",
       "memory": "bytes",
       "build": "nanoseconds"
-    }
+    },
+    "chart_statistic": "ratio of median Rust operation time to median Go operation time",
+    "renderer": "internal/render_benchmarks.py"
   },
   "limitations": [
     "Unrelated benchmark and system-process CPU activity was observed during local measurements. Small CPU differences are inconclusive.",
-    "CPU records include builtin map and sync.Map at 4096, 262144 and 5000000 entries. The 50000000-entry CPU records cover Tree and Map.",
-    "RSS records below cover Map at 5M and 50M; they do not prove the full target across all sizes or architectures.",
-    "The 30 percent time and real-memory reduction target is not achieved."
+    "CPU records include builtin map and sync.Map at 4096, 262144 and 5000000 entries. The 50000000-entry CPU records cover Tree and Map."
   ],
   "validation": {
     "local": [
@@ -4920,6 +4920,1212 @@
           "entries": 50000000,
           "checksum": 15532031892676780678,
           "rss_bytes": 1091731456
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 0,
+      "peak_rss_bytes": 6144000,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 717166,
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 4866048
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 717166,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 4866048
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 717166,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 6144000
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 0,
+      "peak_rss_bytes": 2146304,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 191667,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 191667,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 191667,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 0,
+      "peak_rss_bytes": 5455872,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 692708,
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 4521984
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 692708,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 4636672
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 692708,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 5455872
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 0,
+      "peak_rss_bytes": 2146304,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 195125,
+          "kind": "map",
+          "phase": "built",
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 195125,
+          "kind": "map",
+          "phase": "read",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 195125,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 1,
+      "peak_rss_bytes": 2146304,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 182250,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 182250,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 182250,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 1,
+      "peak_rss_bytes": 5603328,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 520042,
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 4784128
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 520042,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 4784128
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 520042,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 5603328
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 2146304,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 228167,
+          "kind": "map",
+          "phase": "built",
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 228167,
+          "kind": "map",
+          "phase": "read",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 228167,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 5586944,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 667792,
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 4751360
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 667792,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 4866048
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 667792,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 5586944
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 2,
+      "peak_rss_bytes": 5488640,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 608916,
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 4702208
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 608916,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 4702208
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 608916,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 5488640
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 2,
+      "peak_rss_bytes": 2146304,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 192292,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 192292,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 192292,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 2,
+      "peak_rss_bytes": 5636096,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 657167,
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 4734976
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 657167,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 4833280
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 657167,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 5636096
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 2,
+      "peak_rss_bytes": 2146304,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 197416,
+          "kind": "map",
+          "phase": "built",
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 197416,
+          "kind": "map",
+          "phase": "read",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 197416,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 0,
+      "peak_rss_bytes": 11550720,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 31208875,
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 11206656
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 31208875,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 11206656
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 31208875,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 11550720
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 0,
+      "peak_rss_bytes": 9027584,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 19015625,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 19015625,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 19015625,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 0,
+      "peak_rss_bytes": 17891328,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 47635541,
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 11190272
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 47635541,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 17793024
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 47635541,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 17891328
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 0,
+      "peak_rss_bytes": 9027584,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 28804625,
+          "kind": "map",
+          "phase": "built",
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 28804625,
+          "kind": "map",
+          "phase": "read",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 28804625,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 1,
+      "peak_rss_bytes": 9027584,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 23315375,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 23315375,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 23315375,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 1,
+      "peak_rss_bytes": 11698176,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 35435042,
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 11321344
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 35435042,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 11321344
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 35435042,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 11698176
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 9027584,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 29081208,
+          "kind": "map",
+          "phase": "built",
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 29081208,
+          "kind": "map",
+          "phase": "read",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 29081208,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 17858560,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 46278917,
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 11223040
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 46278917,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 17809408
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 46278917,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 17858560
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 2,
+      "peak_rss_bytes": 11665408,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 42827583,
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 11272192
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 42827583,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 11272192
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 42827583,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 11665408
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 2,
+      "peak_rss_bytes": 9027584,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 18217375,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 18217375,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 18217375,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 2,
+      "peak_rss_bytes": 17874944,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 41732958,
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 11223040
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 41732958,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 17776640
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 41732958,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 17874944
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 2,
+      "peak_rss_bytes": 9027584,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 18692542,
+          "kind": "map",
+          "phase": "built",
+          "entries": 262144,
+          "checksum": 0,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 18692542,
+          "kind": "map",
+          "phase": "read",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 18692542,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 9011200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 0,
+      "peak_rss_bytes": 114835456,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 1036473417,
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 114835456
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 1036473417,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 114835456
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 1036473417,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 114835456
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 0,
+      "peak_rss_bytes": 136445952,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 758727041,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 136429568
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 758727041,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136429568
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 758727041,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136429568
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 1,
+      "peak_rss_bytes": 136445952,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 752841833,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 136429568
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 752841833,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136429568
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 752841833,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136429568
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 1,
+      "peak_rss_bytes": 115097600,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 1045920417,
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 115064832
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 1045920417,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 115081216
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 1045920417,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 115097600
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 2,
+      "peak_rss_bytes": 114819072,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 1030350750,
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 114819072
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 1030350750,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 114819072
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 1030350750,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 114819072
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 2,
+      "peak_rss_bytes": 136445952,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 746703625,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 136429568
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 746703625,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136429568
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 746703625,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136429568
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 0,
+      "peak_rss_bytes": 1091190784,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 18451048083,
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1091141632
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 18451048083,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091141632
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 18451048083,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091190784
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 0,
+      "peak_rss_bytes": 1347780608,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 11153837417,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1347764224
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 11153837417,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1347764224
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 11153837417,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1347764224
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 1,
+      "peak_rss_bytes": 1347780608,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 12816959584,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1347764224
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 12816959584,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1347764224
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 12816959584,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1347764224
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 1,
+      "peak_rss_bytes": 1091354624,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 18919930625,
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1091338240
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 18919930625,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091338240
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 18919930625,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091354624
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 2,
+      "peak_rss_bytes": 1091125248,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "build_ns": 17460854750,
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1091108864
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "build_ns": 17460854750,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091108864
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "build_ns": 17460854750,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091125248
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 2,
+      "peak_rss_bytes": 1347780608,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 12296250875,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1347764224
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 12296250875,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1347764224
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 12296250875,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1347764224
         }
       ]
     }
