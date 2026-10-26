@@ -131,7 +131,7 @@ Kernels use Go's `simd` and `simd/archsimd` APIs. Runtime CPU checks select a su
 
 ## Benchmarks
 
-Apple M4 Max (ARM64), Go 1.27.3 with Go SIMD, and Rust 1.97.1 with native CPU tuning, full LTO, and mimalloc. Measured sources: [Go `c156788`](https://github.com/thesyncim/gobbtree/commit/c1567888316ed3a0c2ff4e7895fddc6eb1558ad3) and [Rust `8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). Timings and memory figures are medians of three fresh-process runs using identical datasets and checked results. 4K and 262K denote 4,096 and 262,144 entries.
+Apple M4 Max (ARM64), Go 1.27.3 with Go SIMD, and Rust 1.97.1 with native CPU tuning, full LTO, and mimalloc. Measured sources: [Go `347bf1e`](https://github.com/thesyncim/gobbtree/commit/347bf1e1be23d08936f3ece8dc93b2501f8534ce) and [Rust `8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). Timings and memory figures are medians of three fresh-process runs using identical datasets and checked results. 4K and 262K denote 4,096 and 262,144 entries.
 
 ### Operation time
 
@@ -146,27 +146,27 @@ Each cell shows the **percentage change in Go time versus Rust**. Negative means
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 11.20 / 11.77 | 17.11 / 21.68 | 49.16 / 78.53 | 82.24 / 114.06 |
-| Read miss | 11.27 / 11.27 | 15.83 / 20.66 | 37.26 / 62.18 | 65.61 / 103.30 |
-| Batch hit · 8 keys | 10.79 / 11.84 | 14.50 / 22.51 | 38.67 / 49.16 | 60.51 / 66.10 |
-| Batch miss · 8 keys | 10.77 / 11.41 | 13.99 / 20.27 | 31.52 / 37.92 | 52.85 / 55.55 |
-| Replace value | 17.24 / 12.51 | 27.43 / 24.95 | 68.53 / 80.13 | 154.02 / 111.15 |
-| Delete + reinsert same key | 45.63 / 68.29 | 67.33 / 104.22 | 150.09 / 220.34 | 265.74 / 295.21 |
-| Delete + insert new key | 92.20 / 88.39 | 126.22 / 133.15 | 266.25 / 326.29 | 455.29 / 473.79 |
+| Read hit | 10.44 / 11.47 | 15.80 / 21.91 | 44.81 / 78.47 | 74.35 / 117.11 |
+| Read miss | 10.62 / 10.90 | 15.05 / 20.56 | 34.99 / 61.95 | 60.60 / 104.11 |
+| Batch hit · 8 keys | 10.30 / 11.64 | 13.75 / 22.34 | 36.89 / 49.04 | 56.94 / 65.92 |
+| Batch miss · 8 keys | 10.29 / 11.32 | 13.18 / 20.09 | 30.54 / 37.70 | 49.09 / 54.89 |
+| Replace value | 16.37 / 12.45 | 26.56 / 25.21 | 67.08 / 80.60 | 147.00 / 116.47 |
+| Delete + reinsert same key | 43.48 / 68.21 | 65.02 / 105.60 | 145.11 / 219.73 | 264.45 / 296.81 |
+| Delete + insert new key | 90.62 / 88.40 | 122.78 / 133.68 | 259.37 / 325.04 | 434.73 / 474.70 |
 
 **Map**
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 9.54 / 12.78 | 13.56 / 25.34 | 73.55 / 77.23 | 121.71 / 101.66 |
-| Read miss | 9.33 / 11.52 | 12.26 / 22.82 | 49.26 / 57.49 | 93.19 / 90.24 |
-| Batch hit · 8 keys | 9.35 / 12.91 | 12.79 / 22.52 | 53.66 / 50.46 | 76.16 / 67.55 |
-| Batch miss · 8 keys | 8.67 / 11.93 | 11.27 / 20.15 | 44.53 / 38.98 | 61.49 / 55.86 |
-| Replace value | 17.45 / 14.20 | 28.99 / 28.20 | 89.49 / 95.89 | 153.82 / 143.63 |
-| Delete + reinsert same key | 98.33 / 69.39 | 119.96 / 101.90 | 227.66 / 218.04 | 349.26 / 304.00 |
-| Delete + insert new key | 128.19 / 93.68 | 162.90 / 131.10 | 377.19 / 316.76 | 605.62 / 470.66 |
-| 4 workers · reads | 2.52 / 3.71 | 3.88 / 6.91 | 20.95 / 23.06 | 32.45 / 32.67 |
-| 4 workers · 10% writes | 4.72 / 4.82 | 4.46 / 6.94 | 22.37 / 24.88 | 33.88 / 36.55 |
+| Read hit | 9.37 / 12.83 | 13.78 / 25.17 | 70.70 / 77.50 | 118.83 / 99.44 |
+| Read miss | 9.47 / 11.73 | 12.29 / 22.92 | 47.20 / 57.85 | 88.05 / 89.58 |
+| Batch hit · 8 keys | 9.31 / 12.70 | 12.91 / 22.59 | 53.02 / 49.98 | 73.24 / 67.36 |
+| Batch miss · 8 keys | 8.83 / 11.90 | 11.43 / 20.09 | 43.85 / 39.05 | 59.34 / 55.85 |
+| Replace value | 17.13 / 14.19 | 28.78 / 28.25 | 87.98 / 93.58 | 151.72 / 139.97 |
+| Delete + reinsert same key | 94.28 / 69.82 | 116.67 / 101.43 | 223.46 / 219.20 | 345.63 / 311.44 |
+| Delete + insert new key | 125.26 / 93.89 | 160.53 / 130.06 | 366.27 / 320.73 | 606.04 / 474.63 |
+| 4 workers · reads | 2.57 / 3.71 | 3.91 / 6.94 | 19.65 / 22.79 | 30.71 / 32.44 |
+| 4 workers · 10% writes | 4.69 / 4.79 | 4.48 / 6.87 | 21.57 / 24.72 | 32.72 / 37.77 |
 
 </details>
 
@@ -185,14 +185,14 @@ Construction measures inserting all entries into an empty container. Small cases
 
 | Container | Entries | Peak RSS, MB | After reads, MB | Collected / settled RSS, MB | Build, seconds |
 |---|---:|---:|---:|---:|---:|
-| Tree | 4K | 5.62 / 2.15 | 4.82 / 2.13 | 5.62 / 2.13 | 0.0009 / 0.0004 |
-| Tree | 262K | 11.65 / 9.03 | 11.22 / 9.01 | 11.65 / 9.01 | 0.0396 / 0.0282 |
-| Tree | 5M | 114.92 / 136.45 | 114.85 / 136.43 | 114.92 / 136.43 | 0.7649 / 0.6318 |
-| Tree | 50M | 1,091.32 / 1,347.78 | 1,091.24 / 1,347.76 | 1,091.32 / 1,347.76 | 12.4979 / 10.1136 |
-| Map | 4K | 5.82 / 2.15 | 4.92 / 2.13 | 5.82 / 2.13 | 0.0012 / 0.0004 |
-| Map | 262K | 17.94 / 9.03 | 17.81 / 9.01 | 17.94 / 9.01 | 0.0468 / 0.0287 |
-| Map | 5M | 117.54 / 136.48 | 117.42 / 136.46 | 117.54 / 136.46 | 0.9233 / 0.6369 |
-| Map | 50M | 1,091.75 / 1,348.17 | 1,091.68 / 1,348.16 | 1,091.75 / 1,348.16 | 14.8154 / 10.0997 |
+| Tree | 4K | 5.60 / 2.15 | 4.75 / 2.13 | 5.60 / 2.13 | 0.0009 / 0.0004 |
+| Tree | 262K | 11.73 / 9.03 | 11.17 / 9.01 | 11.73 / 9.01 | 0.0396 / 0.0284 |
+| Tree | 5M | 114.84 / 136.45 | 114.79 / 136.43 | 114.84 / 136.43 | 0.7498 / 0.6364 |
+| Tree | 50M | 1,090.85 / 1,347.78 | 1,090.78 / 1,347.76 | 1,090.85 / 1,347.76 | 12.3598 / 10.3204 |
+| Map | 4K | 5.70 / 2.15 | 4.82 / 2.13 | 5.70 / 2.13 | 0.0011 / 0.0004 |
+| Map | 262K | 17.94 / 9.03 | 17.79 / 9.01 | 17.94 / 9.01 | 0.0457 / 0.0285 |
+| Map | 5M | 117.42 / 136.48 | 117.31 / 136.46 | 117.42 / 136.46 | 0.9332 / 0.6431 |
+| Map | 50M | 1,091.22 / 1,348.17 | 1,091.17 / 1,348.16 | 1,091.22 / 1,348.16 | 14.9003 / 10.3542 |
 
 </details>
 
@@ -202,7 +202,7 @@ Background CPU activity was observed on the host; small timing gaps are inconclu
 
 Performance work compares the Go implementation with a pinned, optimized Rust build, plus Go's built-in `map` and `sync.Map`. Results depend on the workload, entry count, CPU, and concurrency level.
 
-To reproduce the recorded results, use source checkpoint `c156788` in a separate checkout. Build the drivers from its repository root:
+To reproduce the recorded results, use source checkpoint `347bf1e` in a separate checkout. Build the drivers from its repository root:
 
 ```sh
 GOEXPERIMENT=simd go build -o compare-go ./cmd/compare
@@ -221,6 +221,8 @@ python3 internal/cpu_compare.py \
 ```
 
 Each backend runs in a fresh process. The drivers use `uint64`/`u64` keys and values. Rust uses the pinned upstream benchmark’s mimalloc allocator, full LTO, and native CPU tuning; Go uses its normal allocator and GC settings.
+
+For these numeric workloads, Go maintains an exact `Len` counter and uses atomic payload accesses after readers activate. Rust omits `len` and [documents racing plain reads](https://github.com/XiangpengHao/bbtree/blob/8adae97a0ed97e5c98fa2790312eb0aec9719846/design/09-concurrency.md#L296-L303) during optimistic lookups. The pinned Rust implementation is benchmarked unchanged.
 
 Go and Rust receive identical keys, query streams, and operation counts; the driver checks checksums and rotates execution order. Eight-key batches use each library’s public batch API.
 
