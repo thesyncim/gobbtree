@@ -1,8 +1,8 @@
 # gobbtree
 
-**Ordered maps for Go, with SIMD search and efficient range scans.**
+**Ordered maps and sets for Go, with SIMD search and range scans.**
 
-A Go port of [XiangpengHao/bbtree](https://github.com/XiangpengHao/bbtree), built for **Go 1.27.x**. Generic keys and values, a concurrent map, a single-owner tree, and read-only file maps. Pure Go: no handwritten assembly, cgo, or external runtime dependencies.
+A Go port of [XiangpengHao/bbtree](https://github.com/XiangpengHao/bbtree), built for **Go 1.27.x**. Generic keys and values, a concurrent map, a single-owner tree and set, and read-only file maps. Pure Go: no handwritten assembly, cgo, or external runtime dependencies.
 
 [![Tests](https://github.com/thesyncim/gobbtree/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/thesyncim/gobbtree/actions/workflows/test.yml)
 [![amd64 SIMD](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml/badge.svg?branch=main)](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml)
@@ -53,9 +53,11 @@ GOEXPERIMENT=simd go run .
 | Access | One owner; concurrent reads when there are no writes | Concurrent readers and writers |
 | Ordered iteration | Forward, reverse, and bounded scans | Forward iteration and bounded scans in either direction |
 | Copy | `Clone()` | Consistent `Snapshot()` |
-| Conditional updates | — | `Update`, `UpdateOrInsert`, `LoadOrStore`, `DeleteIf` |
+| Conditional updates | `Update`, `LoadOrStore` | `Update`, `UpdateOrInsert`, `LoadOrStore`, `DeleteIf` |
 
 Both zero values are ready to use. Keys support Go's ordered types, including strings and defined numeric types; values can be any type. Do not copy a container after first use.
+
+`NewSet[K]()` provides the single-owner ordered set from upstream: insertion, removal, batch membership, range scans, union, intersection, difference, and subset checks. It also supports cloning, splitting, appending, filtering and file snapshots. `Tree` offers `LowerBound`, `UpperBound`, `GetKeyValue`, `SplitOff`, `Append`, `Retain`, and lazy `ExtractIf`.
 
 ## Core operations
 
