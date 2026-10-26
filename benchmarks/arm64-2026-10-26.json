@@ -1,0 +1,4927 @@
+{
+  "date": "2026-10-26",
+  "go_source": "55907ff08815d434de96af13b89e75e603680dd5",
+  "baseline_go_source": "8bea81010a1abd94a43393a32cec3eece54a4201",
+  "rust_source": "8adae97a0ed97e5c98fa2790312eb0aec9719846",
+  "hardware": {
+    "cpu": "Apple M4 Max",
+    "architecture": "arm64",
+    "memory_gib": 64,
+    "os": "macOS"
+  },
+  "toolchains": {
+    "go": "go1.27.3",
+    "rust": "1.97.1",
+    "go_experiment": "simd",
+    "rust_flags": "-C target-cpu=native",
+    "rust_allocator": "mimalloc",
+    "rust_lto": "fat"
+  },
+  "method": {
+    "processes": "fresh process per backend per repeat",
+    "order": "rotated between repeats",
+    "repeats": 3,
+    "key_type": "uint64/u64",
+    "value_type": "uint64/u64",
+    "keys": "deterministic full-width mixed keys",
+    "runtime_memory_included": true,
+    "read_cache_memory_included": true,
+    "units": {
+      "cpu": "ns/op",
+      "memory": "bytes",
+      "build": "nanoseconds"
+    }
+  },
+  "limitations": [
+    "Unrelated benchmark and system-process CPU activity was observed during local measurements. Small CPU differences are inconclusive.",
+    "CPU records include builtin map and sync.Map at 4096, 262144 and 5000000 entries. The 50000000-entry CPU records cover Tree and Map.",
+    "RSS records below cover Map at 5M and 50M; they do not prove the full target across all sizes or architectures.",
+    "The 30 percent time and real-memory reduction target is not achieved."
+  ],
+  "validation": {
+    "local": [
+      "race",
+      "pinned Rust oracle",
+      "SIMD-disabled fallback",
+      "ordinary Go build",
+      "vet",
+      "20-second fuzz run",
+      "linux/amd64 cross-compile"
+    ],
+    "native_amd64_run": "https://github.com/thesyncim/gobbtree/actions/runs/40292647038",
+    "correctness_run": "https://github.com/thesyncim/gobbtree/actions/runs/40292646998"
+  },
+  "cpu": [
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 11.987,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 11.814,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 12.21,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 11.576,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 20.534,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 86.768,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 12.794,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 11.831,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 12.444,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 12.021,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 20.978,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 87.016,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 12.84,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 12.623,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 12.325,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 12.484,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 13.843,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 80.477,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 9.905,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 9.871,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 9.754,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 9.596,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 2.645,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 8.589,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 18.21,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 108.841,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 10.338,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 9.661,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 10.049,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 9.785,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 2.687,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 8.398,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 19.131,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 110.864,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 14.233,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 14.446,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 13.281,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 13.216,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 4.689,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 7.75,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 15.258,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 79.434,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 5.023,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 5.257,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 46.13,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 1.375,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 18.689,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 12.773,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 22.538,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 19.031,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 18.329,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 5.279,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 11.442,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 63.084,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 78.806,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 12.67,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 12.201,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 13.236,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 12.63,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 21.279,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 87.441,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 12.966,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 13.002,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 12.418,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 12.67,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 13.818,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 80.574,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 12.403,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 12.234,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 12.231,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 12.167,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 21.321,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 87.714,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 10.333,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 9.593,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 9.489,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 9.344,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 2.773,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 7.291,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 18.819,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 105.68,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 13.972,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 14.169,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 12.711,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 12.592,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 4.709,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 7.931,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 15.236,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 77.662,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 9.672,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 10.024,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 9.825,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 9.677,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 2.683,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 6.997,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 18.886,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 106.713,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 1,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 4.731,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 5.06,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 46.604,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 1.285,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 15.853,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 12.116,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 23.174,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 1,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 18.88,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 17.696,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 5.023,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 8.274,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 60.059,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 73.939,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 13.2,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 12.365,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 12.208,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 12.502,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 13.517,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 77.196,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 11.948,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 12.196,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 12.269,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 12.013,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 20.652,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 86.297,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 12.73,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 12.418,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 12.472,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 12.279,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 21.495,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 86.606,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 13.891,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 14.237,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 13.343,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 13.338,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 5.127,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 7.179,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 15.13,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 77.247,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 9.623,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 9.392,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 9.407,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 9.184,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 2.683,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 7.749,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 18.862,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 106.951,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 10.376,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 9.845,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 10.025,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 9.535,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 2.625,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 7.354,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 18.893,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 105.299,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 2,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 4.775,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 5.203,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 41.831,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 1.296,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 15.063,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 12.25,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 22.304,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 2,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 18.821,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 17.884,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 5.127,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 8.233,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 58.136,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 72.04,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 17.77,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 15.782,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 17.357,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 15.434,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 33.802,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 125.088,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 18.245,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 15.521,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 17.202,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 15.356,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 33.819,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 123.953,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 23.923,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 23.135,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 22.303,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 20.791,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 27.393,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 115.274,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 14.905,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 13.549,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 13.14,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 11.962,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 3.817,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 6.513,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 30.824,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 132.724,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 14.876,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 13.661,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 13.383,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 12.042,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 3.862,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 7.006,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 31.374,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 132.415,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 27.542,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 23.441,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 24.622,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 21.587,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 7.434,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 10.582,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 31.22,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 116.139,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 0,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 6.316,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 6.031,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 42.277,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 1.651,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 19.784,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 13.616,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 27.376,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 0,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 23.15,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 18.62,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 5.89,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 9.761,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 71.865,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 90.692,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 17.749,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 15.345,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 16.669,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 14.954,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 33.451,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 123.139,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 24.071,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 23.111,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 22.755,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 20.75,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 27.515,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 113.883,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 17.42,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 15.595,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 16.766,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 15.186,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 33.558,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 122.808,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 14.647,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 13.576,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 13.123,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 12.641,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 3.794,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 5.326,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 29.271,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 126.847,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 26.843,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 22.952,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 24.048,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 20.202,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 7.21,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 8.97,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 29.275,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 110.383,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 14.252,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 13.366,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 12.844,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 11.455,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 3.729,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 5.289,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 29.916,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 125.48,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 6.239,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 5.985,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 34.282,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 1.639,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 17.394,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 13.241,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 26.535,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 22.811,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 18.466,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 5.914,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 10.104,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 71.098,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 87.11,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 23.391,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 22.869,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 21.869,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 20.552,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 26.973,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 114.919,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 17.853,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 15.396,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 17.158,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 15.419,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 33.897,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 121.421,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 17.857,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 15.329,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 16.636,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 15.15,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 33.222,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 121.426,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 26.714,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 22.774,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 24.075,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 20.846,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 7.265,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 8.656,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 29.485,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 110.621,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 14.713,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 13.298,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 12.665,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 11.648,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 3.695,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 5.05,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 29.089,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 127.473,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 14.281,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 13.148,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 13.0,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 11.534,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 3.751,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 5.334,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 28.931,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 127.247,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 2,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 6.114,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 5.976,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 35.996,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 1.612,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 16.808,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 13.146,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 26.342,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 2,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 22.78,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 18.648,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 5.912,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 9.686,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 70.903,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 90.128,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 52.965,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 42.886,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 41.774,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 36.988,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 106.678,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 263.929,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 53.427,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 42.538,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 42.861,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 36.164,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 109.774,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 266.334,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=5000000 rounds=4 queries=1048576 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 91.67,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 54.078,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 74.4,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 43.214,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 94.83,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 254.906,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 84.165,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 63.97,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 56.133,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 53.312,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 23.855,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 25.643,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 106.729,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 258.303,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 84.148,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 60.324,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 56.528,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 49.861,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 24.258,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 25.394,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 108.31,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 262.862,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=5000000 rounds=4 queries=1048576 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 89.605,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 54.879,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 66.937,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 42.36,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 22.391,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 24.246,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 106.998,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 249.738,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 0,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 25.198,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 22.393,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 42.162,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 7.484,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 34.523,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 64.72,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 115.445,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 0,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 152.758,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 76.427,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 39.76,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 39.288,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 266.242,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 287.601,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 53.646,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 44.072,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 41.513,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 35.357,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 106.894,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 261.33,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=5000000 rounds=4 queries=1048576 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 93.148,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 52.585,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 77.041,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 42.649,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 95.392,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 251.343,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 53.104,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 43.873,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 40.811,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 34.696,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 101.413,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 265.419,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 81.871,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 62.145,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 59.083,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 50.021,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 23.966,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 25.353,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 109.159,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 263.525,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=5000000 rounds=4 queries=1048576 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 88.848,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 55.083,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 64.897,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 44.279,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 22.764,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 23.692,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 107.794,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 246.293,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 84.173,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 63.176,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 60.707,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 51.33,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 24.195,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 25.371,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 108.444,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 259.63,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 1,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 25.085,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 22.058,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 41.58,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 7.072,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 34.732,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 65.436,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 114.881,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 1,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 154.133,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 78.287,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 39.666,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 40.12,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 276.83,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 296.326,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=5000000 rounds=4 queries=1048576 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 92.147,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 53.102,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 75.36,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 41.076,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 94.738,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 251.055,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 52.473,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 42.896,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 42.327,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 36.489,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 110.52,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 270.399,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 53.688,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 42.259,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 41.906,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 38.171,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 104.325,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 273.208,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=5000000 rounds=4 queries=1048576 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 89.764,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 55.425,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 66.074,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 43.364,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 23.303,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 24.074,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 107.696,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 253.93,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 83.501,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 60.582,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 58.197,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 51.414,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 24.092,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 25.21,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 106.88,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 264.772,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 81.19,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 61.696,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 59.314,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 52.513,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 23.726,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 25.291,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 101.221,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 263.26,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 24.834,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 22.074,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 38.815,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 7.274,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 34.811,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 64.564,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 116.182,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 154.702,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 75.439,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 39.596,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 39.215,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 270.521,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 289.922,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 99.202,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 68.783,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 80.058,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 61.522,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 239.1,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 481.234,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 99.657,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 73.002,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 81.23,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 63.878,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 244.742,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 486.596,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=50000000 rounds=4 queries=1048576 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 120.782,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 72.82,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 113.457,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 58.681,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 133.852,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 348.667,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 137.13,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 84.82,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 105.823,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 72.733,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 32.194,
+          "checksum": 17634508337895805888
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 33.701,
+          "checksum": 9849157053954558000
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 162.564,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 434.173,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 135.412,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 83.822,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 108.38,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 69.639,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 33.39,
+          "checksum": 17634508337895805888
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 34.804,
+          "checksum": 9849157053954558000
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 161.846,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 437.322,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=50000000 rounds=4 queries=1048576 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 113.265,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 70.892,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 99.155,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 63.444,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 35.457,
+          "checksum": 17634508337895805888
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 38.658,
+          "checksum": 9849157053954558000
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 159.819,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 347.924,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 100.555,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 72.059,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 82.696,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 66.045,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 238.756,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 518.43,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=50000000 rounds=4 queries=1048576 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 135.613,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 80.558,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 127.953,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 65.959,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 149.31,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 357.665,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 99.13,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 71.477,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 83.305,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 58.448,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 241.013,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 510.9,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 136.442,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 91.062,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 114.011,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 74.816,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 33.67,
+          "checksum": 17634508337895805888
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 34.939,
+          "checksum": 9849157053954558000
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 164.971,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 460.346,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=50000000 rounds=4 queries=1048576 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 109.956,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 70.194,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 92.378,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 58.072,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 33.327,
+          "checksum": 17634508337895805888
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 37.674,
+          "checksum": 9849157053954558000
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 146.081,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 319.132,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 127.239,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 79.951,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 98.749,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 64.682,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 32.944,
+          "checksum": 17634508337895805888
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 34.794,
+          "checksum": 9849157053954558000
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 162.883,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 402.459,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=50000000 rounds=4 queries=1048576 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 120.041,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 68.049,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 110.12,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 56.022,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 126.633,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 322.465,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 95.319,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 66.422,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 78.579,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 60.787,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 238.612,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 471.772,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 97.451,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 66.991,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 72.537,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 59.031,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 217.53,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 498.362,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "upstream 8adae97 allocator=mimalloc n=50000000 rounds=4 queries=1048576 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 107.348,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 72.172,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 93.905,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 57.085,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 34.753,
+          "checksum": 17634508337895805888
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 39.231,
+          "checksum": 9849157053954558000
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 150.739,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 324.195,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 131.848,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 82.3,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 102.111,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 64.6,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 33.379,
+          "checksum": 17634508337895805888
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 34.692,
+          "checksum": 9849157053954558000
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 155.793,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 413.719,
+          "checksum": 9020313102901339376
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 50000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=50000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 129.433,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 81.386,
+          "checksum": 9020313102903438492
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 103.154,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 67.21,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 33.869,
+          "checksum": 17634508337895805888
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 35.198,
+          "checksum": 9849157053954558000
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 161.253,
+          "checksum": 9020313102901339376
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 448.601,
+          "checksum": 9020313102901339376
+        }
+      ]
+    }
+  ],
+  "rss": [
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 0,
+      "peak_rss_bytes": 119209984,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 1309300000,
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 114900992
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 1309300000,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 119177216
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 1309300000,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 119209984
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 0,
+      "peak_rss_bytes": 117473280,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 1210252625,
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 113197056
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 1210252625,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 117440512
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 1210252625,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 117473280
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 0,
+      "peak_rss_bytes": 136478720,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 791394125,
+          "kind": "map",
+          "phase": "built",
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 136462336
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 791394125,
+          "kind": "map",
+          "phase": "read",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136462336
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 791394125,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136462336
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 117440512,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 1246773000,
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 113147904
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 1246773000,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 117342208
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 1246773000,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 117440512
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 136478720,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 752304375,
+          "kind": "map",
+          "phase": "built",
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 136462336
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 752304375,
+          "kind": "map",
+          "phase": "read",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136462336
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 752304375,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136462336
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 119209984,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 1227930708,
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 114966528
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 1227930708,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 119177216
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 1227930708,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 119209984
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 2,
+      "peak_rss_bytes": 136478720,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 750522000,
+          "kind": "map",
+          "phase": "built",
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 136462336
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 750522000,
+          "kind": "map",
+          "phase": "read",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136462336
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 750522000,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136462336
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 2,
+      "peak_rss_bytes": 119259136,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 1209856125,
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 115015680
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 1209856125,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 119242752
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 1209856125,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 119259136
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 2,
+      "peak_rss_bytes": 117325824,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 1225766791,
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 113131520
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 1225766791,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 117325824
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 1225766791,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 117325824
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 0,
+      "peak_rss_bytes": 1108377600,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 22230701333,
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1091518464
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 22230701333,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1108328448
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 22230701333,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1108377600
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 0,
+      "peak_rss_bytes": 1091960832,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 22902549250,
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1075118080
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 22902549250,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091928064
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 22902549250,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091960832
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 0,
+      "peak_rss_bytes": 1348173824,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 12682409458,
+          "kind": "map",
+          "phase": "built",
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1348157440
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 12682409458,
+          "kind": "map",
+          "phase": "read",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1348157440
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 12682409458,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1348157440
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 1091944448,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 19436886375,
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1075085312
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 19436886375,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091911680
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 19436886375,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091944448
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 1348173824,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 11967297584,
+          "kind": "map",
+          "phase": "built",
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1348157440
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 11967297584,
+          "kind": "map",
+          "phase": "read",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1348157440
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 11967297584,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1348157440
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 1108557824,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 19430672042,
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1091715072
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 19430672042,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1108508672
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 19430672042,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1108557824
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 2,
+      "peak_rss_bytes": 1348173824,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "build_ns": 11976597500,
+          "kind": "map",
+          "phase": "built",
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1348157440
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 11976597500,
+          "kind": "map",
+          "phase": "read",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1348157440
+        },
+        {
+          "allocator": "mimalloc",
+          "build_ns": 11976597500,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1348157440
+        }
+      ]
+    },
+    {
+      "language": "baseline",
+      "kind": "map",
+      "repeat": 2,
+      "peak_rss_bytes": 1108410368,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 19110923833,
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1091518464
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 19110923833,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1108328448
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 19110923833,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1108410368
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 2,
+      "peak_rss_bytes": 1091731456,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "build_ns": 18872446291,
+          "entries": 50000000,
+          "checksum": 0,
+          "rss_bytes": 1074905088
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "build_ns": 18872446291,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091698688
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "build_ns": 18872446291,
+          "entries": 50000000,
+          "checksum": 15532031892676780678,
+          "rss_bytes": 1091731456
+        }
+      ]
+    }
+  ]
+}
