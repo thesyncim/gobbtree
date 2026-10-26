@@ -44,11 +44,8 @@ func (m *wordMap) publish() {
 		return
 	}
 	view := &wordReadView{root: m.tree.root, level: m.tree.rootNode.level, ready: m.tree.atomicWrites, blocks: blocks, routes: routes}
-	if previous != nil {
-		view.cache = previous.cache
-		view.leaves = previous.leaves
-	}
-
+	// Structural changes retire caches before publication. Reader activation
+	// publishes its ready arena view before attaching an optional cache.
 	m.view.Store(view)
 }
 func (m *wordMap) finishStructure() { m.publish(); m.version.Add(1) }

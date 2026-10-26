@@ -61,3 +61,31 @@ func TestEmptyBatchKeepsPopulatedMap(t *testing.T) {
 		t.Fatal("empty batch changed the map")
 	}
 }
+
+func TestFirstMutationAfterReadsAllocations(t *testing.T) {
+	for _, size := range []uint64{32, 4096} {
+		// AllocsPerRun performs one warm-up and one measured call. Prepare a
+		// fresh read-active map for each so both exercise the first mutation.
+		maps := [2]Map[uint64, uint64]{}
+		for i := range maps {
+			for key := uint64(0); key < size; key++ {
+				maps[i].Insert(key, key)
+			}
+			maps[i].Get(7)
+		}
+		next := 0
+		allocs := testing.AllocsPerRun(1, func() {
+			m := &maps[next]
+			next++
+			if value, ok := m.Delete(7); !ok || value != 7 {
+				t.Fatal("first deletion after reads failed")
+			}
+			if _, replaced := m.Insert(7, 7); replaced {
+				t.Fatal("deleted key was still present")
+			}
+		})
+		if allocs != 0 {
+			t.Fatalf("size=%d: first mutation after reads: %g allocations", size, allocs)
+		}
+	}
+}
