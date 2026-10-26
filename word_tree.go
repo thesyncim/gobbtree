@@ -415,6 +415,23 @@ func (t *wordTree) removeChild(n *wordNode, i int) {
 	n.n--
 	t.refit(n)
 }
+func (t *wordTree) deleteOwner(key uint64) (uint64, bool) {
+	if t.root == 0 {
+		return 0, false
+	}
+	n := t.node(t.leafFor(key))
+	i := n.exactEntry(key)
+	if i == int(n.n) || n.entries()[i].key != key {
+		return 0, false
+	}
+	// A nonminimum entry in a leaf above minimum occupancy can be removed
+	// without changing any ancestor.
+	if i > 0 && n.n > minNodeSize {
+		return t.removeLeaf(n, i), true
+	}
+	return t.delete(key)
+}
+
 func (t *wordTree) delete(key uint64) (uint64, bool) {
 	if t.root == 0 {
 		return 0, false
@@ -455,24 +472,7 @@ func (t *wordTree) remove(id uint32, key uint64) (uint64, bool) {
 		if i == int(n.n) || entries[i].key != key {
 			return 0, false
 		}
-		value := entries[i].value
-		t.moveEntries(n, i, i+1, int(n.n)-i-1)
-		if !t.shared || !t.atomicWrites {
-			copy(n.tags[i:n.n-1], n.tags[i+1:n.n])
-		}
-		n.n--
-		t.storeEntry(n, int(n.n), wordEntry{key: ^uint64(0)})
-		if t.shared {
-			if t.atomicWrites {
-				n.deleteTag(i)
-			} else {
-				n.tags[n.n] = 0
-				n.sequence.Store(uint64(n.n) << 1)
-			}
-		} else {
-			n.tags[n.n] = 0
-		}
-		return value, true
+		return t.removeLeaf(n, i), true
 	}
 
 	i := t.route(n, key)
@@ -493,6 +493,29 @@ func (t *wordTree) remove(id uint32, key uint64) (uint64, bool) {
 	}
 	return value, true
 }
+
+// The caller has already found the entry and holds any required leaf latch.
+func (t *wordTree) removeLeaf(n *wordNode, i int) uint64 {
+	value := n.entries()[i].value
+	t.moveEntries(n, i, i+1, int(n.n)-i-1)
+	if !t.shared || !t.atomicWrites {
+		copy(n.tags[i:n.n-1], n.tags[i+1:n.n])
+	}
+	n.n--
+	t.storeEntry(n, int(n.n), wordEntry{key: ^uint64(0)})
+	if t.shared {
+		if t.atomicWrites {
+			n.deleteTag(i)
+		} else {
+			n.tags[n.n] = 0
+			n.sequence.Store(uint64(n.n) << 1)
+		}
+	} else {
+		n.tags[n.n] = 0
+	}
+	return value
+}
+
 func (t *wordTree) rebalance(parent *wordNode, i int) {
 	children := &parent.inner().children
 	child := t.node(children[i])

@@ -194,7 +194,7 @@ func (t *Tree[K, V]) insertAbsent(n *node[K, V], key K, value V) {
 // Delete removes an entry, returning its previous value and presence.
 func (t *Tree[K, V]) Delete(key K) (V, bool) {
 	if t.words != nil {
-		old, ok := t.words.delete(numericCode(key))
+		old, ok := t.words.deleteOwner(numericCode(key))
 		if ok {
 			t.length--
 			return t.wordValue(old), true

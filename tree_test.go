@@ -407,6 +407,8 @@ func TestSteadyStateAllocations(t *testing.T) {
 	for name, call := range map[string]func(){
 		"tree get": func() { tr.Get(500) }, "map get": func() { m.Get(500) },
 		"tree replace": func() { tr.Insert(500, 2) }, "map replace": func() { m.Insert(500, 2) },
+		"tree churn": func() { tr.Delete(500); tr.Insert(500, 2) },
+		"map churn":  func() { m.Delete(500); m.Insert(500, 2) },
 		"tree batch": func() { tr.GetMany(queries, dst) }, "map batch": func() { m.GetMany(queries, dst) },
 		"tree scan": func() { tr.Scan(300, 340, func(k, v uint64) bool { return true }) },
 		"map scan":  func() { m.Scan(300, 340, func(k, v uint64) bool { return true }) },

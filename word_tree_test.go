@@ -55,6 +55,42 @@ func TestWordArenaIDsAcrossSlabGrowth(t *testing.T) {
 	}
 }
 
+func TestOwnerDeleteWithCollidingTags(t *testing.T) {
+	const size = 1 << 16
+	keyAt := func(i int) uint64 { return uint64(i)<<48 | uint64(i)<<8 }
+	var tr Tree[uint64, uint64]
+	for i := 0; i < size; i++ {
+		key := keyAt(i * 499 & (size - 1))
+		tr.Insert(key, ^key)
+	}
+	if len(tr.words.routes.ids) == 0 {
+		t.Fatal("test did not populate cached routes")
+	}
+	// Every key has the same byte tag. Remove in a different permutation,
+	// exercising collisions, changing minima, merges, and eventual collapse.
+	for i := 0; i < size; i++ {
+		key := keyAt(i * 31337 & (size - 1))
+		if value, ok := tr.Delete(key); !ok || value != ^key {
+			t.Fatalf("delete %x: got %x, %v", key, value, ok)
+		}
+		if value, ok := tr.Delete(key); ok || value != 0 {
+			t.Fatalf("deleted key %x still present", key)
+		}
+		if tr.Len() != size-i-1 {
+			t.Fatal("incorrect length after deletion")
+		}
+		if i%1024 == 0 {
+			checkTree(t, &tr)
+		}
+	}
+	checkTree(t, &tr)
+	tr.Insert(math.MaxUint64, 7)
+	if value, ok := tr.Delete(math.MaxUint64); !ok || value != 7 {
+		t.Fatal("could not reuse the empty tree")
+	}
+	checkTree(t, &tr)
+}
+
 func checkWordTree(t testing.TB, tr *wordTree, length int) {
 	t.Helper()
 	checkWordRoutes(t, tr)

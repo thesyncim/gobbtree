@@ -368,14 +368,14 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 				m.disableReadCache()
 				n.beginLeafWrite()
 			}
-			value, found := m.tree.remove(id, key)
+			value := m.tree.removeLeaf(n, i)
 			m.count.Add(-1)
 			if m.tree.atomicWrites {
 				n.endLeafWrite()
 			}
 			n.mu.Unlock()
 			lane.RUnlock()
-			return value, found
+			return value, true
 		}
 		n.mu.Unlock()
 	} else {
