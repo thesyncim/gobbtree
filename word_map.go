@@ -368,16 +368,10 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 			n.mu.Unlock()
 		}
 	}
-	if serial {
-		defer guard.unlock()
-	} else {
-		guard.unlock()
-		m.structure.Lock()
-		defer m.structure.Unlock()
-	}
+	guard = m.lockStructure(guard)
 	m.disableReadCache()
 	m.version.Add(1)
-	defer m.finishStructure()
+	defer m.endStructure(guard)
 	var old uint64
 	var replaced bool
 	if !m.tree.insertSharedAtRoute(key, value) {
@@ -387,6 +381,25 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 		m.count.Add(1)
 	}
 	return old, replaced
+}
+
+// A serial guard already holds the structural lock; a lane guard is
+// exchanged for it. endStructure publishes, then releases what was taken.
+func (m *wordMap) lockStructure(guard structuralGuard) structuralGuard {
+	if guard.lane == nil {
+		return guard
+	}
+	guard.unlock()
+	m.structure.Lock()
+	return structuralGuard{}
+}
+func (m *wordMap) endStructure(guard structuralGuard) {
+	m.finishStructure()
+	if guard.g != nil {
+		guard.g.writer.Unlock()
+	} else {
+		m.structure.Unlock()
+	}
 }
 func (m *wordMap) delete(key uint64) (uint64, bool) {
 	guard := m.structure.acquire(key)
@@ -424,17 +437,13 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 		guard.unlock()
 		return value, true
 	}
-	if serial {
-		defer guard.unlock()
-	} else {
+	if !serial {
 		n.mu.Unlock()
-		guard.unlock()
-		m.structure.Lock()
-		defer m.structure.Unlock()
 	}
+	guard = m.lockStructure(guard)
 	m.disableReadCache()
 	m.version.Add(1)
-	defer m.finishStructure()
+	defer m.endStructure(guard)
 	value, found := m.tree.delete(key)
 	if found {
 		m.count.Add(-1)
