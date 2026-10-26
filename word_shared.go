@@ -9,19 +9,17 @@ import (
 const wordLeafID uint32 = 1 << 31
 const wordSequenceStep uint64 = 1 << 13
 
-type wordReadBlock struct{ nodes []wordNode }
-
-func appendWordBlock(blocks []atomic.Pointer[wordReadBlock], nodes []wordNode) []atomic.Pointer[wordReadBlock] {
+func appendWordBlock(blocks []atomic.Pointer[wordNode], nodes []wordNode) []atomic.Pointer[wordNode] {
 	used := len(blocks)
 	if used == cap(blocks) {
-		grown := make([]atomic.Pointer[wordReadBlock], used, max(1, 2*used))
+		grown := make([]atomic.Pointer[wordNode], used, max(1, 2*used))
 		for i := range blocks {
 			grown[i].Store(blocks[i].Load())
 		}
 		blocks = grown
 	}
 	blocks = blocks[:used+1]
-	blocks[used].Store(&wordReadBlock{nodes: nodes})
+	blocks[used].Store(&nodes[0])
 	return blocks
 }
 

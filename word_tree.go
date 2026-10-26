@@ -76,9 +76,9 @@ type wordTree struct {
 	root, free              uint32
 	freeInner               uint32
 	shared, atomicWrites    bool
-	readBlocks              []atomic.Pointer[wordReadBlock]
+	readBlocks              []atomic.Pointer[wordNode]
 	rootNode                *wordNode
-	slabs                   [][]wordNode
+	slabs                   []*wordNode
 	leafCursor, innerCursor uint32
 	directories             [][256]uint8
 	freeDirectories         []uint32
@@ -95,8 +95,18 @@ type wordTree struct {
 
 func (t *wordTree) node(id uint32) *wordNode {
 	id = (id &^ wordLeafID) - 1
-	return &t.slabs[id>>8][id&255]
+	// IDs name initialized slots in stable Go allocations. The base remains a
+	// traced pointer; the resulting pointer stays inside that same allocation.
+	return wordSlabNode(t.slabs[id>>8], id)
 }
+func wordSlabNode(base *wordNode, index uint32) *wordNode {
+	return (*wordNode)(unsafe.Add(unsafe.Pointer(base), uintptr(index&255)*unsafe.Sizeof(wordNode{})))
+}
+
+// Allocation grows through 1, 2, ... 128 slots; every later slab has 256.
+// Keep this rule shared by allocation and optimistic-reader bounds checks.
+func wordSlabSize(index int) int { return 1 << min(index, 8) }
+
 func (t *wordTree) alloc(leaf bool) uint32 {
 	var id uint32
 	free := &t.freeInner
@@ -117,17 +127,14 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 		}
 		// Nine low bits hold the number of used slots, including 256.
 		slab, used := int(*cursor>>9), int(*cursor&511)
-		if len(t.slabs) == 0 || separate && slab < 8 || used == len(t.slabs[slab]) {
+		if len(t.slabs) == 0 || separate && slab < 8 || used == wordSlabSize(slab) {
 			if len(t.slabs) >= (1<<23)-1 {
 				panic("gobbtree: numeric arena exhausted")
 			}
-			size := 1
-			if len(t.slabs) != 0 {
-				size = min(256, 2*len(t.slabs[len(t.slabs)-1]))
-			}
-			t.slabs = append(t.slabs, make([]wordNode, size))
+			nodes := make([]wordNode, wordSlabSize(len(t.slabs)))
+			t.slabs = append(t.slabs, &nodes[0])
 			if t.shared {
-				t.readBlocks = appendWordBlock(t.readBlocks, t.slabs[len(t.slabs)-1])
+				t.readBlocks = appendWordBlock(t.readBlocks, nodes)
 			}
 			slab, used = len(t.slabs)-1, 0
 			*cursor = uint32(slab) << 9

@@ -28,10 +28,10 @@ func (m *wordMap) getMany8(keys *[batchLanes]uint64, dst *[batchLanes]Result[uin
 			continue
 		}
 		block := view.blocks[blockIndex].Load()
-		if block == nil || int(index&255) >= len(block.nodes) {
+		if block == nil || blockIndex < 8 && int(index&255) >= wordSlabSize(blockIndex) {
 			continue
 		}
-		nodes[j] = &block.nodes[index&255]
+		nodes[j] = wordSlabNode(block, index)
 	}
 	for j := 0; j < batchLanes; j++ {
 		if n := nodes[j]; n != nil {
