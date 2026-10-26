@@ -319,11 +319,15 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 				i = n.lowerEntry(key)
 			}
 			if i > 0 {
-				m.disableReadCache()
-				n.beginLeafWrite()
+				if m.tree.atomicWrites {
+					m.disableReadCache()
+					n.beginLeafWrite()
+				}
 				m.tree.insertLeaf(n, i, key, value)
 				m.count.Add(1)
-				n.endLeafWrite()
+				if m.tree.atomicWrites {
+					n.endLeafWrite()
+				}
 				n.mu.Unlock()
 				lane.RUnlock()
 				return 0, false
@@ -356,11 +360,15 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 			return 0, false
 		}
 		if n.n > minNodeSize && i > 0 {
-			m.disableReadCache()
-			n.beginLeafWrite()
+			if m.tree.atomicWrites {
+				m.disableReadCache()
+				n.beginLeafWrite()
+			}
 			value, found := m.tree.remove(id, key)
 			m.count.Add(-1)
-			n.endLeafWrite()
+			if m.tree.atomicWrites {
+				n.endLeafWrite()
+			}
 			n.mu.Unlock()
 			lane.RUnlock()
 			return value, found

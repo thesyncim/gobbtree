@@ -193,7 +193,7 @@ func (t *wordTree) refit(n *wordNode) {
 			}
 		}
 		if t.shared {
-			n.publishNumeric()
+			n.publishNumeric(t.atomicWrites)
 		}
 		return
 	}
@@ -225,7 +225,7 @@ func (t *wordTree) refit(n *wordNode) {
 		n.directory = 0
 	}
 	if t.shared {
-		n.publishNumeric()
+		n.publishNumeric(t.atomicWrites)
 	}
 }
 func (t *wordTree) route(n *wordNode, key uint64) int {
@@ -257,7 +257,13 @@ func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
 	t.storeEntry(n, i, wordEntry{key, value})
 	n.n++
 	if t.shared {
-		n.insertTag(i, key)
+		if t.atomicWrites {
+			n.insertTag(i, key)
+		} else {
+			copy(n.tags[i+1:count+1], n.tags[i:count])
+			n.tags[i] = uint8(key)
+			n.sequence.Store(uint64(n.n) << 1)
+		}
 	} else {
 		copy(n.tags[i+1:count+1], n.tags[i:count])
 		n.tags[i] = uint8(key)
@@ -412,13 +418,18 @@ func (t *wordTree) remove(id uint32, key uint64) (uint64, bool) {
 		}
 		value := entries[i].value
 		t.moveEntries(n, i, i+1, int(n.n)-i-1)
-		if !t.shared {
+		if !t.shared || !t.atomicWrites {
 			copy(n.tags[i:n.n-1], n.tags[i+1:n.n])
 		}
 		n.n--
 		t.storeEntry(n, int(n.n), wordEntry{key: ^uint64(0)})
 		if t.shared {
-			n.deleteTag(i)
+			if t.atomicWrites {
+				n.deleteTag(i)
+			} else {
+				n.tags[n.n] = 0
+				n.sequence.Store(uint64(n.n) << 1)
+			}
 		} else {
 			n.tags[n.n] = 0
 		}

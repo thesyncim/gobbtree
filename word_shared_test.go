@@ -349,3 +349,43 @@ func TestSharedLeafTagEdits(t *testing.T) {
 		}
 	}
 }
+
+func TestNumericBuilderPublication(t *testing.T) {
+	const size = 8192
+	for round := 0; round < 4; round++ {
+		var m Map[uint64, uint64]
+		for i := uint64(0); i < size; i++ {
+			key := mixedKey(i)
+			m.Insert(key, key^123)
+		}
+		for i := uint64(0); i < size; i += 2 {
+			m.Delete(mixedKey(i))
+		}
+		if m.words.Load().tree.atomicWrites {
+			t.Fatal("construction unexpectedly enabled optimistic readers")
+		}
+		var group sync.WaitGroup
+		for worker := uint64(0); worker < 2; worker++ {
+			group.Go(func() {
+				for i := uint64(size) + worker; i < size+2048; i += 2 {
+					key := mixedKey(i)
+					m.Insert(key, key^123)
+					if i%3 == 0 {
+						m.Delete(key)
+					}
+				}
+			})
+			group.Go(func() {
+				for i := 1 + worker*2; i < size; i += 4 {
+					key := mixedKey(i)
+					if value, ok := m.Get(key); !ok || value != key^123 {
+						t.Error("reader activation lost an unchanged entry")
+						return
+					}
+				}
+			})
+		}
+		group.Wait()
+		checkWordTree(t, &m.words.Load().tree, m.Len())
+	}
+}

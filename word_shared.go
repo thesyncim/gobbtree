@@ -45,12 +45,17 @@ func loadSharedTags(src *[4]uint64) [nodeSize]uint8 {
 	return *(*[nodeSize]uint8)(unsafe.Pointer(&words))
 }
 func (n *wordNode) loadTags() [nodeSize]uint8 { return loadSharedTags(n.tagWords()) }
-func (n *wordNode) publishNumeric() {
+func (n *wordNode) publishNumeric(atomicWrites bool) {
 	var tags [nodeSize]uint8
 	shift := 0
 	if !n.leaf && n.n > 0 {
 		shift = max(0, bits.Len64(n.keys[0]^n.keys[n.n-1])-8)
-		atomic.StoreUint64(n.prefixWord(), n.keys[0]&(^uint64(0)<<uint(shift+8)))
+		prefix := n.keys[0] & (^uint64(0) << uint(shift+8))
+		if atomicWrites {
+			atomic.StoreUint64(n.prefixWord(), prefix)
+		} else {
+			*n.prefixWord() = prefix
+		}
 	}
 	for i := 0; i < int(n.n); i++ {
 		tags[i] = uint8(n.keyAt(i) >> shift)
@@ -60,7 +65,11 @@ func (n *wordNode) publishNumeric() {
 			tags[i] = 255
 		}
 	}
-	n.storeTags(tags)
+	if atomicWrites {
+		n.storeTags(tags)
+	} else {
+		n.tags = tags
+	}
 	sequence := n.sequence.Load()
 	n.sequence.Store(sequence&^(wordSequenceStep-2) | uint64(n.n)<<1 | uint64(shift)<<7)
 }

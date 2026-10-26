@@ -2,11 +2,11 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"os"
 	"runtime"
 	"runtime/metrics"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,6 +23,7 @@ func mix(x uint64) uint64 {
 func main() {
 	size := flag.Int("size", 5000000, "entries")
 	kind := flag.String("kind", "tree", "tree, map, builtin, or syncmap")
+	stats := flag.Bool("stats", false, "include supplemental Go heap diagnostics")
 	flag.Parse()
 	if *size < 0 {
 		panic("negative size")
@@ -104,22 +105,22 @@ func main() {
 	default:
 		panic("unknown kind")
 	}
+	record := make([]byte, 0, 512)
 	report := func(phase string) {
-		var mem runtime.MemStats
-		runtime.ReadMemStats(&mem)
-		scan := []metrics.Sample{{Name: "/gc/scan/heap:bytes"}}
-		metrics.Read(scan)
-		if err := json.NewEncoder(os.Stdout).Encode(struct {
-			BuildNS  int64  `json:"build_ns"`
-			PID      int    `json:"pid"`
-			Kind     string `json:"kind"`
-			Phase    string `json:"phase"`
-			Entries  int    `json:"entries"`
-			Checksum uint64 `json:"checksum"`
-			Heap     uint64 `json:"heap_bytes"`
-			Objects  uint64 `json:"heap_objects"`
-			Scan     uint64 `json:"scan_bytes"`
-		}{buildNS, os.Getpid(), *kind, phase, *size, sum, mem.HeapAlloc, mem.HeapObjects, scan[0].Value.Uint64()}); err != nil {
+		record = append(record[:0], `{"kind":"`...)
+		record = append(record, (*kind)...)
+		record = append(record, `","phase":"`...)
+		record = append(record, phase...)
+		record = append(record, '"')
+		record = appendNumber(record, "pid", uint64(os.Getpid()))
+		record = appendNumber(record, "build_ns", uint64(buildNS))
+		record = appendNumber(record, "entries", uint64(*size))
+		record = appendNumber(record, "checksum", sum)
+		if *stats {
+			record = appendHeapStats(record)
+		}
+		record = append(record, '}', '\n')
+		if _, err := os.Stdout.Write(record); err != nil {
 			panic(err)
 		}
 	}
@@ -138,4 +139,22 @@ func main() {
 	report("collected")
 	wait()
 	runtime.KeepAlive(keep)
+}
+
+func appendNumber(dst []byte, key string, value uint64) []byte {
+	dst = append(dst, ',', '"')
+	dst = append(dst, key...)
+	dst = append(dst, '"', ':')
+	return strconv.AppendUint(dst, value, 10)
+}
+
+// Keep diagnostic stack space and runtime introspection out of the RSS-only path.
+func appendHeapStats(dst []byte) []byte {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	scan := []metrics.Sample{{Name: "/gc/scan/heap:bytes"}}
+	metrics.Read(scan)
+	dst = appendNumber(dst, "heap_bytes", mem.HeapAlloc)
+	dst = appendNumber(dst, "heap_objects", mem.HeapObjects)
+	return appendNumber(dst, "scan_bytes", scan[0].Value.Uint64())
 }
