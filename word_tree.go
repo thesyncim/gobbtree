@@ -320,6 +320,34 @@ func (t *wordTree) insert(key, value uint64) (uint64, bool) {
 	}
 	return 0, false
 }
+
+// The shared insertion path can start at a cached leaf parent while holding
+// the structural lock. Recheck the key after acquiring that lock.
+func (t *wordTree) insertSharedAtRoute(key, value uint64) bool {
+	id := t.routes.lookup(key)
+	if id == 0 {
+		return false
+	}
+	parent := t.node(id)
+	if parent.n == nodeSize {
+		return false
+	}
+	index := t.route(parent, key)
+	leaf := t.node(parent.inner().children[index])
+	if leaf.n != nodeSize || key < leaf.entries()[0].key {
+		return false
+	}
+	position := leaf.exactEntry(key)
+	if position < int(leaf.n) && leaf.entries()[position].key == key {
+		return false
+	}
+	t.makeLeafRoom(parent, index, key, value)
+	if t.routesDirty {
+		t.rebuildRoutes()
+	}
+	return true
+}
+
 func (t *wordTree) insertAbsent(id uint32, key, value uint64) {
 	n := t.node(id)
 	if n.leaf {
@@ -647,8 +675,17 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	leftID, rightID := children[leftIndex], children[leftIndex+1]
 	left, right := t.node(leftID), t.node(rightID)
 	if int(left.n)+int(right.n) == 2*nodeSize {
-		t.splitLeafPair(parent, leftIndex, key, value)
-		return
+		borrowed := -1
+		if t.shared {
+			borrowed = t.borrowOuterLeaf(parent, index)
+		}
+		if borrowed >= 0 {
+			leftIndex = borrowed
+			left, right = t.node(children[leftIndex]), t.node(children[leftIndex+1])
+		} else {
+			t.splitLeafPair(parent, leftIndex, key, value)
+			return
+		}
 	}
 	leftCount, rightCount := int(left.n), int(right.n)
 	rank := 0
@@ -684,6 +721,46 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	t.storeKey(parent, leftIndex, left.keyAt(0))
 	t.storeKey(parent, leftIndex+1, right.keyAt(0))
 	t.refit(parent)
+}
+
+// Move some free space across a full sibling before allocating another leaf.
+// The adjacent pair is refitted by makeLeafRoom after the insertion.
+func (t *wordTree) borrowOuterLeaf(parent *wordNode, index int) int {
+	// Avoid repeatedly borrowing one or two slots from nearly full leaves.
+	const maxBorrowCount = 3 * nodeSize / 4
+	children := &parent.inner().children
+	outside := -1
+	if index >= 2 && t.node(children[index-2]).n <= maxBorrowCount {
+		outside = index - 2
+	}
+	if index+2 < int(parent.n) && t.node(children[index+2]).n <= maxBorrowCount &&
+		(outside < 0 || t.node(children[index+2]).n < t.node(children[outside]).n) {
+		outside = index + 2
+	}
+	if outside < 0 {
+		return -1
+	}
+	outer := t.node(children[outside])
+	count := int(outer.n)
+	// Balance the available space across all three leaves.
+	moved := (2*(nodeSize-count) + 1) / 3
+	pair := index
+	if outside < index {
+		middle := t.node(children[index-1])
+		t.copyEntries(outer, count, middle.entries()[:moved])
+		t.moveEntries(middle, 0, moved, nodeSize-moved)
+		middle.n -= uint8(moved)
+		pair--
+	} else {
+		middle := t.node(children[index+1])
+		t.moveEntries(outer, moved, 0, count)
+		t.copyEntries(outer, 0, middle.entries()[nodeSize-moved:])
+		middle.n -= uint8(moved)
+	}
+	outer.n += uint8(moved)
+	t.refit(outer)
+	t.storeKey(parent, outside, outer.keyAt(0))
+	return pair
 }
 
 // Two full leaves split into three; only this path needs a merged scratch buffer.

@@ -263,6 +263,68 @@ func TestConcurrentNumericLayout(t *testing.T) {
 	}
 }
 
+func TestWordOuterLeafRedistribution(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		for _, test := range []struct {
+			name   string
+			counts []int
+			index  int
+			split  bool
+		}{
+			{"left", []int{24, 32, 32, 32, 32}, 2, false},
+			{"right", []int{32, 32, 32, 32, 24}, 2, false},
+			{"choose_left", []int{24, 32, 32, 32, 28}, 2, false},
+			{"choose_right", []int{28, 32, 32, 32, 24}, 2, false},
+			{"first", []int{32, 32, 17}, 0, false},
+			{"last", []int{24, 32, 32}, 2, false},
+			{"nearly_full", []int{31, 32, 32}, 2, true},
+			{"full", []int{32, 32, 32, 32, 32}, 2, true},
+			{"two", []int{32, 32}, 0, true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				tr := wordTree{shared: shared, atomicWrites: shared, keyKind: 1, valueKind: 1}
+				tr.root = tr.alloc(false)
+				parent := tr.node(tr.root)
+				tr.rootNode = parent
+				want := make(map[uint64]uint64)
+				var previous uint32
+				for i, count := range test.counts {
+					id := tr.alloc(true)
+					leaf := tr.node(id)
+					for j := 0; j < count; j++ {
+						key := uint64(i*100 + j*2)
+						tr.insertLeaf(leaf, j, key, key+1)
+						want[key] = key + 1
+					}
+					leaf.prev = previous
+					if previous != 0 {
+						tr.node(previous).next = id
+					}
+					previous = id
+					tr.insertChild(parent, i, id)
+				}
+				key := uint64(test.index*100 + 1)
+				tr.makeLeafRoom(parent, test.index, key, key+1)
+				want[key] = key + 1
+				children := len(test.counts)
+				if test.split || !shared {
+					children++
+				}
+				if int(parent.n) != children {
+					t.Fatalf("shared=%v: got %d leaves, want %d", shared, parent.n, children)
+				}
+				checkWordTree(t, &tr, len(want))
+				tree := Tree[uint64, uint64]{words: &tr, length: len(want)}
+				for key, value := range want {
+					if got, ok := tree.Get(key); !ok || got != value {
+						t.Fatalf("shared=%v: lookup %d = %d, %v; want %d", shared, key, got, ok, value)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestWordLeafRedistribution(t *testing.T) {
 	for _, order := range []string{"ascending", "descending", "mixed"} {
 		t.Run(order, func(t *testing.T) {

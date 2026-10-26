@@ -341,7 +341,11 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	m.disableReadCache()
 	m.version.Add(1)
 	defer m.finishStructure()
-	old, replaced := m.tree.insert(key, value)
+	var old uint64
+	var replaced bool
+	if !m.tree.insertSharedAtRoute(key, value) {
+		old, replaced = m.tree.insert(key, value)
+	}
 	if !replaced {
 		m.count.Add(1)
 	}
