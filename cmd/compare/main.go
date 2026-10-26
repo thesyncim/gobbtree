@@ -39,12 +39,17 @@ func main() {
 	default:
 		panic("unknown kind")
 	}
+	// Match Rust's serial main-thread execution and set the worker limit
+	// before construction and collection, rather than midway through the run.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	runtime.GOMAXPROCS(max(1, *threads))
 	doTree := *kind == "all" || *kind == "tree"
 	doMap := *kind == "all" || *kind == "map"
 	doBuiltin := *kind == "builtin" || (*kind == "all" && *standard)
 	doSync := *kind == "syncmap" || (*kind == "all" && *standard)
 	hardware, width := gobbtree.SIMD()
-	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d queries=%d kind=%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds, *queryCount, *kind)
+	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d queries=%d kind=%s procs=%d serial_thread=locked\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds, *queryCount, *kind, runtime.GOMAXPROCS(0))
 	tree := gobbtree.NewTree[uint64, uint64]()
 	concurrent := gobbtree.New[uint64, uint64]()
 	var builtin map[uint64]uint64
@@ -161,7 +166,6 @@ func main() {
 		}
 	}
 	if *threads > 0 && (doMap || doBuiltin || doSync) {
-		runtime.GOMAXPROCS(*threads)
 		for i := range queries {
 			queries[i] = mix(mix(uint64(i+17)) % uint64(*size))
 		}
