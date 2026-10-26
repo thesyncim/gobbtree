@@ -192,14 +192,33 @@ func (t *wordTree) release(id uint32) {
 	*free = id
 }
 
-func (t *wordTree) refit(n *wordNode) {
-	count := int(n.n)
+// An interior separator update leaves the count, key domain, padding, and
+// compression shift unchanged. Update just its summaries on the owner path.
+func (t *wordTree) refitSeparators(n *wordNode, first, last int) {
+	if t.shared || first == 0 || last == int(n.n)-1 || n.directory != 0 {
+		t.refit(n)
+		return
+	}
+	t.invalidateRoutes(n)
+	inner := n.inner()
+	for i := first; i <= last; i++ {
+		n.tags[i] = uint8(n.keys[i])
+		inner.inline[i] = uint16(n.keys[i] >> n.shift)
+	}
+}
+
+func (t *wordTree) invalidateRoutes(n *wordNode) {
 	if !n.leaf && t.rootNode != nil && (n.level == t.rootNode.level || n.level+t.routes.depth > t.rootNode.level) {
 		t.routesDirty = true
 		if t.routeNode == nil || n.level > t.routeNode.level {
 			t.routeNode = n
 		}
 	}
+}
+
+func (t *wordTree) refit(n *wordNode) {
+	count := int(n.n)
+	t.invalidateRoutes(n)
 	for i := 0; i < count; i++ {
 		if !t.shared {
 			n.tags[i] = uint8(n.keyAt(i))
@@ -815,7 +834,7 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	t.refit(right)
 	t.storeKey(parent, leftIndex, left.keyAt(0))
 	t.storeKey(parent, leftIndex+1, right.keyAt(0))
-	t.refit(parent)
+	t.refitSeparators(parent, leftIndex, leftIndex+1)
 }
 
 // Move some free space across a full sibling before allocating another leaf.
