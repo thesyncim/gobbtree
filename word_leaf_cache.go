@@ -71,33 +71,49 @@ func (c *wordLeafCache) lookup(key uint64) (uint32, bool) {
 	return uint32(id) | wordLeafID, false
 }
 
-// parent holds every key in [parentLow, parentHigh]. A cell outside that range
-// spans several parents and uses ordinary descent. All source reads
-// participate in the map epoch.
-func (m *wordMap) cacheLeafParent(c *wordLeafCache, parent *wordNode, key uint64, position, count int, version, parentLow, parentHigh uint64) {
+// parent holds every key in [parentLow, parentHigh]. Fill every empty cell
+// it fully covers, not only the requesting key's: one descent then warms its
+// neighborhood. A requesting cell outside that range spans several parents and
+// uses ordinary descent. All source reads participate in the map epoch.
+func (m *wordMap) cacheLeafParent(c *wordLeafCache, parent *wordNode, key uint64, count int, version, parentLow, parentHigh uint64) {
 	index := (key - c.base) >> c.shift
 	if index >= uint64(len(c.cells)) {
 		return
 	}
+	mask := (uint64(1) << c.shift) - 1
+	if low := c.base | index<<c.shift; low < parentLow || low|mask > parentHigh {
+		if m.version.Load() == version {
+			c.cells[index].head.CompareAndSwap(0, 2)
+		}
+		return
+	}
+	// Covered cells form a run around index; bound the work of one lookup.
+	const maxCells = 64
+	first, last := index, index
+	for first > 0 && index-first < maxCells/2 && c.base|(first-1)<<c.shift >= parentLow {
+		first--
+	}
+	for last+1 < uint64(len(c.cells)) && last-index < maxCells/2 && c.base|(last+1)<<c.shift|mask <= parentHigh {
+		last++
+	}
+	child := 0
+	for cell := first; cell <= last; cell++ {
+		low := c.base | cell<<c.shift
+		for child+1 < count && atomic.LoadUint64(&parent.keys[child+1]) <= low {
+			child++
+		}
+		m.fillLeafCell(c, cell, parent, child, count, version)
+	}
+}
+
+// child is the parent's entry whose range contains the cell's first key.
+func (m *wordMap) fillLeafCell(c *wordLeafCache, index uint64, parent *wordNode, child, count int, version uint64) {
 	cell := &c.cells[index]
 	if cell.head.Load() != 0 {
 		return
 	}
-	low := c.base | index<<c.shift
-	high := low | ((uint64(1) << c.shift) - 1)
-	if low < parentLow || high > parentHigh {
-		if m.version.Load() == version {
-			cell.head.CompareAndSwap(0, 2)
-		}
-		return
-	}
-	first, last := position, position
-	for first > 0 && atomic.LoadUint64(&parent.keys[first]) > low {
-		first--
-		if last-first >= 4 {
-			break
-		}
-	}
+	high := c.base | index<<c.shift | ((uint64(1) << c.shift) - 1)
+	first, last := child, child
 	for last+1 < count && atomic.LoadUint64(&parent.keys[last+1]) <= high {
 		last++
 		if last-first >= 4 {

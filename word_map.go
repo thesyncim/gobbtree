@@ -279,7 +279,11 @@ retry:
 			child := atomic.LoadUint32(&n.inner().children[i])
 			if fill {
 				if child&wordLeafID != 0 {
-					m.cacheLeafParent(view.leaves, n, key, i, count, version, low, high)
+					// Every key from the parent's first to its last separator
+					// also routes here, beyond a cached route's single bucket.
+					parentLow := min(low, atomic.LoadUint64(&n.keys[0]))
+					parentHigh := max(high, atomic.LoadUint64(&n.keys[count-1]))
+					m.cacheLeafParent(view.leaves, n, key, count, version, parentLow, parentHigh)
 				}
 				if i > 0 {
 					low = atomic.LoadUint64(&n.keys[i])
