@@ -265,6 +265,28 @@ func (m *Map[K, V]) GetMany(keys []K, dst []Result[V]) {
 		panic("gobbtree: GetMany destination too short")
 	}
 	if words := m.numericMap(); words != nil {
+		if view := words.view.Load(); len(keys) > 1 && view != nil && view.leaves != nil {
+			for start := 0; start < len(keys); start += batchLanes {
+				count := min(batchLanes, len(keys)-start)
+				if count < batchLanes {
+					for j := 0; j < count; j++ {
+						v, found := words.get(numericCode(keys[start+j]))
+						dst[start+j].Value, dst[start+j].OK = mapWordValue[V](v, found, words.valueKind)
+					}
+					continue
+				}
+				var codes [batchLanes]uint64
+				var values [batchLanes]Result[uint64]
+				for j := 0; j < count; j++ {
+					codes[j] = numericCode(keys[start+j])
+				}
+				words.getMany8(&codes, &values)
+				for j := 0; j < count; j++ {
+					dst[start+j].Value, dst[start+j].OK = mapWordValue[V](values[j].Value, values[j].OK, words.valueKind)
+				}
+			}
+			return
+		}
 		for i, key := range keys {
 			v, found := words.get(numericCode(key))
 			dst[i].Value, dst[i].OK = mapWordValue[V](v, found, words.valueKind)

@@ -92,6 +92,25 @@ fn main() {
                 query_count,
             );
         }
+        if do_map {
+            let mut sum = 0_u64;
+            let start = Instant::now();
+            for _ in 0..rounds {
+                for chunk in black_box(&queries).chunks_exact(8) {
+                    let qs = std::array::from_fn::<_, 8, _>(|i| &chunk[i]);
+                    for v in concurrent.get_many_copied(qs) {
+                        sum = sum.wrapping_add(v.unwrap_or(0));
+                    }
+                }
+            }
+            report(
+                &format!("map_batch8_{label}"),
+                start,
+                sum,
+                rounds,
+                query_count,
+            );
+        }
     }
     let threads: usize = args.get(3).map_or(0, |v| v.parse().unwrap());
     if threads > 0 && do_map {
@@ -146,6 +165,58 @@ fn main() {
                     black_box(sum)
                 );
             });
+        }
+    }
+    if args.get(6).is_some_and(|arg| arg == "mutations") {
+        for (i, q) in queries.iter_mut().enumerate() {
+            *q = mix(mix(i as u64 + 17) % size);
+        }
+        for churn in [false, true] {
+            let label = if churn { "churn_pair" } else { "replace" };
+            if do_tree {
+                for q in &queries {
+                    tree.insert(*q, *q);
+                }
+                let mut sum = 0_u64;
+                let start = Instant::now();
+                for r in 0..rounds {
+                    for q in black_box(&queries) {
+                        if churn {
+                            sum = sum.wrapping_add(tree.remove(q).unwrap_or(0) & !1);
+                            tree.insert(*q, *q);
+                        } else {
+                            sum = sum.wrapping_add(
+                                tree.insert(*q, *q ^ (r as u64 & 1)).unwrap_or(0) & !1,
+                            );
+                        }
+                    }
+                }
+                report(&format!("tree_{label}"), start, sum, rounds, query_count);
+            }
+            if do_map {
+                for q in &queries {
+                    concurrent.insert(*q, *q).unwrap();
+                }
+                let mut sum = 0_u64;
+                let start = Instant::now();
+                for r in 0..rounds {
+                    for q in black_box(&queries) {
+                        if churn {
+                            sum = sum.wrapping_add(concurrent.remove(q).unwrap_or(0) & !1);
+                            concurrent.insert(*q, *q).unwrap();
+                        } else {
+                            sum = sum.wrapping_add(
+                                concurrent
+                                    .insert(*q, *q ^ (r as u64 & 1))
+                                    .unwrap()
+                                    .unwrap_or(0)
+                                    & !1,
+                            );
+                        }
+                    }
+                }
+                report(&format!("map_{label}"), start, sum, rounds, query_count);
+            }
         }
     }
 }

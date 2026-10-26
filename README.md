@@ -127,7 +127,7 @@ python3 internal/cpu_compare.py \
   --standard
 ```
 
-Each backend runs in a fresh process. The drivers use `uint64`/`u64` keys and values. Rust uses the pinned upstream benchmark’s mimalloc allocator, full LTO, and native CPU tuning; Go uses its normal allocator and GC settings. Go and Rust receive identical keys, query streams, and operation counts; the driver checks checksums and rotates execution order. Parallel timings exclude worker creation and final checksum reduction. Built-in `map` is read directly for read-only tests and protected by `RWMutex` for concurrent writes.
+Each backend runs in a fresh process. The drivers use `uint64`/`u64` keys and values. Rust uses the pinned upstream benchmark’s mimalloc allocator, full LTO, and native CPU tuning; Go uses its normal allocator and GC settings. Go and Rust receive identical keys, query streams, and operation counts; the driver checks checksums and rotates execution order. Eight-key batches use each library’s public batch API. Add `--mutations` to include existing-key replacements and delete/insert pairs after the read cases. Parallel timings exclude worker creation and final checksum reduction. Built-in `map` is read directly for read-only tests and protected by `RWMutex` for concurrent writes.
 
 Measure **real process memory**, separately from CPU timings:
 

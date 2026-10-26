@@ -20,6 +20,7 @@ func mix(x uint64) uint64 {
 	return x
 }
 func main() {
+	mutations := flag.Bool("mutations", false, "include replacement and delete/insert pairs")
 	kind := flag.String("kind", "all", "all, tree, map, builtin, or syncmap")
 	size := flag.Int("size", 262144, "entries")
 	queryCount := flag.Int("queries", 8192, "query buffer length (power of two)")
@@ -144,6 +145,20 @@ func main() {
 			}
 			report("tree_batch8_"+label, start, sum)
 		}
+		if doMap {
+			var dst [8]gobbtree.Result[uint64]
+			sum = 0
+			start = time.Now()
+			for r := 0; r < *rounds; r++ {
+				for i := 0; i < len(queries); i += 8 {
+					concurrent.GetMany(queries[i:i+8], dst[:])
+					for _, v := range dst {
+						sum += v.Value
+					}
+				}
+			}
+			report("map_batch8_"+label, start, sum)
+		}
 	}
 	if *threads > 0 && (doMap || doBuiltin || doSync) {
 		runtime.GOMAXPROCS(*threads)
@@ -226,6 +241,102 @@ func main() {
 			}
 		}
 	}
+	if *mutations {
+		for i := range queries {
+			queries[i] = mix(mix(uint64(i+17)) % uint64(*size))
+		}
+		for _, churn := range []bool{false, true} {
+			label := "replace"
+			if churn {
+				label = "churn_pair"
+			}
+			if doTree {
+				for _, q := range queries {
+					tree.Insert(q, q)
+				}
+				runtime.GC()
+				var sum uint64
+				start := time.Now()
+				for r := 0; r < *rounds; r++ {
+					for _, q := range queries {
+						if churn {
+							v, _ := tree.Delete(q)
+							sum += v &^ 1
+							tree.Insert(q, q)
+						} else {
+							v, _ := tree.Insert(q, q^uint64(r&1))
+							sum += v &^ 1
+						}
+					}
+				}
+				report("tree_"+label, start, sum)
+			}
+			if doMap {
+				for _, q := range queries {
+					concurrent.Insert(q, q)
+				}
+				runtime.GC()
+				var sum uint64
+				start := time.Now()
+				for r := 0; r < *rounds; r++ {
+					for _, q := range queries {
+						if churn {
+							v, _ := concurrent.Delete(q)
+							sum += v &^ 1
+							concurrent.Insert(q, q)
+						} else {
+							v, _ := concurrent.Insert(q, q^uint64(r&1))
+							sum += v &^ 1
+						}
+					}
+				}
+				report("map_"+label, start, sum)
+			}
+			if doBuiltin {
+				for _, q := range queries {
+					builtin[q] = q
+				}
+				runtime.GC()
+				var sum uint64
+				start := time.Now()
+				for r := 0; r < *rounds; r++ {
+					for _, q := range queries {
+						v := builtin[q]
+						sum += v &^ 1
+						if churn {
+							delete(builtin, q)
+							builtin[q] = q
+						} else {
+							builtin[q] = q ^ uint64(r&1)
+						}
+					}
+				}
+				report("builtin_"+label, start, sum)
+			}
+			if doSync {
+				for _, q := range queries {
+					synced.Store(q, q)
+				}
+				runtime.GC()
+				var sum uint64
+				start := time.Now()
+				for r := 0; r < *rounds; r++ {
+					for _, q := range queries {
+						if churn {
+							v, _ := synced.LoadAndDelete(q)
+							sum += v.(uint64) &^ 1
+							synced.Store(q, q)
+						} else {
+							v, _ := synced.Swap(q, q^uint64(r&1))
+							sum += v.(uint64) &^ 1
+						}
+					}
+				}
+				report("syncmap_"+label, start, sum)
+			}
+		}
+	}
+
 }
 
 // The callback runs once per worker, outside the per-operation dispatch.

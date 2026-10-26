@@ -56,7 +56,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build comparison programs
         run: |
-          git worktree add ../simd-baseline 7c0820c
+          git worktree add ../simd-baseline ae48893
           cp cmd/compare/main.go ../simd-baseline/cmd/compare/main.go
           cp standard_benchmark_test.go mutation_benchmark_test.go ../simd-baseline/
           (cd ../simd-baseline && go build -o ../compare-baseline ./cmd/compare)
@@ -74,6 +74,8 @@ jobs:
           go test -run '^$' -bench 'BenchmarkLookup|BenchmarkMutation|BenchmarkBuild|BenchmarkParallelGet' -benchtime=200ms -count=3 >> perf/public-bench.txt
           go test -run '^$' -bench BenchmarkConcurrentMaps -cpu=4 -benchtime=250ms -count=3 > perf/standard-maps.txt
           (cd ../simd-baseline && go test -run '^$' -bench 'BenchmarkMutation|BenchmarkBuild|BenchmarkConcurrentMaps/(4096|262144)/write10/^Map$' -cpu=4 -benchtime=200ms -count=3) > perf/baseline-writes.txt
+      - name: Compare replacements and key churn
+        run: python3 internal/cpu_compare.py --go ../compare-current --baseline ../compare-baseline --rust internal/oracle/target/release/compare --size 262144 --queries 8192 --rounds 32 --threads 0 --repeat 3 --standard --mutations > perf/mutations.jsonl
       - name: Compare five million entries
         run: |
           python3 internal/cpu_compare.py --go ../compare-current --baseline ../compare-baseline --rust internal/oracle/target/release/compare --size 5000000 --queries 1048576 --rounds 4 --threads 4 --repeat 3 --standard > perf/five-million.jsonl

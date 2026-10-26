@@ -13,6 +13,7 @@ type wordReadView struct {
 	blocks []atomic.Pointer[wordReadBlock]
 	routes wordRoutes
 	cache  *wordReadCache
+	leaves *wordLeafCache
 }
 type wordMap struct {
 	version            atomic.Uint64
@@ -44,6 +45,7 @@ func (m *wordMap) publish() {
 	view := &wordReadView{root: m.tree.root, level: m.tree.rootNode.level, ready: m.tree.atomicWrites, blocks: blocks, routes: routes}
 	if previous != nil {
 		view.cache = previous.cache
+		view.leaves = previous.leaves
 	}
 
 	m.view.Store(view)
@@ -60,7 +62,13 @@ func (m *wordMap) enableReads() {
 	}
 	m.tree.atomicWrites = true
 	m.publish()
-	if current := m.view.Load(); current != nil && m.count.Load() <= smallReadCacheLimit {
+	if current := m.view.Load(); current != nil {
+		if m.count.Load() > smallReadCacheLimit {
+			view := *current
+			view.leaves = newWordLeafCache(view.routes, m.count.Load())
+			m.view.Store(&view)
+			return
+		}
 		view := *current
 		nodes := 0
 		for _, slab := range m.tree.slabs {
@@ -177,9 +185,17 @@ retry:
 			continue retry
 		}
 
-		id := view.routes.lookupAtomic(key)
+		var id, parentID uint32
+		var fill bool
+		if view.leaves != nil {
+			id, fill = view.leaves.lookup(key)
+		}
 		if id == 0 {
-			id = view.root
+			id = view.routes.lookupAtomic(key)
+			parentID = id
+			if id == 0 {
+				id = view.root
+			}
 		}
 		for depth := 0; depth <= int(view.level); depth++ {
 			if id == 0 {
@@ -249,14 +265,24 @@ retry:
 					i--
 				}
 			}
+			if fill && id == parentID {
+				m.cacheLeafParent(view.leaves, n, key, i, count, version)
+			}
 			id = atomic.LoadUint32(&n.inner().children[i])
 		}
 	}
 }
 func (m *wordMap) leafFor(key uint64) uint32 {
-	if view := m.view.Load(); view != nil && view.cache != nil {
-		if id := view.cache.routes.lookupAtomic(key); id != 0 {
-			return id
+	if view := m.view.Load(); view != nil {
+		if view.cache != nil {
+			if id := view.cache.routes.lookupAtomic(key); id != 0 {
+				return id
+			}
+		}
+		if view.leaves != nil {
+			if id, _ := view.leaves.lookup(key); id != 0 {
+				return id
+			}
 		}
 	}
 	if m.tree.root == 0 {
