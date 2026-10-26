@@ -34,6 +34,12 @@ jobs:
       - run: go test -run '^$' -fuzz FuzzTree -fuzztime 20s
         env:
           GOEXPERIMENT: simd
+      - run: go test -run '^$' -fuzz FuzzFileMap -fuzztime 20s
+        env:
+          GOEXPERIMENT: simd
+      - run: go test -run '^$' -fuzz FuzzFileBytes -fuzztime 20s
+        env:
+          GOEXPERIMENT: simd
   upstream:
     runs-on: ubuntu-latest
     steps:
@@ -44,6 +50,6 @@ jobs:
           cache: false
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --locked --manifest-path internal/oracle/Cargo.toml
-      - run: GOBBTREE_ORACLE="$PWD/internal/oracle/target/release/gobbtree-oracle" go test -run TestUpstreamOracle -v
+      - run: GOBBTREE_ORACLE="$PWD/internal/oracle/target/release/gobbtree-oracle" GOBBTREE_FILE_ORACLE="$PWD/internal/oracle/target/release/file-oracle" go test -run 'TestUpstream.*Oracle' -v
         env:
           GOEXPERIMENT: simd

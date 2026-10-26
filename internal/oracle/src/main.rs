@@ -1,5 +1,6 @@
 use bbtree::unsync::BBTreeMap;
 use std::io::{self, BufRead, Write};
+mod sets;
 
 fn result(v: Option<u64>) -> String {
     v.map_or_else(|| "-".to_owned(), |v| v.to_string())
@@ -57,7 +58,9 @@ fn run<K: Ord + 'static>(decode: impl Fn(&str) -> K, encode: impl Fn(&K) -> Stri
     }
 }
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("strings") {
+    if std::env::args().nth(1).as_deref() == Some("sets") {
+        sets::run();
+    } else if std::env::args().nth(1).as_deref() == Some("strings") {
         run(decode_hex, |k: &Vec<u8>| encode_hex(k));
     } else {
         run(|s| s.parse::<u64>().unwrap(), |k| k.to_string());

@@ -52,7 +52,14 @@ func (m *Map[K, V]) Get(key K) (V, bool) {
 	}
 	if words != nil {
 		value, found := words.get(numericCode(key))
-		if words.valueKind == 1 {
+		if checkedMapWordValues {
+			if !found {
+				value = 0
+			}
+			if decoded, ok := any(value).(V); ok {
+				return decoded, found
+			}
+		} else if words.valueKind == 1 {
 			if !found {
 				value = 0
 			}
@@ -71,7 +78,14 @@ func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
 	}
 	if words != nil {
 		old, found := words.insert(numericCode(key), packWord(value))
-		if words.valueKind == 1 {
+		if checkedMapWordValues {
+			if !found {
+				old = 0
+			}
+			if decoded, ok := any(old).(V); ok {
+				return decoded, found
+			}
+		} else if words.valueKind == 1 {
 			if !found {
 				old = 0
 			}
@@ -128,7 +142,14 @@ func (m *Map[K, V]) Delete(key K) (V, bool) {
 	}
 	if words != nil {
 		old, found := words.delete(numericCode(key))
-		if words.valueKind == 1 {
+		if checkedMapWordValues {
+			if !found {
+				old = 0
+			}
+			if decoded, ok := any(old).(V); ok {
+				return decoded, found
+			}
+		} else if words.valueKind == 1 {
 			if !found {
 				old = 0
 			}
@@ -305,7 +326,17 @@ func (m *Map[K, V]) GetMany(keys []K, dst []Result[V]) {
 				if count < batchLanes {
 					for j := 0; j < count; j++ {
 						v, found := words.get(numericCode(keys[start+j]))
-						if words.valueKind == 1 {
+						if checkedMapWordValues {
+							value := v
+							if !found {
+								value = 0
+							}
+							if decoded, ok := any(value).(V); ok {
+								dst[start+j].Value, dst[start+j].OK = decoded, found
+							} else {
+								dst[start+j].Value, dst[start+j].OK = mapWordValue[V](v, found, words.valueKind)
+							}
+						} else if words.valueKind == 1 {
 							value := v
 							if !found {
 								value = 0
@@ -324,7 +355,17 @@ func (m *Map[K, V]) GetMany(keys []K, dst []Result[V]) {
 				}
 				words.getMany8(&codes, &values)
 				for j := 0; j < count; j++ {
-					if words.valueKind == 1 {
+					if checkedMapWordValues {
+						value := values[j].Value
+						if !values[j].OK {
+							value = 0
+						}
+						if decoded, ok := any(value).(V); ok {
+							dst[start+j].Value, dst[start+j].OK = decoded, values[j].OK
+						} else {
+							dst[start+j].Value, dst[start+j].OK = mapWordValue[V](values[j].Value, values[j].OK, words.valueKind)
+						}
+					} else if words.valueKind == 1 {
 						value := values[j].Value
 						if !values[j].OK {
 							value = 0
@@ -339,7 +380,17 @@ func (m *Map[K, V]) GetMany(keys []K, dst []Result[V]) {
 		}
 		for i, key := range keys {
 			v, found := words.get(numericCode(key))
-			if words.valueKind == 1 {
+			if checkedMapWordValues {
+				value := v
+				if !found {
+					value = 0
+				}
+				if decoded, ok := any(value).(V); ok {
+					dst[i].Value, dst[i].OK = decoded, found
+				} else {
+					dst[i].Value, dst[i].OK = mapWordValue[V](v, found, words.valueKind)
+				}
+			} else if words.valueKind == 1 {
 				value := v
 				if !found {
 					value = 0

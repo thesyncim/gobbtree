@@ -132,7 +132,7 @@ func TestSharedWordArenaReuse(t *testing.T) {
 }
 
 func TestDeepRoutesAfterBoundaryChanges(t *testing.T) {
-	const size = 230000
+	const size = 320000
 	var m Map[uint64, uint64]
 	for i := uint64(0); i < size; i++ {
 		key := i * 4

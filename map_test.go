@@ -3,6 +3,7 @@ package gobbtree
 import (
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -58,6 +59,49 @@ func TestConcurrentMutation(t *testing.T) {
 		t.Fatal("lost update", v)
 	}
 }
+func TestConcurrentDuplicateInsert(t *testing.T) {
+	const size, seeded = 32768, 4096
+	const mask = uint64(0xa5b63728c9d04e1f)
+	var m Map[uint64, uint64]
+	for i := uint64(0); i < seeded; i++ {
+		key := mixedKey(i)
+		m.Insert(key, key^mask)
+	}
+	m.Get(mixedKey(0)) // Enable optimistic reads before concurrent mutation.
+	var inserted atomic.Int64
+	var writers sync.WaitGroup
+	start := make(chan struct{})
+	for worker := uint64(0); worker < 8; worker++ {
+		writers.Go(func() {
+			<-start
+			for i := uint64(0); i < size; i++ {
+				key := mixedKey((i*(2*worker+1) + worker*113) % size)
+				value := key ^ mask
+				old, replaced := m.Insert(key, value)
+				if replaced {
+					if old != value {
+						t.Error("replacement returned an invalid previous value")
+					}
+				} else {
+					inserted.Add(1)
+					if old != 0 {
+						t.Error("new entry returned a nonzero previous value")
+					}
+				}
+				if got, ok := m.Get(key); !ok || got != value {
+					t.Error("inserted value was lost")
+				}
+			}
+		})
+	}
+	close(start)
+	writers.Wait()
+	if m.Len() != size || inserted.Load() != size-seeded {
+		t.Fatalf("duplicate insertion changed the count: len=%d new=%d", m.Len(), inserted.Load())
+	}
+	checkWordTree(t, &m.words.Load().tree, size)
+}
+
 func TestConcurrentReadsScansAndStructure(t *testing.T) {
 	m := New[int, int]()
 	for i := 0; i < 2000; i++ {

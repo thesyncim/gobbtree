@@ -1,6 +1,12 @@
 package gobbtree
 
-import "cmp"
+import (
+	"cmp"
+	"runtime"
+)
+
+// Native benchmarks favor these conversion forms on their respective targets.
+const checkedMapWordValues = runtime.GOARCH == "arm64"
 
 func (m *Map[K, V]) numericMap() *wordMap {
 	if words := m.words.Load(); words != nil {

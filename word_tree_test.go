@@ -7,6 +7,90 @@ import (
 	"unsafe"
 )
 
+func TestWordArenaIDsAcrossSlabGrowth(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		tr := wordTree{shared: shared, atomicWrites: shared}
+		live := make(map[uint32]uint64)
+		for i := 0; i < 16000; i++ {
+			leaf := i%23 != 0
+			id := tr.alloc(leaf)
+			if _, exists := live[id]; exists {
+				t.Fatalf("shared=%v: allocated live ID %d twice", shared, id)
+			}
+			n := tr.node(id)
+			if n.leaf != leaf || (id&wordLeafID != 0) != leaf {
+				t.Fatal("allocated node has the wrong kind")
+			}
+			value := uint64(i + 1)
+			if leaf {
+				n.entries()[0].key = value
+			} else {
+				n.keys[0] = value
+			}
+			live[id] = value
+			if i%7 == 0 {
+				tr.release(id)
+				delete(live, id)
+			}
+		}
+		nodes := 0
+		for _, slab := range tr.slabs {
+			nodes += len(slab)
+		}
+		cache := wordReadCache{nodes: make([]wordNode, nodes)}
+		positions := make(map[*wordNode]uint32)
+		for id, value := range live {
+			if got := tr.node(id).keyAt(0); got != value {
+				t.Fatalf("ID %d changed during growth: got %d, want %d", id, got, value)
+			}
+			n := cache.node(id)
+			if n == nil {
+				t.Fatalf("ID %d cannot address the compact read cache", id)
+			}
+			if other, exists := positions[n]; exists {
+				t.Fatalf("IDs %d and %d alias in the read cache", id, other)
+			}
+			positions[n] = id
+		}
+	}
+}
+
+func TestOwnerDeleteWithCollidingTags(t *testing.T) {
+	const size = 1 << 16
+	keyAt := func(i int) uint64 { return uint64(i)<<48 | uint64(i)<<8 }
+	var tr Tree[uint64, uint64]
+	for i := 0; i < size; i++ {
+		key := keyAt(i * 499 & (size - 1))
+		tr.Insert(key, ^key)
+	}
+	if len(tr.words.routes.ids) == 0 {
+		t.Fatal("test did not populate cached routes")
+	}
+	// Every key has the same byte tag. Remove in a different permutation,
+	// exercising collisions, changing minima, merges, and eventual collapse.
+	for i := 0; i < size; i++ {
+		key := keyAt(i * 31337 & (size - 1))
+		if value, ok := tr.Delete(key); !ok || value != ^key {
+			t.Fatalf("delete %x: got %x, %v", key, value, ok)
+		}
+		if value, ok := tr.Delete(key); ok || value != 0 {
+			t.Fatalf("deleted key %x still present", key)
+		}
+		if tr.Len() != size-i-1 {
+			t.Fatal("incorrect length after deletion")
+		}
+		if i%1024 == 0 {
+			checkTree(t, &tr)
+		}
+	}
+	checkTree(t, &tr)
+	tr.Insert(math.MaxUint64, 7)
+	if value, ok := tr.Delete(math.MaxUint64); !ok || value != 7 {
+		t.Fatal("could not reuse the empty tree")
+	}
+	checkTree(t, &tr)
+}
+
 func checkWordTree(t testing.TB, tr *wordTree, length int) {
 	t.Helper()
 	checkWordRoutes(t, tr)
@@ -212,6 +296,68 @@ func TestConcurrentNumericLayout(t *testing.T) {
 	}
 	if unsafe.Offsetof(atomicPairs{}.entries) != 64 || unsafe.Sizeof(atomicPairs{}) != 576 {
 		t.Fatal("atomic pairs are not aligned inside their block")
+	}
+}
+
+func TestWordOuterLeafRedistribution(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		for _, test := range []struct {
+			name   string
+			counts []int
+			index  int
+			split  bool
+		}{
+			{"left", []int{24, 32, 32, 32, 32}, 2, false},
+			{"right", []int{32, 32, 32, 32, 24}, 2, false},
+			{"choose_left", []int{24, 32, 32, 32, 28}, 2, false},
+			{"choose_right", []int{28, 32, 32, 32, 24}, 2, false},
+			{"first", []int{32, 32, 17}, 0, false},
+			{"last", []int{24, 32, 32}, 2, false},
+			{"nearly_full", []int{31, 32, 32}, 2, true},
+			{"full", []int{32, 32, 32, 32, 32}, 2, true},
+			{"two", []int{32, 32}, 0, true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				tr := wordTree{shared: shared, atomicWrites: shared, keyKind: 1, valueKind: 1}
+				tr.root = tr.alloc(false)
+				parent := tr.node(tr.root)
+				tr.rootNode = parent
+				want := make(map[uint64]uint64)
+				var previous uint32
+				for i, count := range test.counts {
+					id := tr.alloc(true)
+					leaf := tr.node(id)
+					for j := 0; j < count; j++ {
+						key := uint64(i*100 + j*2)
+						tr.insertLeaf(leaf, j, key, key+1)
+						want[key] = key + 1
+					}
+					leaf.prev = previous
+					if previous != 0 {
+						tr.node(previous).next = id
+					}
+					previous = id
+					tr.insertChild(parent, i, id)
+				}
+				key := uint64(test.index*100 + 1)
+				tr.makeLeafRoom(parent, test.index, key, key+1)
+				want[key] = key + 1
+				children := len(test.counts)
+				if test.split || !shared {
+					children++
+				}
+				if int(parent.n) != children {
+					t.Fatalf("shared=%v: got %d leaves, want %d", shared, parent.n, children)
+				}
+				checkWordTree(t, &tr, len(want))
+				tree := Tree[uint64, uint64]{words: &tr, length: len(want)}
+				for key, value := range want {
+					if got, ok := tree.Get(key); !ok || got != value {
+						t.Fatalf("shared=%v: lookup %d = %d, %v; want %d", shared, key, got, ok, value)
+					}
+				}
+			})
+		}
 	}
 }
 

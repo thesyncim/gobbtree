@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--rounds", type=int, default=4)
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--repeat", type=int, default=3)
+    parser.add_argument("--kinds", nargs="+", choices=["tree", "map"], default=["tree", "map"])
     parser.add_argument("--standard", action="store_true")
     parser.add_argument("--mutations", action="store_true")
     args = parser.parse_args()
@@ -24,7 +25,7 @@ def main():
     if args.queries < 8 or args.queries & (args.queries - 1):
         parser.error("queries must be a power of two, at least eight")
     checksums = {}
-    kinds = ["tree", "map"] + (["builtin", "syncmap"] if args.standard else [])
+    kinds = list(dict.fromkeys(args.kinds)) + (["builtin", "syncmap"] if args.standard else [])
     for repeat in range(args.repeat):
         for kind in kinds:
             backends = [("go", args.go)]
