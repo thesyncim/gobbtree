@@ -297,43 +297,51 @@ retry:
 	}
 }
 func (m *wordMap) leafFor(key uint64) uint32 {
+	id, _, _ := m.locate(key)
+	return id
+}
+
+// locate also returns the leaf's parent and child index when it descends to
+// the leaf; a cached leaf route returns no parent.
+func (m *wordMap) locate(key uint64) (uint32, *wordNode, int) {
 	if view := m.view.Load(); view != nil {
 		if view.cache != nil {
 			if id := view.cache.routes.lookupAtomic(key); id != 0 {
-				return id
+				return id, nil, 0
 			}
 		}
 		if view.leaves != nil {
 			if id, _ := view.leaves.lookup(key); id != 0 {
-				return id
+				return id, nil, 0
 			}
 		}
 	}
 	if m.tree.root == 0 {
-		return 0
+		return 0, nil, 0
 	}
 	id := m.tree.routes.lookup(key)
 	if id == 0 {
 		id = m.tree.root
 	}
+	var parent *wordNode
+	index := 0
 	for {
 		n := m.tree.node(id)
 		if n.leaf {
-			return id
+			return id, parent, index
 		}
-		id = n.inner().children[m.tree.route(n, key)]
+		parent, index = n, m.tree.route(n, key)
+		id = n.inner().children[index]
 	}
 }
-
-// While the map is serial, acquire holds the writer mutex: it excludes every
-// other writer and is itself the structural lock. Leaf latches are needed only
-// once lanes admit concurrent leaf writers, and a structural change can then
-// proceed without releasing and reacquiring the writer.
 func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	guard := m.structure.acquire(key)
 	serial := guard.lane == nil
-	if id := m.leafFor(key); id != 0 {
+	id, parent, index := m.locate(key)
+	var leaf *wordNode
+	if id != 0 {
 		n := m.tree.node(id)
+		leaf = n
 		if !serial {
 			n.mu.Lock()
 		}
@@ -378,6 +386,12 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	defer m.endStructure(guard)
 	var old uint64
 	var replaced bool
+	// A serial writer never released the writer lock, so the located parent
+	// still holds the absent key's leaf at index.
+	if serial && parent != nil && m.tree.insertAtParent(parent, index, leaf, key, value) {
+		m.count.Add(1)
+		return 0, false
+	}
 	if !m.tree.insertSharedAtRoute(key, value) {
 		old, replaced = m.tree.insert(key, value)
 	}

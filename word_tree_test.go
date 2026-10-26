@@ -199,11 +199,13 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 			if i > 0 && n.keyAt(i-1) >= n.keyAt(i) {
 				t.Fatal("unordered numeric node")
 			}
+			// Unshared internal nodes route by key, inline and directory
+			// columns; their tags are unused and not maintained.
 			tag := uint8(n.keyAt(i))
 			if tr.shared && !n.leaf {
 				tag = uint8(n.keyAt(i) >> uint(n.sequence.Load()>>7&63))
 			}
-			if n.tags[i] != tag {
+			if (tr.shared || n.leaf) && n.tags[i] != tag {
 				t.Fatal("stale numeric tag")
 			}
 		}
@@ -212,7 +214,7 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 			if tr.shared && !n.leaf {
 				padding = 255
 			}
-			if n.keyAt(i) != math.MaxUint64 || n.tags[i] != padding {
+			if n.keyAt(i) != math.MaxUint64 || (tr.shared || n.leaf) && n.tags[i] != padding {
 				t.Fatal("invalid numeric padding")
 			}
 		}
@@ -650,6 +652,39 @@ func TestWordLowerEntryMatchesBinarySearch(t *testing.T) {
 			if got := n.lowerEntry(key); got != want {
 				t.Fatalf("count %d key %d: got %d want %d", count, key, got, want)
 			}
+		}
+	}
+}
+
+func TestFillDirectoryMatchesBucketScan(t *testing.T) {
+	random := uint64(7)
+	for trial := 0; trial < 20000; trial++ {
+		var codes [nodeSize]uint64
+		n := int(random % (nodeSize + 1))
+		for i := range codes {
+			random ^= random << 13
+			random ^= random >> 7
+			random ^= random << 17
+			codes[i] = random
+			if trial%3 == 0 {
+				codes[i] &= 0x07ff_ffff_ffff_ffff // crowd a few buckets
+			}
+		}
+		slices.Sort(codes[:n])
+		for i := n; i < nodeSize; i++ {
+			codes[i] = ^uint64(0)
+		}
+		var got, want [256]uint8
+		fillDirectory(&got, &codes, n)
+		i := 0
+		for bucket := range want {
+			for i < n && codes[i] < uint64(bucket)<<56 {
+				i++
+			}
+			want[bucket] = uint8(i)
+		}
+		if got != want {
+			t.Fatalf("trial %d n=%d: directory mismatch", trial, n)
 		}
 	}
 }
