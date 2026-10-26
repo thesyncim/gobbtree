@@ -7,6 +7,7 @@ import (
 	"io"
 	"iter"
 	"os"
+	"runtime"
 	"sync"
 )
 
@@ -19,6 +20,7 @@ type FileMap[K cmp.Ordered, V any] struct {
 	layout       diskLayout
 	root, length int
 	unmap        func() error
+	cleanup      runtime.Cleanup
 }
 
 // OpenFileMap validates and takes an owned copy of a serialized snapshot.
@@ -35,7 +37,13 @@ func openFileMap[K cmp.Ordered, V any](data []byte, unmap func() error) (*FileMa
 	if err != nil {
 		return nil, err
 	}
-	return &FileMap[K, V]{data: data[:int(binary.LittleEndian.Uint64(data[40:]))], layout: l, root: root, length: count, unmap: unmap}, nil
+	m := &FileMap[K, V]{data: data[:int(binary.LittleEndian.Uint64(data[40:]))], layout: l, root: root, length: count, unmap: unmap}
+	if unmap != nil {
+		// The cleanup argument holds the mapping, never m. Explicit Close
+		// releases it promptly; unreachable maps also release OS resources.
+		m.cleanup = runtime.AddCleanup(m, func(release func() error) { _ = release() }, unmap)
+	}
+	return m, nil
 }
 
 // ReadFile loads and validates a snapshot without rebuilding its tree.
@@ -107,6 +115,7 @@ func MmapFileRange[K cmp.Ordered, V any](file *os.File, offset, length int64) (*
 func (m *FileMap[K, V]) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.cleanup.Stop()
 	m.data = nil
 	m.root = 0
 	m.length = 0

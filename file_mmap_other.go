@@ -2,11 +2,8 @@
 
 package gobbtree
 
-import (
-	"fmt"
-	"os"
-)
+import "os"
 
 func mapFileReadOnly(_ *os.File, _ int64, _ int) ([]byte, func() error, error) {
-	return nil, nil, fmt.Errorf("gobbtree: mmap is unavailable on this platform; use ReadFile")
+	return nil, nil, ErrMmapUnavailable
 }

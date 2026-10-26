@@ -1,6 +1,13 @@
 use bbtree_mmap::BBTreeMapFile;
 use std::io::{self, BufRead};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+struct ThreeWords([u64; 3]);
+// Exactly three plain integers, with no padding, pointers or invalid bit patterns.
+unsafe impl bbtree::file::PlainBytes for ThreeWords {}
+bbtree_mmap::plain_disk_type!(ThreeWords);
+
 fn mix(mut x: u64) -> u64 {
     x ^= x >> 30;
     x = x.wrapping_mul(0xbf58476d1ce4e5b9);
@@ -13,6 +20,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let command = args.get(1).map(String::as_str).unwrap_or("");
     let path = args.get(2).ok_or("missing file path")?;
+    if command == "write-tagged" {
+        let size: u64 = args.get(3).ok_or("missing size")?.parse()?;
+        let entries = (0..size).map(|i| (format!("shared/{i:016x}"), ThreeWords([i, i ^ u64::MAX, i * 7])));
+        BBTreeMapFile::<String, ThreeWords>::create(path, entries)?;
+        return Ok(());
+    }
+    if command == "dump-tagged" {
+        let file = BBTreeMapFile::<String, ThreeWords>::read(path)?;
+        println!("len {}", file.len());
+        for (key, value) in file.iter() {
+            println!("{key} {} {} {}", value.0[0], value.0[1], value.0[2]);
+            if file.get(key) != Some(value) { return Err("tagged lookup mismatch".into()); }
+        }
+        return Ok(());
+    }
     if command == "write-text" {
         let size: usize = args.get(3).ok_or("missing size")?.parse()?;
         let entries = (0..size).map(|i| {

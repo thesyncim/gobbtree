@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -117,6 +118,9 @@ func TestFileMapMmapAndReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, err := MmapFile[uint64, uint64](path)
+	if errors.Is(err, ErrMmapUnavailable) {
+		t.Skip(err)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,6 +190,9 @@ func TestFileMapRangesAndCloseInIterator(t *testing.T) {
 		var m *FileMap[uint64, uint64]
 		if mmap {
 			m, err = MmapFileRange[uint64, uint64](f, r.Offset, r.Length)
+			if errors.Is(err, ErrMmapUnavailable) {
+				continue
+			}
 		} else {
 			m, err = ReadFileRange[uint64, uint64](f, r.Offset, r.Length)
 		}
@@ -297,7 +304,7 @@ func TestUpstreamFileOracle(t *testing.T) {
 	if oracle == "" {
 		t.Skip("set GOBBTREE_FILE_ORACLE to the pinned Rust file-oracle binary")
 	}
-	run := func(args ...string) []byte {
+	run := func(t *testing.T, args ...string) []byte {
 		t.Helper()
 		out, err := exec.Command(oracle, args...).CombinedOutput()
 		if err != nil {
@@ -305,12 +312,47 @@ func TestUpstreamFileOracle(t *testing.T) {
 		}
 		return out
 	}
+	for _, n := range []int{1, 25, 3000} {
+		t.Run(fmt.Sprintf("tagged/%d", n), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "rust.bbt")
+			run(t, "write-tagged", path, fmt.Sprint(n))
+			m, err := ReadFile[string, [3]uint64](path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer m.Close()
+			if m.layout.leaf.tags < 0 {
+				t.Fatal("fixture does not exercise tags")
+			}
+			var dump strings.Builder
+			fmt.Fprintf(&dump, "len %d\n", m.Len())
+			for k, v := range m.All() {
+				fmt.Fprintf(&dump, "%s %d %d %d\n", k, v[0], v[1], v[2])
+				if actual, ok := m.Get(k); !ok || actual != v {
+					t.Fatal("tagged get", k)
+				}
+			}
+			if dump.String() != string(run(t, "dump-tagged", path)) {
+				t.Fatal("tagged iteration")
+			}
+			goPath := filepath.Join(t.TempDir(), "go.bbt")
+			if err = CreateFile(goPath, m.All()); err != nil {
+				t.Fatal(err)
+			}
+			if dump.String() != string(run(t, "dump-tagged", goPath)) {
+				t.Fatal("Rust reading Go tagged file")
+			}
+		})
+	}
 	for _, n := range []int{0, 1, 55, 56, 57, 2800, 5000} {
 		for _, mode := range []string{"dense", "prefix", "mixed"} {
 			t.Run(fmt.Sprintf("%d/%s", n, mode), func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "rust.bbt")
-				run("write", path, fmt.Sprint(n), mode)
+				run(t, "write", path, fmt.Sprint(n), mode)
 				m, err := MmapFile[uint64, uint64](path)
+				if errors.Is(err, ErrMmapUnavailable) {
+					m, err = ReadFile[uint64, uint64](path)
+				}
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -323,14 +365,14 @@ func TestUpstreamFileOracle(t *testing.T) {
 						t.Fatalf("Rust file lookup %x", k)
 					}
 				}
-				if want := string(run("dump", path)); dump.String() != want {
+				if want := string(run(t, "dump", path)); dump.String() != want {
 					t.Fatal("Rust file iteration differs")
 				}
 				goPath := filepath.Join(t.TempDir(), "go.bbt")
 				if err = CreateFile(goPath, m.All()); err != nil {
 					t.Fatal(err)
 				}
-				if actual := string(run("dump", goPath)); actual != dump.String() {
+				if actual := string(run(t, "dump", goPath)); actual != dump.String() {
 					t.Fatal("Rust reading Go file differs")
 				}
 			})
@@ -339,8 +381,11 @@ func TestUpstreamFileOracle(t *testing.T) {
 	for _, n := range []int{0, 1, 42, 43, 4000} {
 		t.Run(fmt.Sprintf("text/%d", n), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "rust.bbt")
-			run("write-text", path, fmt.Sprint(n))
+			run(t, "write-text", path, fmt.Sprint(n))
 			m, err := MmapFile[string, []byte](path)
+			if errors.Is(err, ErrMmapUnavailable) {
+				m, err = ReadFile[string, []byte](path)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -354,21 +399,21 @@ func TestUpstreamFileOracle(t *testing.T) {
 					t.Fatal("text get", k)
 				}
 			}
-			if dump.String() != string(run("dump-text", path)) {
+			if dump.String() != string(run(t, "dump-text", path)) {
 				t.Fatal("text iteration differs")
 			}
 			goPath := filepath.Join(t.TempDir(), "go.bbt")
 			if err = CreateFile(goPath, m.All()); err != nil {
 				t.Fatal(err)
 			}
-			if dump.String() != string(run("dump-text", goPath)) {
+			if dump.String() != string(run(t, "dump-text", goPath)) {
 				t.Fatal("Rust reading Go text differs")
 			}
 		})
 	}
 	t.Run("plain", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "rust.bbt")
-		run("write-small", path, "5000")
+		run(t, "write-small", path, "5000")
 		m, err := ReadFile[int32, [13]byte](path)
 		if err != nil {
 			t.Fatal(err)
@@ -382,14 +427,14 @@ func TestUpstreamFileOracle(t *testing.T) {
 				t.Fatalf("plain get %d", k)
 			}
 		}
-		if dump.String() != string(run("dump-small", path)) {
+		if dump.String() != string(run(t, "dump-small", path)) {
 			t.Fatal("plain iteration differs")
 		}
 		goPath := filepath.Join(t.TempDir(), "go.bbt")
 		if err = CreateFile(goPath, m.All()); err != nil {
 			t.Fatal(err)
 		}
-		if dump.String() != string(run("dump-small", goPath)) {
+		if dump.String() != string(run(t, "dump-small", goPath)) {
 			t.Fatal("Rust reading Go plain differs")
 		}
 	})
@@ -475,6 +520,72 @@ func TestFileMapNumericReadAllocations(t *testing.T) {
 		}
 	}); n != 0 {
 		t.Fatalf("numeric Get allocated %g times", n)
+	}
+}
+
+func TestFileMapOwnedResultsAndCleanup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "owned.bbt")
+	if err := CreateFile(path, func(yield func(string, []byte) bool) { yield("key", []byte("value")) }); err != nil {
+		t.Fatal(err)
+	}
+	m, err := MmapFile[string, []byte](path)
+	if errors.Is(err, ErrMmapUnavailable) {
+		m, err = ReadFile[string, []byte](path)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, v, ok := m.GetKeyValue("key")
+	if !ok {
+		t.Fatal("lookup")
+	}
+	v[0] = 'X'
+	original, _ := m.Get("key")
+	if string(original) != "value" {
+		t.Fatal("borrowed value escaped")
+	}
+	if err = m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if k != "key" || string(v) != "Xalue" || string(original) != "value" {
+		t.Fatal("results changed after close")
+	}
+	w, _ := NewFileWriter(fileEntries(1))
+	var releases atomic.Int32
+	mock, err := openFileMap[uint64, uint64](w.Bytes(), func() error { releases.Add(1); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.Close()
+	mock.Close()
+	if releases.Load() != 1 {
+		t.Fatal("duplicate release")
+	}
+}
+
+func TestFileMapStringReadAllocations(t *testing.T) {
+	w, err := NewFileWriter(func(yield func(string, uint64) bool) {
+		for i := 0; i < 1000; i++ {
+			if !yield(fmt.Sprintf("prefix/%08d", i), uint64(i)) {
+				return
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := OpenFileMap[string, uint64](w.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	if n := testing.AllocsPerRun(1000, func() {
+		v, ok := m.Get("prefix/00000400")
+		if !ok || v != 400 {
+			panic("lookup")
+		}
+	}); n != 0 {
+		t.Fatalf("string lookup allocated %g times", n)
 	}
 }
 

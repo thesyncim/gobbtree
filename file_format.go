@@ -9,10 +9,11 @@ import (
 )
 
 var (
-	ErrFileFormat   = errors.New("gobbtree: invalid file map")
-	ErrFileLayout   = errors.New("gobbtree: incompatible file layout")
-	ErrFileType     = errors.New("gobbtree: unsupported file type")
-	ErrNotAscending = errors.New("gobbtree: file entries must be strictly ascending")
+	ErrFileFormat      = errors.New("gobbtree: invalid file map")
+	ErrFileLayout      = errors.New("gobbtree: incompatible file layout")
+	ErrFileType        = errors.New("gobbtree: unsupported file type")
+	ErrNotAscending    = errors.New("gobbtree: file entries must be strictly ascending")
+	ErrMmapUnavailable = errors.New("gobbtree: mmap unavailable on this platform")
 )
 
 const fileHeaderSize = 64
@@ -47,6 +48,7 @@ func diskTypeOf(t reflect.Type) (diskType, error) {
 		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Uintptr,
 		reflect.Float32, reflect.Float64:
 	default:
 		return d, fmt.Errorf("%w: %v", ErrFileType, t)
@@ -88,18 +90,16 @@ func diskPut[T any](data *[]byte, slot int, value T, d diskType) error {
 		return nil
 	}
 	v := reflect.ValueOf(value)
-	var bytes []byte
-	if d.kind == reflect.String {
-		bytes = []byte(v.String())
-	} else {
-		bytes = v.Bytes()
-	}
-	if uint64(len(bytes)) >= uint64(1)<<32-1 || uint64(len(*data)-slot) > uint64(1)<<32-1 {
+	if uint64(v.Len()) >= uint64(1)<<32-1 || uint64(len(*data)-slot) > uint64(1)<<32-1 {
 		return fmt.Errorf("%w: byte span exceeds uint32", ErrFileFormat)
 	}
-	binary.NativeEndian.PutUint32((*data)[slot:], uint32(len(bytes)))
+	binary.NativeEndian.PutUint32((*data)[slot:], uint32(v.Len()))
 	binary.NativeEndian.PutUint32((*data)[slot+4:], uint32(len(*data)-slot))
-	*data = append(*data, bytes...)
+	if d.kind == reflect.String {
+		*data = append(*data, v.String()...)
+	} else {
+		*data = append(*data, v.Bytes()...)
+	}
 	return nil
 }
 
