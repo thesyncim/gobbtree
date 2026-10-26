@@ -42,8 +42,10 @@ func diskCount16(values []uint16, key uint16) (int, int) {
 		target := archsimd.BroadcastUint16x16(key)
 		for ; i+16 <= len(values); i += 16 {
 			v := archsimd.LoadUint16x16(values[i : i+16])
-			lo += bits.OnesCount64(uint64(v.Less(target).ToBits()))
-			eq += bits.OnesCount64(uint64(v.Equal(target).ToBits()))
+			// Mask16x16.ToBits requires AVX-512. Count the two byte
+			// sign bits per word instead, using AVX2's VPMOVMSKB.
+			lo += diskMask16Count(v.Less(target))
+			eq += diskMask16Count(v.Equal(target))
 		}
 	}
 	if archsimd.X86.AVX2() || archsimd.X86.AVX512() {
@@ -58,6 +60,11 @@ func diskCount16(values []uint16, key uint16) (int, int) {
 		}
 	}
 	return lo, lo + eq
+}
+
+func diskMask16Count(mask archsimd.Mask16x16) int {
+	bytes := mask.ToInt16x16().AsInt8x32()
+	return bits.OnesCount32(bytes.Less(archsimd.Int8x32{}).ToBits()) / 2
 }
 
 func diskCount32(values []uint32, key uint32) (int, int) {
