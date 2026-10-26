@@ -1,7 +1,7 @@
 {
   "date": "2026-10-26",
-  "go_source": "860335918e56d22262b88feb7960463a91e967b9",
-  "baseline_go_source": "f368bae2f6d45d217482d707e899b4bed71dcf36",
+  "go_source": "c1567888316ed3a0c2ff4e7895fddc6eb1558ad3",
+  "baseline_go_source": "cf9a945c47ad464a64efa142542d7f1bc5cea14d",
   "rust_source": "8adae97a0ed97e5c98fa2790312eb0aec9719846",
   "hardware": {
     "cpu": "Apple M4 Max",
@@ -35,7 +35,7 @@
     "renderer": "internal/render_benchmarks.py",
     "distinct_churn": "Unique keys selected by a coprime stride over the full insertion domain alternate with a disjoint key set. Every deletion must succeed with the expected value and every insertion must be fresh; checksums are independently computed by the Python harness.",
     "distinct_operation_count": "min(entries, queries) keys per round; rounds multiplied by floor(queries/min(entries, queries)). All recorded sizes execute 4194304 pairs.",
-    "before_after": "The 50M CPU and RSS matrices include the pre-optimization Go source, using the same corrected comparison harness. Smaller sizes compare the current Go source with Rust."
+    "before_after": "The 50M CPU and RSS matrices include the preceding Go implementation, using the same corrected comparison harness. Smaller sizes compare the current Go source with Rust."
   },
   "limitations": [
     "Background system CPU activity was observed during local measurements. Small CPU differences are inconclusive.",
@@ -52,11 +52,12 @@
       "vet",
       "linux/amd64 cross-compile",
       "internal routing boundary tests",
+      "Go compiler output confirms write-mode checks removed from atomic-copy loops",
       "unique churn checks at 1, 4096, 5000 and 262144 entries"
     ],
-    "native_amd64_source": "4ec3bdd7010ea86300f458fd6ce02c91ddd924e0",
-    "native_amd64_run": "https://github.com/thesyncim/gobbtree/actions/runs/40338841502",
-    "correctness_run": "https://github.com/thesyncim/gobbtree/actions/runs/40346852125"
+    "native_amd64_source": "c1567888316ed3a0c2ff4e7895fddc6eb1558ad3",
+    "native_amd64_run": "https://github.com/thesyncim/gobbtree/actions/runs/40369901961",
+    "correctness_run": "https://github.com/thesyncim/gobbtree/actions/runs/40369901996"
   },
   "cpu": [
     {
@@ -75,27 +76,399 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 10.891,
+          "ns_per_op": 15.902,
           "checksum": 2987319100310082560
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 10.461,
+          "ns_per_op": 10.811,
           "checksum": 2987319100310082560
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 11.36,
+          "ns_per_op": 11.25,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 10.657,
+          "ns_per_op": 10.77,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 16.853,
+          "ns_per_op": 16.971,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 44.928,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_new_pair",
+          "ns_per_op": 91.274,
+          "checksum": 5029692098747153920
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 4096,
+      "distinct_rounds": 1024,
+      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 12.296,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 12.039,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 11.274,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 11.319,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 12.513,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 68.003,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_new_pair",
+          "ns_per_op": 88.391,
+          "checksum": 5029692098747153920
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 4096,
+      "distinct_rounds": 1024,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 9.233,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 9.348,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 9.334,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 8.67,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 2.527,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 4.72,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 17.81,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 98.782,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_new_pair",
+          "ns_per_op": 127.81,
+          "checksum": 5029692098747153920
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 4096,
+      "distinct_rounds": 1024,
+      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 12.539,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 12.582,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 11.574,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 11.817,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 3.71,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 4.829,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 14.202,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 69.065,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "map_churn_new_pair",
+          "ns_per_op": 92.562,
+          "checksum": 5029692098747153920
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 4096,
+      "distinct_rounds": 1024,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 4.37,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 4.771,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 27.542,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 1.269,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 19.089,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 11.29,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 20.853,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 0,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 4096,
+      "distinct_rounds": 1024,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 17.258,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 16.638,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 5.024,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 6.681,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 50.253,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 61.92,
+          "checksum": 2987319100307928064
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 4096,
+      "distinct_rounds": 1024,
+      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 11.676,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 11.423,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 11.047,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 11.409,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 12.412,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 68.292,
+          "checksum": 2987319100307928064
+        },
+        {
+          "name": "tree_churn_new_pair",
+          "ns_per_op": 88.21,
+          "checksum": 5029692098747153920
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 4096,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 4096,
+      "distinct_rounds": 1024,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 11.009,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 10.714,
+          "checksum": 2987319100310082560
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 11.268,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 10.738,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 17.237,
           "checksum": 2987319100307928064
         },
         {
@@ -105,15 +478,15 @@
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 91.214,
+          "ns_per_op": 92.2,
           "checksum": 5029692098747153920
         }
       ]
     },
     {
       "language": "rust",
-      "kind": "tree",
-      "repeat": 0,
+      "kind": "map",
+      "repeat": 1,
       "entries": 4096,
       "queries": 8192,
       "rounds": 512,
@@ -122,41 +495,51 @@
       "distinct": true,
       "distinct_queries": 4096,
       "distinct_rounds": 1024,
-      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=tree",
+      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=map",
       "cases": [
         {
-          "name": "tree_hit",
-          "ns_per_op": 11.101,
+          "name": "map_hit",
+          "ns_per_op": 12.775,
           "checksum": 2987319100310082560
         },
         {
-          "name": "tree_batch8_hit",
-          "ns_per_op": 11.301,
+          "name": "map_batch8_hit",
+          "ns_per_op": 12.914,
           "checksum": 2987319100310082560
         },
         {
-          "name": "tree_miss",
-          "ns_per_op": 10.606,
+          "name": "map_miss",
+          "ns_per_op": 11.498,
           "checksum": 0
         },
         {
-          "name": "tree_batch8_miss",
-          "ns_per_op": 10.985,
+          "name": "map_batch8_miss",
+          "ns_per_op": 11.933,
           "checksum": 0
         },
         {
-          "name": "tree_replace",
-          "ns_per_op": 12.995,
+          "name": "map_parallel4_hit",
+          "ns_per_op": 3.707,
+          "checksum": 11949276401231712256
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 4.791,
+          "checksum": 315070452704558080
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 14.342,
           "checksum": 2987319100307928064
         },
         {
-          "name": "tree_churn_pair",
-          "ns_per_op": 67.955,
+          "name": "map_churn_pair",
+          "ns_per_op": 69.391,
           "checksum": 2987319100307928064
         },
         {
-          "name": "tree_churn_new_pair",
-          "ns_per_op": 88.469,
+          "name": "map_churn_new_pair",
+          "ns_per_op": 93.681,
           "checksum": 5029692098747153920
         }
       ]
@@ -164,7 +547,7 @@
     {
       "language": "go",
       "kind": "map",
-      "repeat": 0,
+      "repeat": 1,
       "entries": 4096,
       "queries": 8192,
       "rounds": 512,
@@ -177,108 +560,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 8.961,
+          "ns_per_op": 9.538,
           "checksum": 2987319100310082560
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 8.574,
+          "ns_per_op": 9.385,
           "checksum": 2987319100310082560
         },
         {
           "name": "map_miss",
-          "ns_per_op": 8.676,
+          "ns_per_op": 9.259,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 8.397,
+          "ns_per_op": 8.644,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 2.513,
+          "ns_per_op": 2.509,
           "checksum": 11949276401231712256
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 4.684,
+          "ns_per_op": 4.827,
           "checksum": 315070452704558080
         },
         {
           "name": "map_replace",
-          "ns_per_op": 17.694,
+          "ns_per_op": 17.25,
           "checksum": 2987319100307928064
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 96.912,
+          "ns_per_op": 98.329,
           "checksum": 2987319100307928064
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 124.58,
-          "checksum": 5029692098747153920
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "map",
-      "repeat": 0,
-      "entries": 4096,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 4096,
-      "distinct_rounds": 1024,
-      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=map",
-      "cases": [
-        {
-          "name": "map_hit",
-          "ns_per_op": 12.209,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "map_batch8_hit",
-          "ns_per_op": 12.414,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "map_miss",
-          "ns_per_op": 11.399,
-          "checksum": 0
-        },
-        {
-          "name": "map_batch8_miss",
-          "ns_per_op": 11.334,
-          "checksum": 0
-        },
-        {
-          "name": "map_parallel4_hit",
-          "ns_per_op": 3.704,
-          "checksum": 11949276401231712256
-        },
-        {
-          "name": "map_parallel4_write10",
-          "ns_per_op": 4.803,
-          "checksum": 315070452704558080
-        },
-        {
-          "name": "map_replace",
-          "ns_per_op": 13.638,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "map_churn_pair",
-          "ns_per_op": 67.357,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "map_churn_new_pair",
-          "ns_per_op": 92.296,
+          "ns_per_op": 128.195,
           "checksum": 5029692098747153920
         }
       ]
@@ -286,7 +608,7 @@
     {
       "language": "go",
       "kind": "builtin",
-      "repeat": 0,
+      "repeat": 1,
       "entries": 4096,
       "queries": 8192,
       "rounds": 512,
@@ -299,37 +621,37 @@
       "cases": [
         {
           "name": "builtin_hit",
-          "ns_per_op": 4.535,
+          "ns_per_op": 4.604,
           "checksum": 2987319100310082560
         },
         {
           "name": "builtin_miss",
-          "ns_per_op": 4.59,
+          "ns_per_op": 5.129,
           "checksum": 0
         },
         {
           "name": "rwmap_parallel4_hit",
-          "ns_per_op": 27.998,
+          "ns_per_op": 27.832,
           "checksum": 11949276401231712256
         },
         {
           "name": "builtin_parallel4_hit",
-          "ns_per_op": 1.256,
+          "ns_per_op": 1.277,
           "checksum": 11949276401231712256
         },
         {
           "name": "rwmap_parallel4_write10",
-          "ns_per_op": 19.043,
+          "ns_per_op": 19.437,
           "checksum": 315070452704558080
         },
         {
           "name": "builtin_replace",
-          "ns_per_op": 11.183,
+          "ns_per_op": 12.243,
           "checksum": 2987319100307928064
         },
         {
           "name": "builtin_churn_pair",
-          "ns_per_op": 20.905,
+          "ns_per_op": 21.952,
           "checksum": 2987319100307928064
         }
       ]
@@ -337,7 +659,7 @@
     {
       "language": "go",
       "kind": "syncmap",
-      "repeat": 0,
+      "repeat": 1,
       "entries": 4096,
       "queries": 8192,
       "rounds": 512,
@@ -350,91 +672,40 @@
       "cases": [
         {
           "name": "syncmap_hit",
-          "ns_per_op": 17.121,
+          "ns_per_op": 17.639,
           "checksum": 2987319100310082560
         },
         {
           "name": "syncmap_miss",
-          "ns_per_op": 16.529,
+          "ns_per_op": 16.47,
           "checksum": 0
         },
         {
           "name": "syncmap_parallel4_hit",
-          "ns_per_op": 5.109,
+          "ns_per_op": 4.958,
           "checksum": 11949276401231712256
         },
         {
           "name": "syncmap_parallel4_write10",
-          "ns_per_op": 6.974,
+          "ns_per_op": 6.631,
           "checksum": 315070452704558080
         },
         {
           "name": "syncmap_replace",
-          "ns_per_op": 52.978,
+          "ns_per_op": 50.507,
           "checksum": 2987319100307928064
         },
         {
           "name": "syncmap_churn_pair",
-          "ns_per_op": 62.959,
+          "ns_per_op": 62.671,
           "checksum": 2987319100307928064
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "tree",
-      "repeat": 1,
-      "entries": 4096,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 4096,
-      "distinct_rounds": 1024,
-      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=tree",
-      "cases": [
-        {
-          "name": "tree_hit",
-          "ns_per_op": 11.361,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "tree_batch8_hit",
-          "ns_per_op": 11.455,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "tree_miss",
-          "ns_per_op": 10.759,
-          "checksum": 0
-        },
-        {
-          "name": "tree_batch8_miss",
-          "ns_per_op": 11.015,
-          "checksum": 0
-        },
-        {
-          "name": "tree_replace",
-          "ns_per_op": 12.088,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "tree_churn_pair",
-          "ns_per_op": 67.351,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "tree_churn_new_pair",
-          "ns_per_op": 88.563,
-          "checksum": 5029692098747153920
         }
       ]
     },
     {
       "language": "go",
       "kind": "tree",
-      "repeat": 1,
+      "repeat": 2,
       "entries": 4096,
       "queries": 8192,
       "rounds": 512,
@@ -447,307 +718,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 10.845,
+          "ns_per_op": 11.199,
           "checksum": 2987319100310082560
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 10.496,
+          "ns_per_op": 10.786,
           "checksum": 2987319100310082560
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 11.325,
-          "checksum": 0
-        },
-        {
-          "name": "tree_batch8_miss",
-          "ns_per_op": 10.557,
-          "checksum": 0
-        },
-        {
-          "name": "tree_replace",
-          "ns_per_op": 17.054,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "tree_churn_pair",
-          "ns_per_op": 45.414,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "tree_churn_new_pair",
-          "ns_per_op": 92.76,
-          "checksum": 5029692098747153920
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "map",
-      "repeat": 1,
-      "entries": 4096,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 4096,
-      "distinct_rounds": 1024,
-      "build": "upstream 8adae97 allocator=mimalloc n=4096 rounds=512 queries=8192 kind=map",
-      "cases": [
-        {
-          "name": "map_hit",
-          "ns_per_op": 12.711,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "map_batch8_hit",
-          "ns_per_op": 12.795,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "map_miss",
           "ns_per_op": 11.348,
           "checksum": 0
         },
         {
-          "name": "map_batch8_miss",
-          "ns_per_op": 11.528,
-          "checksum": 0
-        },
-        {
-          "name": "map_parallel4_hit",
-          "ns_per_op": 3.716,
-          "checksum": 11949276401231712256
-        },
-        {
-          "name": "map_parallel4_write10",
-          "ns_per_op": 4.826,
-          "checksum": 315070452704558080
-        },
-        {
-          "name": "map_replace",
-          "ns_per_op": 14.238,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "map_churn_pair",
-          "ns_per_op": 67.775,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "map_churn_new_pair",
-          "ns_per_op": 91.753,
-          "checksum": 5029692098747153920
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "map",
-      "repeat": 1,
-      "entries": 4096,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 4096,
-      "distinct_rounds": 1024,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "map_hit",
-          "ns_per_op": 9.02,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "map_batch8_hit",
-          "ns_per_op": 8.895,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "map_miss",
-          "ns_per_op": 9.169,
-          "checksum": 0
-        },
-        {
-          "name": "map_batch8_miss",
-          "ns_per_op": 8.916,
-          "checksum": 0
-        },
-        {
-          "name": "map_parallel4_hit",
-          "ns_per_op": 2.495,
-          "checksum": 11949276401231712256
-        },
-        {
-          "name": "map_parallel4_write10",
-          "ns_per_op": 4.63,
-          "checksum": 315070452704558080
-        },
-        {
-          "name": "map_replace",
-          "ns_per_op": 17.199,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "map_churn_pair",
-          "ns_per_op": 97.353,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "map_churn_new_pair",
-          "ns_per_op": 127.068,
-          "checksum": 5029692098747153920
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "builtin",
-      "repeat": 1,
-      "entries": 4096,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 4096,
-      "distinct_rounds": 1024,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=builtin procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "builtin_hit",
-          "ns_per_op": 4.354,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "builtin_miss",
-          "ns_per_op": 4.915,
-          "checksum": 0
-        },
-        {
-          "name": "rwmap_parallel4_hit",
-          "ns_per_op": 27.436,
-          "checksum": 11949276401231712256
-        },
-        {
-          "name": "builtin_parallel4_hit",
-          "ns_per_op": 1.265,
-          "checksum": 11949276401231712256
-        },
-        {
-          "name": "rwmap_parallel4_write10",
-          "ns_per_op": 18.765,
-          "checksum": 315070452704558080
-        },
-        {
-          "name": "builtin_replace",
-          "ns_per_op": 11.497,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "builtin_churn_pair",
-          "ns_per_op": 20.93,
-          "checksum": 2987319100307928064
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "syncmap",
-      "repeat": 1,
-      "entries": 4096,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 4096,
-      "distinct_rounds": 1024,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=syncmap procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "syncmap_hit",
-          "ns_per_op": 17.399,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "syncmap_miss",
-          "ns_per_op": 16.983,
-          "checksum": 0
-        },
-        {
-          "name": "syncmap_parallel4_hit",
-          "ns_per_op": 4.819,
-          "checksum": 11949276401231712256
-        },
-        {
-          "name": "syncmap_parallel4_write10",
-          "ns_per_op": 6.801,
-          "checksum": 315070452704558080
-        },
-        {
-          "name": "syncmap_replace",
-          "ns_per_op": 49.998,
-          "checksum": 2987319100307928064
-        },
-        {
-          "name": "syncmap_churn_pair",
-          "ns_per_op": 61.995,
-          "checksum": 2987319100307928064
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "tree",
-      "repeat": 2,
-      "entries": 4096,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 4096,
-      "distinct_rounds": 1024,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=4096 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "tree_hit",
-          "ns_per_op": 10.979,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "tree_batch8_hit",
-          "ns_per_op": 10.712,
-          "checksum": 2987319100310082560
-        },
-        {
-          "name": "tree_miss",
-          "ns_per_op": 11.125,
-          "checksum": 0
-        },
-        {
           "name": "tree_batch8_miss",
-          "ns_per_op": 10.595,
+          "ns_per_op": 10.774,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 17.015,
+          "ns_per_op": 17.427,
           "checksum": 2987319100307928064
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 46.958,
+          "ns_per_op": 45.63,
           "checksum": 2987319100307928064
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 93.402,
+          "ns_per_op": 94.174,
           "checksum": 5029692098747153920
         }
       ]
@@ -768,37 +769,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 11.318,
+          "ns_per_op": 11.767,
           "checksum": 2987319100310082560
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 11.506,
+          "ns_per_op": 11.839,
           "checksum": 2987319100310082560
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 10.79,
+          "ns_per_op": 11.434,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 11.066,
+          "ns_per_op": 11.57,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 12.339,
+          "ns_per_op": 12.594,
           "checksum": 2987319100307928064
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 68.298,
+          "ns_per_op": 69.658,
           "checksum": 2987319100307928064
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 88.615,
+          "ns_per_op": 89.497,
           "checksum": 5029692098747153920
         }
       ]
@@ -819,47 +820,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 9.231,
+          "ns_per_op": 9.601,
           "checksum": 2987319100310082560
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 9.134,
+          "ns_per_op": 9.149,
           "checksum": 2987319100310082560
         },
         {
           "name": "map_miss",
-          "ns_per_op": 9.318,
+          "ns_per_op": 9.332,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 8.975,
+          "ns_per_op": 9.09,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 2.506,
+          "ns_per_op": 2.522,
           "checksum": 11949276401231712256
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 4.713,
+          "ns_per_op": 4.652,
           "checksum": 315070452704558080
         },
         {
           "name": "map_replace",
-          "ns_per_op": 16.979,
+          "ns_per_op": 17.445,
           "checksum": 2987319100307928064
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 97.687,
+          "ns_per_op": 97.615,
           "checksum": 2987319100307928064
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 127.867,
+          "ns_per_op": 128.7,
           "checksum": 5029692098747153920
         }
       ]
@@ -880,47 +881,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 12.732,
+          "ns_per_op": 12.947,
           "checksum": 2987319100310082560
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 12.849,
+          "ns_per_op": 12.959,
           "checksum": 2987319100310082560
         },
         {
           "name": "map_miss",
-          "ns_per_op": 11.695,
+          "ns_per_op": 11.522,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 11.561,
+          "ns_per_op": 11.929,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 3.701,
+          "ns_per_op": 3.705,
           "checksum": 11949276401231712256
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 4.797,
+          "ns_per_op": 4.817,
           "checksum": 315070452704558080
         },
         {
           "name": "map_replace",
-          "ns_per_op": 14.267,
+          "ns_per_op": 14.111,
           "checksum": 2987319100307928064
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 68.421,
+          "ns_per_op": 69.707,
           "checksum": 2987319100307928064
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 92.492,
+          "ns_per_op": 94.503,
           "checksum": 5029692098747153920
         }
       ]
@@ -941,37 +942,37 @@
       "cases": [
         {
           "name": "builtin_hit",
-          "ns_per_op": 4.359,
+          "ns_per_op": 4.412,
           "checksum": 2987319100310082560
         },
         {
           "name": "builtin_miss",
-          "ns_per_op": 4.644,
+          "ns_per_op": 4.818,
           "checksum": 0
         },
         {
           "name": "rwmap_parallel4_hit",
-          "ns_per_op": 26.55,
+          "ns_per_op": 26.807,
           "checksum": 11949276401231712256
         },
         {
           "name": "builtin_parallel4_hit",
-          "ns_per_op": 1.237,
+          "ns_per_op": 1.292,
           "checksum": 11949276401231712256
         },
         {
           "name": "rwmap_parallel4_write10",
-          "ns_per_op": 19.135,
+          "ns_per_op": 18.862,
           "checksum": 315070452704558080
         },
         {
           "name": "builtin_replace",
-          "ns_per_op": 11.611,
+          "ns_per_op": 11.826,
           "checksum": 2987319100307928064
         },
         {
           "name": "builtin_churn_pair",
-          "ns_per_op": 20.699,
+          "ns_per_op": 20.991,
           "checksum": 2987319100307928064
         }
       ]
@@ -992,32 +993,32 @@
       "cases": [
         {
           "name": "syncmap_hit",
-          "ns_per_op": 17.605,
+          "ns_per_op": 18.088,
           "checksum": 2987319100310082560
         },
         {
           "name": "syncmap_miss",
-          "ns_per_op": 16.791,
+          "ns_per_op": 16.28,
           "checksum": 0
         },
         {
           "name": "syncmap_parallel4_hit",
-          "ns_per_op": 5.008,
+          "ns_per_op": 5.114,
           "checksum": 11949276401231712256
         },
         {
           "name": "syncmap_parallel4_write10",
-          "ns_per_op": 6.82,
+          "ns_per_op": 6.785,
           "checksum": 315070452704558080
         },
         {
           "name": "syncmap_replace",
-          "ns_per_op": 49.583,
+          "ns_per_op": 50.785,
           "checksum": 2987319100307928064
         },
         {
           "name": "syncmap_churn_pair",
-          "ns_per_op": 61.781,
+          "ns_per_op": 63.318,
           "checksum": 2987319100307928064
         }
       ]
@@ -1038,37 +1039,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 16.88,
+          "ns_per_op": 17.204,
           "checksum": 5290056449913052160
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 14.356,
+          "ns_per_op": 14.571,
           "checksum": 5290056449913052160
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 15.46,
+          "ns_per_op": 16.022,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 13.552,
+          "ns_per_op": 13.995,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 26.634,
+          "ns_per_op": 27.428,
           "checksum": 5290056449910963200
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 65.116,
+          "ns_per_op": 66.938,
           "checksum": 5290056449910963200
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 124.464,
+          "ns_per_op": 125.197,
           "checksum": 14369650655905539584
         }
       ]
@@ -1089,37 +1090,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 21.118,
+          "ns_per_op": 21.559,
           "checksum": 5290056449913052160
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 21.959,
+          "ns_per_op": 21.94,
           "checksum": 5290056449913052160
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 19.758,
+          "ns_per_op": 20.497,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 19.875,
+          "ns_per_op": 20.286,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 24.353,
+          "ns_per_op": 24.834,
           "checksum": 5290056449910963200
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 103.912,
+          "ns_per_op": 101.758,
           "checksum": 5290056449910963200
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 134.031,
+          "ns_per_op": 133.149,
           "checksum": 14369650655905539584
         }
       ]
@@ -1128,388 +1129,6 @@
       "language": "go",
       "kind": "map",
       "repeat": 0,
-      "entries": 262144,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 8192,
-      "distinct_rounds": 512,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "map_hit",
-          "ns_per_op": 13.409,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "map_batch8_hit",
-          "ns_per_op": 12.875,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "map_miss",
-          "ns_per_op": 12.477,
-          "checksum": 0
-        },
-        {
-          "name": "map_batch8_miss",
-          "ns_per_op": 11.072,
-          "checksum": 0
-        },
-        {
-          "name": "map_parallel4_hit",
-          "ns_per_op": 3.929,
-          "checksum": 2713481725934301184
-        },
-        {
-          "name": "map_parallel4_write10",
-          "ns_per_op": 4.541,
-          "checksum": 5003357070467563520
-        },
-        {
-          "name": "map_replace",
-          "ns_per_op": 28.528,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "map_churn_pair",
-          "ns_per_op": 120.172,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "map_churn_new_pair",
-          "ns_per_op": 167.901,
-          "checksum": 14369650655905539584
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "map",
-      "repeat": 0,
-      "entries": 262144,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 8192,
-      "distinct_rounds": 512,
-      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=map",
-      "cases": [
-        {
-          "name": "map_hit",
-          "ns_per_op": 26.14,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "map_batch8_hit",
-          "ns_per_op": 22.572,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "map_miss",
-          "ns_per_op": 22.527,
-          "checksum": 0
-        },
-        {
-          "name": "map_batch8_miss",
-          "ns_per_op": 21.142,
-          "checksum": 0
-        },
-        {
-          "name": "map_parallel4_hit",
-          "ns_per_op": 7.046,
-          "checksum": 2713481725934301184
-        },
-        {
-          "name": "map_parallel4_write10",
-          "ns_per_op": 6.825,
-          "checksum": 5003357070467563520
-        },
-        {
-          "name": "map_replace",
-          "ns_per_op": 28.276,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "map_churn_pair",
-          "ns_per_op": 101.167,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "map_churn_new_pair",
-          "ns_per_op": 130.066,
-          "checksum": 14369650655905539584
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "builtin",
-      "repeat": 0,
-      "entries": 262144,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 8192,
-      "distinct_rounds": 512,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=builtin procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "builtin_hit",
-          "ns_per_op": 5.767,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "builtin_miss",
-          "ns_per_op": 5.813,
-          "checksum": 0
-        },
-        {
-          "name": "rwmap_parallel4_hit",
-          "ns_per_op": 30.342,
-          "checksum": 2713481725934301184
-        },
-        {
-          "name": "builtin_parallel4_hit",
-          "ns_per_op": 1.685,
-          "checksum": 2713481725934301184
-        },
-        {
-          "name": "rwmap_parallel4_write10",
-          "ns_per_op": 21.749,
-          "checksum": 5003357070467563520
-        },
-        {
-          "name": "builtin_replace",
-          "ns_per_op": 12.786,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "builtin_churn_pair",
-          "ns_per_op": 25.191,
-          "checksum": 5290056449910963200
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "syncmap",
-      "repeat": 0,
-      "entries": 262144,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 8192,
-      "distinct_rounds": 512,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=syncmap procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "syncmap_hit",
-          "ns_per_op": 21.365,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "syncmap_miss",
-          "ns_per_op": 17.179,
-          "checksum": 0
-        },
-        {
-          "name": "syncmap_parallel4_hit",
-          "ns_per_op": 5.978,
-          "checksum": 2713481725934301184
-        },
-        {
-          "name": "syncmap_parallel4_write10",
-          "ns_per_op": 8.615,
-          "checksum": 5003357070467563520
-        },
-        {
-          "name": "syncmap_replace",
-          "ns_per_op": 64.732,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "syncmap_churn_pair",
-          "ns_per_op": 78.997,
-          "checksum": 5290056449910963200
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "tree",
-      "repeat": 1,
-      "entries": 262144,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 8192,
-      "distinct_rounds": 512,
-      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=tree",
-      "cases": [
-        {
-          "name": "tree_hit",
-          "ns_per_op": 21.657,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "tree_batch8_hit",
-          "ns_per_op": 22.274,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "tree_miss",
-          "ns_per_op": 20.132,
-          "checksum": 0
-        },
-        {
-          "name": "tree_batch8_miss",
-          "ns_per_op": 20.007,
-          "checksum": 0
-        },
-        {
-          "name": "tree_replace",
-          "ns_per_op": 24.601,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "tree_churn_pair",
-          "ns_per_op": 104.809,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "tree_churn_new_pair",
-          "ns_per_op": 132.059,
-          "checksum": 14369650655905539584
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "tree",
-      "repeat": 1,
-      "entries": 262144,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 8192,
-      "distinct_rounds": 512,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "tree_hit",
-          "ns_per_op": 16.686,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "tree_batch8_hit",
-          "ns_per_op": 14.468,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "tree_miss",
-          "ns_per_op": 15.79,
-          "checksum": 0
-        },
-        {
-          "name": "tree_batch8_miss",
-          "ns_per_op": 13.844,
-          "checksum": 0
-        },
-        {
-          "name": "tree_replace",
-          "ns_per_op": 27.027,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "tree_churn_pair",
-          "ns_per_op": 65.93,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "tree_churn_new_pair",
-          "ns_per_op": 126.547,
-          "checksum": 14369650655905539584
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "map",
-      "repeat": 1,
-      "entries": 262144,
-      "queries": 8192,
-      "rounds": 512,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 8192,
-      "distinct_rounds": 512,
-      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=map",
-      "cases": [
-        {
-          "name": "map_hit",
-          "ns_per_op": 24.416,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "map_batch8_hit",
-          "ns_per_op": 22.365,
-          "checksum": 5290056449913052160
-        },
-        {
-          "name": "map_miss",
-          "ns_per_op": 22.282,
-          "checksum": 0
-        },
-        {
-          "name": "map_batch8_miss",
-          "ns_per_op": 20.087,
-          "checksum": 0
-        },
-        {
-          "name": "map_parallel4_hit",
-          "ns_per_op": 6.953,
-          "checksum": 2713481725934301184
-        },
-        {
-          "name": "map_parallel4_write10",
-          "ns_per_op": 6.874,
-          "checksum": 5003357070467563520
-        },
-        {
-          "name": "map_replace",
-          "ns_per_op": 27.357,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "map_churn_pair",
-          "ns_per_op": 99.052,
-          "checksum": 5290056449910963200
-        },
-        {
-          "name": "map_churn_new_pair",
-          "ns_per_op": 127.431,
-          "checksum": 14369650655905539584
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "map",
-      "repeat": 1,
       "entries": 262144,
       "queries": 8192,
       "rounds": 512,
@@ -1527,42 +1146,424 @@
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 12.671,
+          "ns_per_op": 12.719,
           "checksum": 5290056449913052160
         },
         {
           "name": "map_miss",
-          "ns_per_op": 12.631,
+          "ns_per_op": 12.055,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 11.692,
+          "ns_per_op": 10.829,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 3.965,
+          "ns_per_op": 3.897,
           "checksum": 2713481725934301184
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 4.491,
+          "ns_per_op": 4.456,
           "checksum": 5003357070467563520
         },
         {
           "name": "map_replace",
-          "ns_per_op": 29.027,
+          "ns_per_op": 30.097,
           "checksum": 5290056449910963200
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 122.093,
+          "ns_per_op": 118.712,
           "checksum": 5290056449910963200
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 164.062,
+          "ns_per_op": 161.56,
+          "checksum": 14369650655905539584
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 0,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 8192,
+      "distinct_rounds": 512,
+      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 25.335,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 22.519,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 23.669,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 20.072,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 6.868,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 6.796,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 28.077,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 101.615,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_new_pair",
+          "ns_per_op": 128.449,
+          "checksum": 14369650655905539584
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 0,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 8192,
+      "distinct_rounds": 512,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 5.737,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 5.749,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 27.966,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 1.717,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 22.793,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 13.091,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 25.385,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 0,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 8192,
+      "distinct_rounds": 512,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 21.779,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 17.715,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 5.951,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 8.717,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 63.878,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 79.316,
+          "checksum": 5290056449910963200
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 8192,
+      "distinct_rounds": 512,
+      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 22.134,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 22.51,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 20.714,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 20.266,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 25.378,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 105.084,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_new_pair",
+          "ns_per_op": 133.123,
+          "checksum": 14369650655905539584
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 8192,
+      "distinct_rounds": 512,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 16.671,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 14.349,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 15.575,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 14.021,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 26.879,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 67.792,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "tree_churn_new_pair",
+          "ns_per_op": 127.209,
+          "checksum": 14369650655905539584
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 8192,
+      "distinct_rounds": 512,
+      "build": "upstream 8adae97 allocator=mimalloc n=262144 rounds=512 queries=8192 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 24.994,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 22.387,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 22.668,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 20.207,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 6.913,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 6.936,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 28.196,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 101.903,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_new_pair",
+          "ns_per_op": 131.105,
+          "checksum": 14369650655905539584
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 262144,
+      "queries": 8192,
+      "rounds": 512,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 8192,
+      "distinct_rounds": 512,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=262144 rounds=512 queries=8192 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 13.476,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 12.789,
+          "checksum": 5290056449913052160
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 12.259,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 11.293,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 3.88,
+          "checksum": 2713481725934301184
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 4.456,
+          "checksum": 5003357070467563520
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 28.991,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 119.964,
+          "checksum": 5290056449910963200
+        },
+        {
+          "name": "map_churn_new_pair",
+          "ns_per_op": 164.043,
           "checksum": 14369650655905539584
         }
       ]
@@ -1583,37 +1584,37 @@
       "cases": [
         {
           "name": "builtin_hit",
-          "ns_per_op": 6.002,
+          "ns_per_op": 6.161,
           "checksum": 5290056449913052160
         },
         {
           "name": "builtin_miss",
-          "ns_per_op": 5.86,
+          "ns_per_op": 5.951,
           "checksum": 0
         },
         {
           "name": "rwmap_parallel4_hit",
-          "ns_per_op": 29.032,
+          "ns_per_op": 30.002,
           "checksum": 2713481725934301184
         },
         {
           "name": "builtin_parallel4_hit",
-          "ns_per_op": 1.65,
+          "ns_per_op": 1.705,
           "checksum": 2713481725934301184
         },
         {
           "name": "rwmap_parallel4_write10",
-          "ns_per_op": 22.254,
+          "ns_per_op": 22.518,
           "checksum": 5003357070467563520
         },
         {
           "name": "builtin_replace",
-          "ns_per_op": 12.867,
+          "ns_per_op": 13.457,
           "checksum": 5290056449910963200
         },
         {
           "name": "builtin_churn_pair",
-          "ns_per_op": 25.428,
+          "ns_per_op": 25.828,
           "checksum": 5290056449910963200
         }
       ]
@@ -1634,32 +1635,32 @@
       "cases": [
         {
           "name": "syncmap_hit",
-          "ns_per_op": 21.677,
+          "ns_per_op": 21.923,
           "checksum": 5290056449913052160
         },
         {
           "name": "syncmap_miss",
-          "ns_per_op": 17.436,
+          "ns_per_op": 17.612,
           "checksum": 0
         },
         {
           "name": "syncmap_parallel4_hit",
-          "ns_per_op": 5.917,
+          "ns_per_op": 5.975,
           "checksum": 2713481725934301184
         },
         {
           "name": "syncmap_parallel4_write10",
-          "ns_per_op": 8.882,
+          "ns_per_op": 8.831,
           "checksum": 5003357070467563520
         },
         {
           "name": "syncmap_replace",
-          "ns_per_op": 63.216,
+          "ns_per_op": 63.842,
           "checksum": 5290056449910963200
         },
         {
           "name": "syncmap_churn_pair",
-          "ns_per_op": 78.641,
+          "ns_per_op": 79.598,
           "checksum": 5290056449910963200
         }
       ]
@@ -1680,37 +1681,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 17.031,
+          "ns_per_op": 17.107,
           "checksum": 5290056449913052160
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 14.463,
+          "ns_per_op": 14.499,
           "checksum": 5290056449913052160
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 15.986,
+          "ns_per_op": 15.826,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 13.581,
+          "ns_per_op": 13.74,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 27.153,
+          "ns_per_op": 27.631,
           "checksum": 5290056449910963200
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 65.585,
+          "ns_per_op": 67.326,
           "checksum": 5290056449910963200
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 128.059,
+          "ns_per_op": 126.215,
           "checksum": 14369650655905539584
         }
       ]
@@ -1731,37 +1732,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 21.895,
+          "ns_per_op": 21.675,
           "checksum": 5290056449913052160
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 22.444,
+          "ns_per_op": 22.756,
           "checksum": 5290056449913052160
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 20.397,
+          "ns_per_op": 20.661,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 20.188,
+          "ns_per_op": 20.101,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 24.66,
+          "ns_per_op": 24.952,
           "checksum": 5290056449910963200
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 103.513,
+          "ns_per_op": 104.22,
           "checksum": 5290056449910963200
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 133.271,
+          "ns_per_op": 134.626,
           "checksum": 14369650655905539584
         }
       ]
@@ -1782,47 +1783,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 13.813,
+          "ns_per_op": 13.824,
           "checksum": 5290056449913052160
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 12.767,
+          "ns_per_op": 12.854,
           "checksum": 5290056449913052160
         },
         {
           "name": "map_miss",
-          "ns_per_op": 12.829,
+          "ns_per_op": 12.736,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 11.525,
+          "ns_per_op": 11.27,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 3.895,
+          "ns_per_op": 3.844,
           "checksum": 2713481725934301184
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 4.499,
+          "ns_per_op": 4.863,
           "checksum": 5003357070467563520
         },
         {
           "name": "map_replace",
-          "ns_per_op": 28.83,
+          "ns_per_op": 28.645,
           "checksum": 5290056449910963200
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 124.847,
+          "ns_per_op": 120.382,
           "checksum": 5290056449910963200
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 165.348,
+          "ns_per_op": 162.902,
           "checksum": 14369650655905539584
         }
       ]
@@ -1843,47 +1844,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 24.865,
+          "ns_per_op": 25.502,
           "checksum": 5290056449913052160
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 22.495,
+          "ns_per_op": 22.578,
           "checksum": 5290056449913052160
         },
         {
           "name": "map_miss",
-          "ns_per_op": 22.703,
+          "ns_per_op": 22.817,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 20.033,
+          "ns_per_op": 20.146,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 6.95,
+          "ns_per_op": 6.997,
           "checksum": 2713481725934301184
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 6.901,
+          "ns_per_op": 7.187,
           "checksum": 5003357070467563520
         },
         {
           "name": "map_replace",
-          "ns_per_op": 28.465,
+          "ns_per_op": 28.401,
           "checksum": 5290056449910963200
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 105.523,
+          "ns_per_op": 103.232,
           "checksum": 5290056449910963200
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 130.027,
+          "ns_per_op": 133.195,
           "checksum": 14369650655905539584
         }
       ]
@@ -1904,37 +1905,37 @@
       "cases": [
         {
           "name": "builtin_hit",
-          "ns_per_op": 5.741,
+          "ns_per_op": 5.891,
           "checksum": 5290056449913052160
         },
         {
           "name": "builtin_miss",
-          "ns_per_op": 5.849,
+          "ns_per_op": 6.035,
           "checksum": 0
         },
         {
           "name": "rwmap_parallel4_hit",
-          "ns_per_op": 28.862,
+          "ns_per_op": 28.824,
           "checksum": 2713481725934301184
         },
         {
           "name": "builtin_parallel4_hit",
-          "ns_per_op": 1.684,
+          "ns_per_op": 1.643,
           "checksum": 2713481725934301184
         },
         {
           "name": "rwmap_parallel4_write10",
-          "ns_per_op": 21.838,
+          "ns_per_op": 22.588,
           "checksum": 5003357070467563520
         },
         {
           "name": "builtin_replace",
-          "ns_per_op": 13.134,
+          "ns_per_op": 13.064,
           "checksum": 5290056449910963200
         },
         {
           "name": "builtin_churn_pair",
-          "ns_per_op": 25.362,
+          "ns_per_op": 25.388,
           "checksum": 5290056449910963200
         }
       ]
@@ -1955,32 +1956,32 @@
       "cases": [
         {
           "name": "syncmap_hit",
-          "ns_per_op": 21.854,
+          "ns_per_op": 21.979,
           "checksum": 5290056449913052160
         },
         {
           "name": "syncmap_miss",
-          "ns_per_op": 17.758,
+          "ns_per_op": 17.905,
           "checksum": 0
         },
         {
           "name": "syncmap_parallel4_hit",
-          "ns_per_op": 5.977,
+          "ns_per_op": 5.967,
           "checksum": 2713481725934301184
         },
         {
           "name": "syncmap_parallel4_write10",
-          "ns_per_op": 9.057,
+          "ns_per_op": 8.712,
           "checksum": 5003357070467563520
         },
         {
           "name": "syncmap_replace",
-          "ns_per_op": 69.67,
+          "ns_per_op": 64.484,
           "checksum": 5290056449910963200
         },
         {
           "name": "syncmap_churn_pair",
-          "ns_per_op": 81.437,
+          "ns_per_op": 82.074,
           "checksum": 5290056449910963200
         }
       ]
@@ -2001,37 +2002,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 48.414,
+          "ns_per_op": 49.165,
           "checksum": 12285486520654220248
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 38.224,
+          "ns_per_op": 39.409,
           "checksum": 12285486520654220248
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 36.551,
+          "ns_per_op": 36.486,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 31.346,
+          "ns_per_op": 31.524,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 66.332,
+          "ns_per_op": 68.527,
           "checksum": 12285486520652119840
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 149.112,
+          "ns_per_op": 148.786,
           "checksum": 12285486520652119840
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 271.121,
+          "ns_per_op": 262.434,
           "checksum": 9944014830355703386
         }
       ]
@@ -2052,37 +2053,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 77.057,
+          "ns_per_op": 78.873,
           "checksum": 12285486520654220248
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 47.792,
+          "ns_per_op": 48.314,
           "checksum": 12285486520654220248
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 61.521,
+          "ns_per_op": 62.498,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 37.083,
+          "ns_per_op": 37.271,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 79.386,
+          "ns_per_op": 82.869,
           "checksum": 12285486520652119840
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 225.123,
+          "ns_per_op": 220.343,
           "checksum": 12285486520652119840
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 329.302,
+          "ns_per_op": 327.453,
           "checksum": 9944014830355703386
         }
       ]
@@ -2103,47 +2104,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 74.941,
+          "ns_per_op": 73.554,
           "checksum": 12285486520654220248
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 52.812,
+          "ns_per_op": 56.179,
           "checksum": 12285486520654220248
         },
         {
           "name": "map_miss",
-          "ns_per_op": 48.401,
+          "ns_per_op": 49.546,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 43.874,
+          "ns_per_op": 44.111,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 19.962,
+          "ns_per_op": 20.955,
           "checksum": 12248457935189376128
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 22.405,
+          "ns_per_op": 22.372,
           "checksum": 5265170675498301304
         },
         {
           "name": "map_replace",
-          "ns_per_op": 89.342,
+          "ns_per_op": 88.646,
           "checksum": 12285486520652119840
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 224.978,
+          "ns_per_op": 224.281,
           "checksum": 12285486520652119840
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 374.286,
+          "ns_per_op": 373.12,
           "checksum": 9944014830355703386
         }
       ]
@@ -2164,47 +2165,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 76.995,
+          "ns_per_op": 77.228,
           "checksum": 12285486520654220248
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 50.092,
+          "ns_per_op": 49.875,
           "checksum": 12285486520654220248
         },
         {
           "name": "map_miss",
-          "ns_per_op": 56.276,
+          "ns_per_op": 57.176,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 39.427,
+          "ns_per_op": 38.975,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 22.894,
+          "ns_per_op": 23.056,
           "checksum": 12248457935189376128
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 24.565,
+          "ns_per_op": 24.883,
           "checksum": 5265170675498301304
         },
         {
           "name": "map_replace",
-          "ns_per_op": 92.708,
+          "ns_per_op": 94.46,
           "checksum": 12285486520652119840
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 220.503,
+          "ns_per_op": 217.023,
           "checksum": 12285486520652119840
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 324.692,
+          "ns_per_op": 319.646,
           "checksum": 9944014830355703386
         }
       ]
@@ -2225,37 +2226,37 @@
       "cases": [
         {
           "name": "builtin_hit",
-          "ns_per_op": 23.108,
+          "ns_per_op": 23.354,
           "checksum": 12285486520654220248
         },
         {
           "name": "builtin_miss",
-          "ns_per_op": 20.008,
+          "ns_per_op": 20.36,
           "checksum": 0
         },
         {
           "name": "rwmap_parallel4_hit",
-          "ns_per_op": 30.068,
+          "ns_per_op": 30.859,
           "checksum": 12248457935189376128
         },
         {
           "name": "builtin_parallel4_hit",
-          "ns_per_op": 7.249,
+          "ns_per_op": 7.422,
           "checksum": 12248457935189376128
         },
         {
           "name": "rwmap_parallel4_write10",
-          "ns_per_op": 40.524,
+          "ns_per_op": 40.89,
           "checksum": 5265170675498301304
         },
         {
           "name": "builtin_replace",
-          "ns_per_op": 59.453,
+          "ns_per_op": 59.393,
           "checksum": 12285486520652119840
         },
         {
           "name": "builtin_churn_pair",
-          "ns_per_op": 99.068,
+          "ns_per_op": 98.949,
           "checksum": 12285486520652119840
         }
       ]
@@ -2276,32 +2277,32 @@
       "cases": [
         {
           "name": "syncmap_hit",
-          "ns_per_op": 140.293,
+          "ns_per_op": 138.263,
           "checksum": 12285486520654220248
         },
         {
           "name": "syncmap_miss",
-          "ns_per_op": 69.705,
+          "ns_per_op": 68.682,
           "checksum": 0
         },
         {
           "name": "syncmap_parallel4_hit",
-          "ns_per_op": 38.153,
+          "ns_per_op": 37.586,
           "checksum": 12248457935189376128
         },
         {
           "name": "syncmap_parallel4_write10",
-          "ns_per_op": 37.473,
+          "ns_per_op": 37.545,
           "checksum": 5265170675498301304
         },
         {
           "name": "syncmap_replace",
-          "ns_per_op": 239.312,
+          "ns_per_op": 238.809,
           "checksum": 12285486520652119840
         },
         {
           "name": "syncmap_churn_pair",
-          "ns_per_op": 259.737,
+          "ns_per_op": 257.661,
           "checksum": 12285486520652119840
         }
       ]
@@ -2322,37 +2323,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 79.41,
+          "ns_per_op": 78.534,
           "checksum": 12285486520654220248
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 49.154,
+          "ns_per_op": 49.8,
           "checksum": 12285486520654220248
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 65.347,
+          "ns_per_op": 61.62,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 37.903,
+          "ns_per_op": 37.979,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 81.201,
+          "ns_per_op": 79.389,
           "checksum": 12285486520652119840
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 220.041,
+          "ns_per_op": 219.764,
           "checksum": 12285486520652119840
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 333.422,
+          "ns_per_op": 324.387,
           "checksum": 9944014830355703386
         }
       ]
@@ -2373,37 +2374,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 48.81,
+          "ns_per_op": 48.231,
           "checksum": 12285486520654220248
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 39.028,
+          "ns_per_op": 38.126,
           "checksum": 12285486520654220248
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 36.801,
+          "ns_per_op": 37.259,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 31.305,
+          "ns_per_op": 31.503,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 80.904,
+          "ns_per_op": 67.293,
           "checksum": 12285486520652119840
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 152.702,
+          "ns_per_op": 150.095,
           "checksum": 12285486520652119840
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 279.89,
+          "ns_per_op": 266.253,
           "checksum": 9944014830355703386
         }
       ]
@@ -2424,526 +2425,526 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 88.839,
+          "ns_per_op": 77.021,
           "checksum": 12285486520654220248
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 56.685,
+          "ns_per_op": 52.662,
           "checksum": 12285486520654220248
         },
         {
           "name": "map_miss",
-          "ns_per_op": 60.042,
+          "ns_per_op": 57.49,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 40.451,
-          "checksum": 0
-        },
-        {
-          "name": "map_parallel4_hit",
-          "ns_per_op": 24.017,
-          "checksum": 12248457935189376128
-        },
-        {
-          "name": "map_parallel4_write10",
-          "ns_per_op": 25.77,
-          "checksum": 5265170675498301304
-        },
-        {
-          "name": "map_replace",
-          "ns_per_op": 96.146,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "map_churn_pair",
-          "ns_per_op": 220.075,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "map_churn_new_pair",
-          "ns_per_op": 320.002,
-          "checksum": 9944014830355703386
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "map",
-      "repeat": 1,
-      "entries": 5000000,
-      "queries": 1048576,
-      "rounds": 4,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 1048576,
-      "distinct_rounds": 4,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "map_hit",
-          "ns_per_op": 74.641,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "map_batch8_hit",
-          "ns_per_op": 53.674,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "map_miss",
-          "ns_per_op": 51.48,
-          "checksum": 0
-        },
-        {
-          "name": "map_batch8_miss",
-          "ns_per_op": 43.899,
-          "checksum": 0
-        },
-        {
-          "name": "map_parallel4_hit",
-          "ns_per_op": 21.255,
-          "checksum": 12248457935189376128
-        },
-        {
-          "name": "map_parallel4_write10",
-          "ns_per_op": 22.559,
-          "checksum": 5265170675498301304
-        },
-        {
-          "name": "map_replace",
-          "ns_per_op": 89.96,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "map_churn_pair",
-          "ns_per_op": 231.861,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "map_churn_new_pair",
-          "ns_per_op": 390.045,
-          "checksum": 9944014830355703386
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "builtin",
-      "repeat": 1,
-      "entries": 5000000,
-      "queries": 1048576,
-      "rounds": 4,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 1048576,
-      "distinct_rounds": 4,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=builtin procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "builtin_hit",
-          "ns_per_op": 23.957,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "builtin_miss",
-          "ns_per_op": 20.726,
-          "checksum": 0
-        },
-        {
-          "name": "rwmap_parallel4_hit",
-          "ns_per_op": 31.727,
-          "checksum": 12248457935189376128
-        },
-        {
-          "name": "builtin_parallel4_hit",
-          "ns_per_op": 7.32,
-          "checksum": 12248457935189376128
-        },
-        {
-          "name": "rwmap_parallel4_write10",
-          "ns_per_op": 41.025,
-          "checksum": 5265170675498301304
-        },
-        {
-          "name": "builtin_replace",
-          "ns_per_op": 64.54,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "builtin_churn_pair",
-          "ns_per_op": 104.655,
-          "checksum": 12285486520652119840
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "syncmap",
-      "repeat": 1,
-      "entries": 5000000,
-      "queries": 1048576,
-      "rounds": 4,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 1048576,
-      "distinct_rounds": 4,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=syncmap procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "syncmap_hit",
-          "ns_per_op": 142.592,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "syncmap_miss",
-          "ns_per_op": 73.192,
-          "checksum": 0
-        },
-        {
-          "name": "syncmap_parallel4_hit",
-          "ns_per_op": 39.434,
-          "checksum": 12248457935189376128
-        },
-        {
-          "name": "syncmap_parallel4_write10",
-          "ns_per_op": 38.351,
-          "checksum": 5265170675498301304
-        },
-        {
-          "name": "syncmap_replace",
-          "ns_per_op": 250.871,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "syncmap_churn_pair",
-          "ns_per_op": 270.16,
-          "checksum": 12285486520652119840
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "tree",
-      "repeat": 2,
-      "entries": 5000000,
-      "queries": 1048576,
-      "rounds": 4,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 1048576,
-      "distinct_rounds": 4,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "tree_hit",
-          "ns_per_op": 50.875,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "tree_batch8_hit",
-          "ns_per_op": 39.796,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "tree_miss",
-          "ns_per_op": 38.46,
-          "checksum": 0
-        },
-        {
-          "name": "tree_batch8_miss",
-          "ns_per_op": 32.415,
-          "checksum": 0
-        },
-        {
-          "name": "tree_replace",
-          "ns_per_op": 78.105,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "tree_churn_pair",
-          "ns_per_op": 155.591,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "tree_churn_new_pair",
-          "ns_per_op": 288.099,
-          "checksum": 9944014830355703386
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "tree",
-      "repeat": 2,
-      "entries": 5000000,
-      "queries": 1048576,
-      "rounds": 4,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 1048576,
-      "distinct_rounds": 4,
-      "build": "upstream 8adae97 allocator=mimalloc n=5000000 rounds=4 queries=1048576 kind=tree",
-      "cases": [
-        {
-          "name": "tree_hit",
-          "ns_per_op": 82.211,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "tree_batch8_hit",
-          "ns_per_op": 50.578,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "tree_miss",
-          "ns_per_op": 69.03,
-          "checksum": 0
-        },
-        {
-          "name": "tree_batch8_miss",
-          "ns_per_op": 42.401,
-          "checksum": 0
-        },
-        {
-          "name": "tree_replace",
-          "ns_per_op": 83.449,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "tree_churn_pair",
-          "ns_per_op": 224.828,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "tree_churn_new_pair",
-          "ns_per_op": 334.735,
-          "checksum": 9944014830355703386
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "map",
-      "repeat": 2,
-      "entries": 5000000,
-      "queries": 1048576,
-      "rounds": 4,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 1048576,
-      "distinct_rounds": 4,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "map_hit",
-          "ns_per_op": 77.132,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "map_batch8_hit",
-          "ns_per_op": 54.975,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "map_miss",
-          "ns_per_op": 48.606,
-          "checksum": 0
-        },
-        {
-          "name": "map_batch8_miss",
-          "ns_per_op": 44.856,
-          "checksum": 0
-        },
-        {
-          "name": "map_parallel4_hit",
-          "ns_per_op": 21.769,
-          "checksum": 12248457935189376128
-        },
-        {
-          "name": "map_parallel4_write10",
-          "ns_per_op": 23.87,
-          "checksum": 5265170675498301304
-        },
-        {
-          "name": "map_replace",
-          "ns_per_op": 91.745,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "map_churn_pair",
-          "ns_per_op": 231.93,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "map_churn_new_pair",
-          "ns_per_op": 383.654,
-          "checksum": 9944014830355703386
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "map",
-      "repeat": 2,
-      "entries": 5000000,
-      "queries": 1048576,
-      "rounds": 4,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 1048576,
-      "distinct_rounds": 4,
-      "build": "upstream 8adae97 allocator=mimalloc n=5000000 rounds=4 queries=1048576 kind=map",
-      "cases": [
-        {
-          "name": "map_hit",
-          "ns_per_op": 77.281,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "map_batch8_hit",
-          "ns_per_op": 50.352,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "map_miss",
-          "ns_per_op": 57.725,
-          "checksum": 0
-        },
-        {
-          "name": "map_batch8_miss",
-          "ns_per_op": 39.359,
-          "checksum": 0
-        },
-        {
-          "name": "map_parallel4_hit",
-          "ns_per_op": 23.357,
-          "checksum": 12248457935189376128
-        },
-        {
-          "name": "map_parallel4_write10",
-          "ns_per_op": 24.551,
-          "checksum": 5265170675498301304
-        },
-        {
-          "name": "map_replace",
-          "ns_per_op": 97.022,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "map_churn_pair",
-          "ns_per_op": 224.49,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "map_churn_new_pair",
-          "ns_per_op": 329.727,
-          "checksum": 9944014830355703386
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "builtin",
-      "repeat": 2,
-      "entries": 5000000,
-      "queries": 1048576,
-      "rounds": 4,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 1048576,
-      "distinct_rounds": 4,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=builtin procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "builtin_hit",
-          "ns_per_op": 24.533,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "builtin_miss",
-          "ns_per_op": 21.011,
-          "checksum": 0
-        },
-        {
-          "name": "rwmap_parallel4_hit",
-          "ns_per_op": 30.733,
-          "checksum": 12248457935189376128
-        },
-        {
-          "name": "builtin_parallel4_hit",
-          "ns_per_op": 7.58,
-          "checksum": 12248457935189376128
-        },
-        {
-          "name": "rwmap_parallel4_write10",
-          "ns_per_op": 39.683,
-          "checksum": 5265170675498301304
-        },
-        {
-          "name": "builtin_replace",
-          "ns_per_op": 62.054,
-          "checksum": 12285486520652119840
-        },
-        {
-          "name": "builtin_churn_pair",
-          "ns_per_op": 104.208,
-          "checksum": 12285486520652119840
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "syncmap",
-      "repeat": 2,
-      "entries": 5000000,
-      "queries": 1048576,
-      "rounds": 4,
-      "threads": 4,
-      "mutations": true,
-      "distinct": true,
-      "distinct_queries": 1048576,
-      "distinct_rounds": 4,
-      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=syncmap procs=4 serial_thread=locked",
-      "cases": [
-        {
-          "name": "syncmap_hit",
-          "ns_per_op": 145.198,
-          "checksum": 12285486520654220248
-        },
-        {
-          "name": "syncmap_miss",
-          "ns_per_op": 70.418,
-          "checksum": 0
-        },
-        {
-          "name": "syncmap_parallel4_hit",
-          "ns_per_op": 39.053,
-          "checksum": 12248457935189376128
-        },
-        {
-          "name": "syncmap_parallel4_write10",
           "ns_per_op": 38.991,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 23.131,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 24.832,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 96.547,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 218.041,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_new_pair",
+          "ns_per_op": 316.762,
+          "checksum": 9944014830355703386
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 1,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 1048576,
+      "distinct_rounds": 4,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 73.782,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 53.659,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 49.264,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 44.529,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 20.357,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 22.292,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 89.702,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 227.663,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_new_pair",
+          "ns_per_op": 381.096,
+          "checksum": 9944014830355703386
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 1,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 1048576,
+      "distinct_rounds": 4,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 23.158,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 20.482,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 30.484,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 7.288,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 39.712,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 61.145,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 99.116,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 1,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 1048576,
+      "distinct_rounds": 4,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 138.787,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 68.533,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 37.966,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 37.522,
           "checksum": 5265170675498301304
         },
         {
           "name": "syncmap_replace",
-          "ns_per_op": 243.356,
+          "ns_per_op": 239.496,
           "checksum": 12285486520652119840
         },
         {
           "name": "syncmap_churn_pair",
-          "ns_per_op": 269.803,
+          "ns_per_op": 257.959,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 1048576,
+      "distinct_rounds": 4,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=tree procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 49.765,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 38.672,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 37.871,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 32.084,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 76.398,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 153.02,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_new_pair",
+          "ns_per_op": 267.803,
+          "checksum": 9944014830355703386
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 1048576,
+      "distinct_rounds": 4,
+      "build": "upstream 8adae97 allocator=mimalloc n=5000000 rounds=4 queries=1048576 kind=tree",
+      "cases": [
+        {
+          "name": "tree_hit",
+          "ns_per_op": 78.404,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_batch8_hit",
+          "ns_per_op": 49.161,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "tree_miss",
+          "ns_per_op": 62.183,
+          "checksum": 0
+        },
+        {
+          "name": "tree_batch8_miss",
+          "ns_per_op": 37.922,
+          "checksum": 0
+        },
+        {
+          "name": "tree_replace",
+          "ns_per_op": 80.128,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_pair",
+          "ns_per_op": 221.07,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "tree_churn_new_pair",
+          "ns_per_op": 326.286,
+          "checksum": 9944014830355703386
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 1048576,
+      "distinct_rounds": 4,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=map procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 71.426,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 53.535,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 48.005,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 44.755,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 22.152,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 22.968,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 89.487,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 233.901,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_new_pair",
+          "ns_per_op": 377.187,
+          "checksum": 9944014830355703386
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 1048576,
+      "distinct_rounds": 4,
+      "build": "upstream 8adae97 allocator=mimalloc n=5000000 rounds=4 queries=1048576 kind=map",
+      "cases": [
+        {
+          "name": "map_hit",
+          "ns_per_op": 79.125,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_batch8_hit",
+          "ns_per_op": 50.462,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "map_miss",
+          "ns_per_op": 58.596,
+          "checksum": 0
+        },
+        {
+          "name": "map_batch8_miss",
+          "ns_per_op": 38.97,
+          "checksum": 0
+        },
+        {
+          "name": "map_parallel4_hit",
+          "ns_per_op": 22.972,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "map_parallel4_write10",
+          "ns_per_op": 27.265,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "map_replace",
+          "ns_per_op": 95.888,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_pair",
+          "ns_per_op": 219.932,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "map_churn_new_pair",
+          "ns_per_op": 316.252,
+          "checksum": 9944014830355703386
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "builtin",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 1048576,
+      "distinct_rounds": 4,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=builtin procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "builtin_hit",
+          "ns_per_op": 23.529,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "builtin_miss",
+          "ns_per_op": 20.587,
+          "checksum": 0
+        },
+        {
+          "name": "rwmap_parallel4_hit",
+          "ns_per_op": 31.734,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "builtin_parallel4_hit",
+          "ns_per_op": 7.256,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "rwmap_parallel4_write10",
+          "ns_per_op": 40.688,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "builtin_replace",
+          "ns_per_op": 60.231,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "builtin_churn_pair",
+          "ns_per_op": 106.007,
+          "checksum": 12285486520652119840
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "syncmap",
+      "repeat": 2,
+      "entries": 5000000,
+      "queries": 1048576,
+      "rounds": 4,
+      "threads": 4,
+      "mutations": true,
+      "distinct": true,
+      "distinct_queries": 1048576,
+      "distinct_rounds": 4,
+      "build": "go1.27.3-X:simd darwin/arm64 SIMD=true width=128 n=5000000 rounds=4 queries=1048576 kind=syncmap procs=4 serial_thread=locked",
+      "cases": [
+        {
+          "name": "syncmap_hit",
+          "ns_per_op": 139.486,
+          "checksum": 12285486520654220248
+        },
+        {
+          "name": "syncmap_miss",
+          "ns_per_op": 69.062,
+          "checksum": 0
+        },
+        {
+          "name": "syncmap_parallel4_hit",
+          "ns_per_op": 37.946,
+          "checksum": 12248457935189376128
+        },
+        {
+          "name": "syncmap_parallel4_write10",
+          "ns_per_op": 37.334,
+          "checksum": 5265170675498301304
+        },
+        {
+          "name": "syncmap_replace",
+          "ns_per_op": 237.183,
+          "checksum": 12285486520652119840
+        },
+        {
+          "name": "syncmap_churn_pair",
+          "ns_per_op": 253.27,
           "checksum": 12285486520652119840
         }
       ]
@@ -2964,37 +2965,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 89.189,
+          "ns_per_op": 81.132,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 64.516,
+          "ns_per_op": 59.565,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 68.177,
+          "ns_per_op": 64.716,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 55.54,
+          "ns_per_op": 51.416,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 206.02,
+          "ns_per_op": 153.615,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 372.614,
+          "ns_per_op": 269.074,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 554.707,
+          "ns_per_op": 478.656,
           "checksum": 12505704597938952262
         }
       ]
@@ -3015,37 +3016,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 84.734,
+          "ns_per_op": 82.921,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 59.325,
+          "ns_per_op": 59.383,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 65.215,
+          "ns_per_op": 63.0,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 52.566,
+          "ns_per_op": 50.929,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 154.587,
+          "ns_per_op": 158.806,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 267.383,
+          "ns_per_op": 265.739,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 476.288,
+          "ns_per_op": 440.313,
           "checksum": 12505704597938952262
         }
       ]
@@ -3066,37 +3067,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 119.714,
+          "ns_per_op": 112.731,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 66.707,
+          "ns_per_op": 65.962,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 102.901,
+          "ns_per_op": 101.91,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 55.047,
+          "ns_per_op": 55.545,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 113.972,
+          "ns_per_op": 111.152,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 292.752,
+          "ns_per_op": 295.214,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 482.181,
+          "ns_per_op": 473.791,
           "checksum": 12505704597938952262
         }
       ]
@@ -3117,47 +3118,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 138.646,
+          "ns_per_op": 123.941,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 80.844,
+          "ns_per_op": 75.296,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_miss",
-          "ns_per_op": 90.43,
+          "ns_per_op": 92.129,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 59.788,
+          "ns_per_op": 61.799,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 34.023,
+          "ns_per_op": 32.203,
           "checksum": 17634508337895805888
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 34.535,
+          "ns_per_op": 33.733,
           "checksum": 9849157053954558000
         },
         {
           "name": "map_replace",
-          "ns_per_op": 170.376,
+          "ns_per_op": 152.706,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 375.382,
+          "ns_per_op": 342.384,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 681.788,
+          "ns_per_op": 607.685,
           "checksum": 12505704597938952262
         }
       ]
@@ -3178,47 +3179,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 123.52,
+          "ns_per_op": 121.074,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 75.53,
+          "ns_per_op": 76.156,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_miss",
-          "ns_per_op": 91.401,
+          "ns_per_op": 92.398,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 61.368,
+          "ns_per_op": 62.345,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 32.512,
+          "ns_per_op": 32.455,
           "checksum": 17634508337895805888
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 33.772,
+          "ns_per_op": 33.875,
           "checksum": 9849157053954558000
         },
         {
           "name": "map_replace",
-          "ns_per_op": 154.375,
+          "ns_per_op": 152.831,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 344.919,
+          "ns_per_op": 349.261,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 607.304,
+          "ns_per_op": 605.622,
           "checksum": 12505704597938952262
         }
       ]
@@ -3239,47 +3240,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 100.668,
+          "ns_per_op": 112.646,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 69.257,
+          "ns_per_op": 67.906,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_miss",
-          "ns_per_op": 89.667,
+          "ns_per_op": 91.914,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 55.192,
+          "ns_per_op": 57.359,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 31.454,
+          "ns_per_op": 32.288,
           "checksum": 17634508337895805888
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 37.242,
+          "ns_per_op": 37.118,
           "checksum": 9849157053954558000
         },
         {
           "name": "map_replace",
-          "ns_per_op": 140.175,
+          "ns_per_op": 140.657,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 296.929,
+          "ns_per_op": 302.75,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 470.68,
+          "ns_per_op": 470.656,
           "checksum": 12505704597938952262
         }
       ]
@@ -3300,37 +3301,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 83.947,
+          "ns_per_op": 82.133,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 61.672,
+          "ns_per_op": 60.548,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 68.857,
+          "ns_per_op": 65.613,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 53.695,
+          "ns_per_op": 52.846,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 152.146,
+          "ns_per_op": 153.554,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 268.2,
+          "ns_per_op": 265.517,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 477.23,
+          "ns_per_op": 458.018,
           "checksum": 12505704597938952262
         }
       ]
@@ -3351,37 +3352,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 116.973,
+          "ns_per_op": 114.062,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 67.063,
+          "ns_per_op": 66.701,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 103.062,
+          "ns_per_op": 104.65,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 55.005,
+          "ns_per_op": 56.115,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 110.685,
+          "ns_per_op": 106.578,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 299.456,
+          "ns_per_op": 294.942,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 474.197,
+          "ns_per_op": 468.718,
           "checksum": 12505704597938952262
         }
       ]
@@ -3402,37 +3403,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 84.876,
+          "ns_per_op": 82.222,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 63.959,
+          "ns_per_op": 58.998,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 69.865,
+          "ns_per_op": 63.522,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 54.58,
+          "ns_per_op": 51.485,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 187.67,
+          "ns_per_op": 156.191,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 326.945,
+          "ns_per_op": 274.351,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 513.398,
+          "ns_per_op": 469.08,
           "checksum": 12505704597938952262
         }
       ]
@@ -3453,47 +3454,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 126.378,
+          "ns_per_op": 123.685,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 79.658,
+          "ns_per_op": 75.701,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_miss",
-          "ns_per_op": 99.027,
+          "ns_per_op": 96.652,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 61.507,
+          "ns_per_op": 61.491,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 32.742,
+          "ns_per_op": 32.625,
           "checksum": 17634508337895805888
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 34.025,
+          "ns_per_op": 34.105,
           "checksum": 9849157053954558000
         },
         {
           "name": "map_replace",
-          "ns_per_op": 154.85,
+          "ns_per_op": 153.816,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 348.288,
+          "ns_per_op": 342.932,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 605.298,
+          "ns_per_op": 599.565,
           "checksum": 12505704597938952262
         }
       ]
@@ -3514,47 +3515,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 112.496,
+          "ns_per_op": 101.66,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 68.619,
+          "ns_per_op": 66.667,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_miss",
-          "ns_per_op": 90.554,
+          "ns_per_op": 88.187,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 66.836,
+          "ns_per_op": 55.859,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 36.201,
+          "ns_per_op": 33.341,
           "checksum": 17634508337895805888
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 37.264,
+          "ns_per_op": 36.555,
           "checksum": 9849157053954558000
         },
         {
           "name": "map_replace",
-          "ns_per_op": 146.286,
+          "ns_per_op": 143.795,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 305.634,
+          "ns_per_op": 304.001,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 464.859,
+          "ns_per_op": 461.556,
           "checksum": 12505704597938952262
         }
       ]
@@ -3575,47 +3576,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 121.758,
+          "ns_per_op": 124.74,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 74.895,
+          "ns_per_op": 75.799,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_miss",
-          "ns_per_op": 90.498,
+          "ns_per_op": 96.274,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 61.43,
+          "ns_per_op": 62.36,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 31.854,
+          "ns_per_op": 32.688,
           "checksum": 17634508337895805888
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 33.552,
+          "ns_per_op": 33.783,
           "checksum": 9849157053954558000
         },
         {
           "name": "map_replace",
-          "ns_per_op": 159.639,
+          "ns_per_op": 153.822,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 359.532,
+          "ns_per_op": 341.018,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 648.735,
+          "ns_per_op": 602.424,
           "checksum": 12505704597938952262
         }
       ]
@@ -3636,37 +3637,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 110.199,
+          "ns_per_op": 119.46,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 66.658,
+          "ns_per_op": 66.096,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 102.415,
+          "ns_per_op": 103.297,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 57.114,
+          "ns_per_op": 54.912,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 108.817,
+          "ns_per_op": 115.526,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 332.796,
+          "ns_per_op": 303.145,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 486.666,
+          "ns_per_op": 475.371,
           "checksum": 12505704597938952262
         }
       ]
@@ -3687,37 +3688,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 102.312,
+          "ns_per_op": 83.129,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 72.249,
+          "ns_per_op": 60.608,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 78.367,
+          "ns_per_op": 65.767,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 56.518,
+          "ns_per_op": 52.746,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 188.18,
+          "ns_per_op": 153.745,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 324.975,
+          "ns_per_op": 275.079,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 510.842,
+          "ns_per_op": 474.146,
           "checksum": 12505704597938952262
         }
       ]
@@ -3738,37 +3739,37 @@
       "cases": [
         {
           "name": "tree_hit",
-          "ns_per_op": 82.12,
+          "ns_per_op": 82.243,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_batch8_hit",
-          "ns_per_op": 60.223,
+          "ns_per_op": 60.514,
           "checksum": 9020313102903438492
         },
         {
           "name": "tree_miss",
-          "ns_per_op": 66.199,
+          "ns_per_op": 67.482,
           "checksum": 0
         },
         {
           "name": "tree_batch8_miss",
-          "ns_per_op": 52.989,
+          "ns_per_op": 53.244,
           "checksum": 0
         },
         {
           "name": "tree_replace",
-          "ns_per_op": 153.481,
+          "ns_per_op": 154.017,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_pair",
-          "ns_per_op": 267.748,
+          "ns_per_op": 270.945,
           "checksum": 9020313102901339376
         },
         {
           "name": "tree_churn_new_pair",
-          "ns_per_op": 476.613,
+          "ns_per_op": 455.294,
           "checksum": 12505704597938952262
         }
       ]
@@ -3789,47 +3790,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 102.166,
+          "ns_per_op": 101.253,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 66.859,
+          "ns_per_op": 67.545,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_miss",
-          "ns_per_op": 87.977,
+          "ns_per_op": 90.243,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 55.445,
+          "ns_per_op": 55.512,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 32.256,
+          "ns_per_op": 32.669,
           "checksum": 17634508337895805888
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 36.646,
+          "ns_per_op": 36.276,
           "checksum": 9849157053954558000
         },
         {
           "name": "map_replace",
-          "ns_per_op": 143.451,
+          "ns_per_op": 143.629,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 303.384,
+          "ns_per_op": 309.962,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 470.789,
+          "ns_per_op": 471.684,
           "checksum": 12505704597938952262
         }
       ]
@@ -3850,47 +3851,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 120.267,
+          "ns_per_op": 126.706,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 75.717,
+          "ns_per_op": 81.982,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_miss",
-          "ns_per_op": 90.508,
+          "ns_per_op": 94.843,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 61.238,
+          "ns_per_op": 64.159,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 32.338,
+          "ns_per_op": 33.262,
           "checksum": 17634508337895805888
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 34.271,
+          "ns_per_op": 33.937,
           "checksum": 9849157053954558000
         },
         {
           "name": "map_replace",
-          "ns_per_op": 158.134,
+          "ns_per_op": 151.736,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 362.392,
+          "ns_per_op": 357.073,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 646.56,
+          "ns_per_op": 608.068,
           "checksum": 12505704597938952262
         }
       ]
@@ -3911,47 +3912,47 @@
       "cases": [
         {
           "name": "map_hit",
-          "ns_per_op": 125.336,
+          "ns_per_op": 121.712,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_batch8_hit",
-          "ns_per_op": 78.354,
+          "ns_per_op": 76.199,
           "checksum": 9020313102903438492
         },
         {
           "name": "map_miss",
-          "ns_per_op": 90.648,
+          "ns_per_op": 93.187,
           "checksum": 0
         },
         {
           "name": "map_batch8_miss",
-          "ns_per_op": 59.947,
+          "ns_per_op": 60.755,
           "checksum": 0
         },
         {
           "name": "map_parallel4_hit",
-          "ns_per_op": 32.367,
+          "ns_per_op": 31.729,
           "checksum": 17634508337895805888
         },
         {
           "name": "map_parallel4_write10",
-          "ns_per_op": 34.337,
+          "ns_per_op": 33.717,
           "checksum": 9849157053954558000
         },
         {
           "name": "map_replace",
-          "ns_per_op": 151.233,
+          "ns_per_op": 153.999,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_pair",
-          "ns_per_op": 344.232,
+          "ns_per_op": 356.57,
           "checksum": 9020313102901339376
         },
         {
           "name": "map_churn_new_pair",
-          "ns_per_op": 600.422,
+          "ns_per_op": 617.431,
           "checksum": 12505704597938952262
         }
       ]
@@ -3962,34 +3963,34 @@
       "language": "go",
       "kind": "tree",
       "repeat": 0,
-      "peak_rss_bytes": 5455872,
+      "peak_rss_bytes": 5472256,
       "stages": [
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61338,
-          "build_ns": 1086125,
+          "pid": 77108,
+          "build_ns": 1127750,
           "entries": 4096,
           "checksum": 0,
-          "rss_bytes": 4653056
+          "rss_bytes": 4603904
         },
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61338,
-          "build_ns": 1086125,
+          "pid": 77108,
+          "build_ns": 1127750,
           "entries": 4096,
           "checksum": 10813053594768432250,
-          "rss_bytes": 4653056
+          "rss_bytes": 4603904
         },
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61338,
-          "build_ns": 1086125,
+          "pid": 77108,
+          "build_ns": 1127750,
           "entries": 4096,
           "checksum": 10813053594768432250,
-          "rss_bytes": 5455872
+          "rss_bytes": 5472256
         }
       ]
     },
@@ -4001,8 +4002,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61347,
-          "build_ns": 360833,
+          "pid": 77115,
+          "build_ns": 366625,
           "kind": "tree",
           "phase": "built",
           "entries": 4096,
@@ -4011,8 +4012,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61347,
-          "build_ns": 360833,
+          "pid": 77115,
+          "build_ns": 366625,
           "kind": "tree",
           "phase": "read",
           "entries": 4096,
@@ -4021,8 +4022,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61347,
-          "build_ns": 360833,
+          "pid": 77115,
+          "build_ns": 366625,
           "kind": "tree",
           "phase": "settled",
           "entries": 4096,
@@ -4035,253 +4036,253 @@
       "language": "go",
       "kind": "map",
       "repeat": 0,
-      "peak_rss_bytes": 5636096,
+      "peak_rss_bytes": 5816320,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 61354,
-          "build_ns": 1157166,
+          "pid": 77120,
+          "build_ns": 1179791,
           "entries": 4096,
           "checksum": 0,
-          "rss_bytes": 4718592
+          "rss_bytes": 4751360
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 61354,
-          "build_ns": 1157166,
+          "pid": 77120,
+          "build_ns": 1179791,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 4849664
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "pid": 77120,
+          "build_ns": 1179791,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 5816320
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 0,
+      "peak_rss_bytes": 2146304,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "pid": 77125,
+          "build_ns": 384042,
+          "kind": "map",
+          "phase": "built",
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "pid": 77125,
+          "build_ns": 384042,
+          "kind": "map",
+          "phase": "read",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "pid": 77125,
+          "build_ns": 384042,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 1,
+      "peak_rss_bytes": 2146304,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "pid": 77133,
+          "build_ns": 204250,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "pid": 77133,
+          "build_ns": 204250,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "pid": 77133,
+          "build_ns": 204250,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 1,
+      "peak_rss_bytes": 5668864,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "pid": 77142,
+          "build_ns": 911458,
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 4915200
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "pid": 77142,
+          "build_ns": 911458,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 4915200
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "pid": 77142,
+          "build_ns": 911458,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 5668864
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 2146304,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "pid": 77147,
+          "build_ns": 380166,
+          "kind": "map",
+          "phase": "built",
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "pid": 77147,
+          "build_ns": 380166,
+          "kind": "map",
+          "phase": "read",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "pid": 77147,
+          "build_ns": 380166,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 1,
+      "peak_rss_bytes": 5881856,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "pid": 77152,
+          "build_ns": 1151583,
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 4833280
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "pid": 77152,
+          "build_ns": 1151583,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 4931584
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "pid": 77152,
+          "build_ns": 1151583,
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 5881856
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 2,
+      "peak_rss_bytes": 5619712,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "pid": 77157,
+          "build_ns": 902292,
+          "entries": 4096,
+          "checksum": 0,
+          "rss_bytes": 4816896
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "pid": 77157,
+          "build_ns": 902292,
           "entries": 4096,
           "checksum": 10813053594768432250,
           "rss_bytes": 4816896
         },
         {
-          "kind": "map",
-          "phase": "collected",
-          "pid": 61354,
-          "build_ns": 1157166,
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 5636096
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "map",
-      "repeat": 0,
-      "peak_rss_bytes": 2146304,
-      "stages": [
-        {
-          "allocator": "mimalloc",
-          "pid": 61360,
-          "build_ns": 383541,
-          "kind": "map",
-          "phase": "built",
-          "entries": 4096,
-          "checksum": 0,
-          "rss_bytes": 2129920
-        },
-        {
-          "allocator": "mimalloc",
-          "pid": 61360,
-          "build_ns": 383541,
-          "kind": "map",
-          "phase": "read",
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 2129920
-        },
-        {
-          "allocator": "mimalloc",
-          "pid": 61360,
-          "build_ns": 383541,
-          "kind": "map",
-          "phase": "settled",
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 2129920
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "tree",
-      "repeat": 1,
-      "peak_rss_bytes": 2146304,
-      "stages": [
-        {
-          "allocator": "mimalloc",
-          "pid": 61365,
-          "build_ns": 368000,
-          "kind": "tree",
-          "phase": "built",
-          "entries": 4096,
-          "checksum": 0,
-          "rss_bytes": 2129920
-        },
-        {
-          "allocator": "mimalloc",
-          "pid": 61365,
-          "build_ns": 368000,
-          "kind": "tree",
-          "phase": "read",
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 2129920
-        },
-        {
-          "allocator": "mimalloc",
-          "pid": 61365,
-          "build_ns": 368000,
-          "kind": "tree",
-          "phase": "settled",
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 2129920
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "tree",
-      "repeat": 1,
-      "peak_rss_bytes": 5586944,
-      "stages": [
-        {
-          "kind": "tree",
-          "phase": "built",
-          "pid": 61371,
-          "build_ns": 913083,
-          "entries": 4096,
-          "checksum": 0,
-          "rss_bytes": 4784128
-        },
-        {
-          "kind": "tree",
-          "phase": "read",
-          "pid": 61371,
-          "build_ns": 913083,
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 4784128
-        },
-        {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61371,
-          "build_ns": 913083,
+          "pid": 77157,
+          "build_ns": 902292,
           "entries": 4096,
           "checksum": 10813053594768432250,
-          "rss_bytes": 5586944
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "map",
-      "repeat": 1,
-      "peak_rss_bytes": 2146304,
-      "stages": [
-        {
-          "allocator": "mimalloc",
-          "pid": 61383,
-          "build_ns": 378667,
-          "kind": "map",
-          "phase": "built",
-          "entries": 4096,
-          "checksum": 0,
-          "rss_bytes": 2129920
-        },
-        {
-          "allocator": "mimalloc",
-          "pid": 61383,
-          "build_ns": 378667,
-          "kind": "map",
-          "phase": "read",
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 2129920
-        },
-        {
-          "allocator": "mimalloc",
-          "pid": 61383,
-          "build_ns": 378667,
-          "kind": "map",
-          "phase": "settled",
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 2129920
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "map",
-      "repeat": 1,
-      "peak_rss_bytes": 5603328,
-      "stages": [
-        {
-          "kind": "map",
-          "phase": "built",
-          "pid": 61390,
-          "build_ns": 1154167,
-          "entries": 4096,
-          "checksum": 0,
-          "rss_bytes": 4734976
-        },
-        {
-          "kind": "map",
-          "phase": "read",
-          "pid": 61390,
-          "build_ns": 1154167,
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 4833280
-        },
-        {
-          "kind": "map",
-          "phase": "collected",
-          "pid": 61390,
-          "build_ns": 1154167,
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 5603328
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "tree",
-      "repeat": 2,
-      "peak_rss_bytes": 5734400,
-      "stages": [
-        {
-          "kind": "tree",
-          "phase": "built",
-          "pid": 61397,
-          "build_ns": 939458,
-          "entries": 4096,
-          "checksum": 0,
-          "rss_bytes": 4849664
-        },
-        {
-          "kind": "tree",
-          "phase": "read",
-          "pid": 61397,
-          "build_ns": 939458,
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 4849664
-        },
-        {
-          "kind": "tree",
-          "phase": "collected",
-          "pid": 61397,
-          "build_ns": 939458,
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 5734400
+          "rss_bytes": 5619712
         }
       ]
     },
@@ -4293,8 +4294,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61406,
-          "build_ns": 363292,
+          "pid": 77166,
+          "build_ns": 417333,
           "kind": "tree",
           "phase": "built",
           "entries": 4096,
@@ -4303,8 +4304,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61406,
-          "build_ns": 363292,
+          "pid": 77166,
+          "build_ns": 417333,
           "kind": "tree",
           "phase": "read",
           "entries": 4096,
@@ -4313,8 +4314,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61406,
-          "build_ns": 363292,
+          "pid": 77166,
+          "build_ns": 417333,
           "kind": "tree",
           "phase": "settled",
           "entries": 4096,
@@ -4332,26 +4333,26 @@
         {
           "kind": "map",
           "phase": "built",
-          "pid": 61412,
-          "build_ns": 1146250,
+          "pid": 77175,
+          "build_ns": 1145500,
           "entries": 4096,
           "checksum": 0,
-          "rss_bytes": 4849664
+          "rss_bytes": 4800512
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 61412,
-          "build_ns": 1146250,
+          "pid": 77175,
+          "build_ns": 1145500,
           "entries": 4096,
           "checksum": 10813053594768432250,
-          "rss_bytes": 4964352
+          "rss_bytes": 4915200
         },
         {
           "kind": "map",
           "phase": "collected",
-          "pid": 61412,
-          "build_ns": 1146250,
+          "pid": 77175,
+          "build_ns": 1145500,
           "entries": 4096,
           "checksum": 10813053594768432250,
           "rss_bytes": 5734400
@@ -4366,8 +4367,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61421,
-          "build_ns": 379708,
+          "pid": 77182,
+          "build_ns": 378583,
           "kind": "map",
           "phase": "built",
           "entries": 4096,
@@ -4376,23 +4377,23 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61421,
-          "build_ns": 379708,
+          "pid": 77182,
+          "build_ns": 378583,
           "kind": "map",
           "phase": "read",
-          "entries": 4096,
-          "checksum": 10813053594768432250,
-          "rss_bytes": 2129920
-        },
-        {
-          "allocator": "mimalloc",
-          "pid": 61421,
-          "build_ns": 379708,
-          "kind": "map",
-          "phase": "settled",
           "entries": 4096,
           "checksum": 10813053594768432250,
           "rss_bytes": 2129920
+        },
+        {
+          "allocator": "mimalloc",
+          "pid": 77182,
+          "build_ns": 378583,
+          "kind": "map",
+          "phase": "settled",
+          "entries": 4096,
+          "checksum": 10813053594768432250,
+          "rss_bytes": 2129920
         }
       ]
     },
@@ -4400,34 +4401,34 @@
       "language": "go",
       "kind": "tree",
       "repeat": 0,
-      "peak_rss_bytes": 11812864,
+      "peak_rss_bytes": 11583488,
       "stages": [
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61431,
-          "build_ns": 30629584,
+          "pid": 77195,
+          "build_ns": 30334667,
           "entries": 262144,
           "checksum": 0,
-          "rss_bytes": 11255808
+          "rss_bytes": 11206656
         },
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61431,
-          "build_ns": 30629584,
+          "pid": 77195,
+          "build_ns": 30334667,
           "entries": 262144,
           "checksum": 615018733013933392,
-          "rss_bytes": 11255808
+          "rss_bytes": 11206656
         },
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61431,
-          "build_ns": 30629584,
+          "pid": 77195,
+          "build_ns": 30334667,
           "entries": 262144,
           "checksum": 615018733013933392,
-          "rss_bytes": 11812864
+          "rss_bytes": 11583488
         }
       ]
     },
@@ -4439,8 +4440,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61437,
-          "build_ns": 28459208,
+          "pid": 77201,
+          "build_ns": 28187792,
           "kind": "tree",
           "phase": "built",
           "entries": 262144,
@@ -4449,8 +4450,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61437,
-          "build_ns": 28459208,
+          "pid": 77201,
+          "build_ns": 28187792,
           "kind": "tree",
           "phase": "read",
           "entries": 262144,
@@ -4459,8 +4460,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61437,
-          "build_ns": 28459208,
+          "pid": 77201,
+          "build_ns": 28187792,
           "kind": "tree",
           "phase": "settled",
           "entries": 262144,
@@ -4473,34 +4474,34 @@
       "language": "go",
       "kind": "map",
       "repeat": 0,
-      "peak_rss_bytes": 17924096,
+      "peak_rss_bytes": 17940480,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 61442,
-          "build_ns": 47120792,
+          "pid": 77209,
+          "build_ns": 46653417,
           "entries": 262144,
           "checksum": 0,
-          "rss_bytes": 11190272
+          "rss_bytes": 11223040
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 61442,
-          "build_ns": 47120792,
+          "pid": 77209,
+          "build_ns": 46653417,
           "entries": 262144,
           "checksum": 615018733013933392,
-          "rss_bytes": 17743872
+          "rss_bytes": 17809408
         },
         {
           "kind": "map",
           "phase": "collected",
-          "pid": 61442,
-          "build_ns": 47120792,
+          "pid": 77209,
+          "build_ns": 46653417,
           "entries": 262144,
           "checksum": 615018733013933392,
-          "rss_bytes": 17924096
+          "rss_bytes": 17940480
         }
       ]
     },
@@ -4512,8 +4513,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61448,
-          "build_ns": 27793541,
+          "pid": 77218,
+          "build_ns": 28732292,
           "kind": "map",
           "phase": "built",
           "entries": 262144,
@@ -4522,8 +4523,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61448,
-          "build_ns": 27793541,
+          "pid": 77218,
+          "build_ns": 28732292,
           "kind": "map",
           "phase": "read",
           "entries": 262144,
@@ -4532,8 +4533,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61448,
-          "build_ns": 27793541,
+          "pid": 77218,
+          "build_ns": 28732292,
           "kind": "map",
           "phase": "settled",
           "entries": 262144,
@@ -4550,8 +4551,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61459,
-          "build_ns": 28636584,
+          "pid": 77224,
+          "build_ns": 28412541,
           "kind": "tree",
           "phase": "built",
           "entries": 262144,
@@ -4560,8 +4561,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61459,
-          "build_ns": 28636584,
+          "pid": 77224,
+          "build_ns": 28412541,
           "kind": "tree",
           "phase": "read",
           "entries": 262144,
@@ -4570,8 +4571,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61459,
-          "build_ns": 28636584,
+          "pid": 77224,
+          "build_ns": 28412541,
           "kind": "tree",
           "phase": "settled",
           "entries": 262144,
@@ -4584,34 +4585,34 @@
       "language": "go",
       "kind": "tree",
       "repeat": 1,
-      "peak_rss_bytes": 11698176,
+      "peak_rss_bytes": 11665408,
       "stages": [
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61464,
-          "build_ns": 39925583,
+          "pid": 77229,
+          "build_ns": 39591667,
           "entries": 262144,
           "checksum": 0,
-          "rss_bytes": 11239424
+          "rss_bytes": 11272192
         },
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61464,
-          "build_ns": 39925583,
+          "pid": 77229,
+          "build_ns": 39591667,
           "entries": 262144,
           "checksum": 615018733013933392,
-          "rss_bytes": 11239424
+          "rss_bytes": 11272192
         },
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61464,
-          "build_ns": 39925583,
+          "pid": 77229,
+          "build_ns": 39591667,
           "entries": 262144,
           "checksum": 615018733013933392,
-          "rss_bytes": 11698176
+          "rss_bytes": 11665408
         }
       ]
     },
@@ -4623,8 +4624,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61470,
-          "build_ns": 28828334,
+          "pid": 77236,
+          "build_ns": 29010541,
           "kind": "map",
           "phase": "built",
           "entries": 262144,
@@ -4633,8 +4634,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61470,
-          "build_ns": 28828334,
+          "pid": 77236,
+          "build_ns": 29010541,
           "kind": "map",
           "phase": "read",
           "entries": 262144,
@@ -4643,8 +4644,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61470,
-          "build_ns": 28828334,
+          "pid": 77236,
+          "build_ns": 29010541,
           "kind": "map",
           "phase": "settled",
           "entries": 262144,
@@ -4657,13 +4658,13 @@
       "language": "go",
       "kind": "map",
       "repeat": 1,
-      "peak_rss_bytes": 17858560,
+      "peak_rss_bytes": 17907712,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 61475,
-          "build_ns": 47050917,
+          "pid": 77244,
+          "build_ns": 47258333,
           "entries": 262144,
           "checksum": 0,
           "rss_bytes": 11141120
@@ -4671,8 +4672,8 @@
         {
           "kind": "map",
           "phase": "read",
-          "pid": 61475,
-          "build_ns": 47050917,
+          "pid": 77244,
+          "build_ns": 47258333,
           "entries": 262144,
           "checksum": 615018733013933392,
           "rss_bytes": 17743872
@@ -4680,11 +4681,11 @@
         {
           "kind": "map",
           "phase": "collected",
-          "pid": 61475,
-          "build_ns": 47050917,
+          "pid": 77244,
+          "build_ns": 47258333,
           "entries": 262144,
           "checksum": 615018733013933392,
-          "rss_bytes": 17858560
+          "rss_bytes": 17907712
         }
       ]
     },
@@ -4692,34 +4693,34 @@
       "language": "go",
       "kind": "tree",
       "repeat": 2,
-      "peak_rss_bytes": 11567104,
+      "peak_rss_bytes": 11649024,
       "stages": [
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61480,
-          "build_ns": 39770042,
+          "pid": 77262,
+          "build_ns": 39609125,
           "entries": 262144,
           "checksum": 0,
-          "rss_bytes": 11173888
+          "rss_bytes": 11223040
         },
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61480,
-          "build_ns": 39770042,
+          "pid": 77262,
+          "build_ns": 39609125,
           "entries": 262144,
           "checksum": 615018733013933392,
-          "rss_bytes": 11173888
+          "rss_bytes": 11223040
         },
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61480,
-          "build_ns": 39770042,
+          "pid": 77262,
+          "build_ns": 39609125,
           "entries": 262144,
           "checksum": 615018733013933392,
-          "rss_bytes": 11567104
+          "rss_bytes": 11649024
         }
       ]
     },
@@ -4731,8 +4732,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61491,
-          "build_ns": 28708750,
+          "pid": 77267,
+          "build_ns": 28141000,
           "kind": "tree",
           "phase": "built",
           "entries": 262144,
@@ -4741,8 +4742,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61491,
-          "build_ns": 28708750,
+          "pid": 77267,
+          "build_ns": 28141000,
           "kind": "tree",
           "phase": "read",
           "entries": 262144,
@@ -4751,8 +4752,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61491,
-          "build_ns": 28708750,
+          "pid": 77267,
+          "build_ns": 28141000,
           "kind": "tree",
           "phase": "settled",
           "entries": 262144,
@@ -4765,34 +4766,34 @@
       "language": "go",
       "kind": "map",
       "repeat": 2,
-      "peak_rss_bytes": 17809408,
+      "peak_rss_bytes": 18022400,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 61496,
-          "build_ns": 46780083,
+          "pid": 77272,
+          "build_ns": 46770125,
           "entries": 262144,
           "checksum": 0,
-          "rss_bytes": 11010048
+          "rss_bytes": 11190272
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 61496,
-          "build_ns": 46780083,
-          "entries": 262144,
-          "checksum": 615018733013933392,
-          "rss_bytes": 17596416
-        },
-        {
-          "kind": "map",
-          "phase": "collected",
-          "pid": 61496,
-          "build_ns": 46780083,
+          "pid": 77272,
+          "build_ns": 46770125,
           "entries": 262144,
           "checksum": 615018733013933392,
           "rss_bytes": 17809408
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "pid": 77272,
+          "build_ns": 46770125,
+          "entries": 262144,
+          "checksum": 615018733013933392,
+          "rss_bytes": 18022400
         }
       ]
     },
@@ -4804,8 +4805,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61502,
-          "build_ns": 29098000,
+          "pid": 77287,
+          "build_ns": 28352458,
           "kind": "map",
           "phase": "built",
           "entries": 262144,
@@ -4814,8 +4815,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61502,
-          "build_ns": 29098000,
+          "pid": 77287,
+          "build_ns": 28352458,
           "kind": "map",
           "phase": "read",
           "entries": 262144,
@@ -4824,8 +4825,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61502,
-          "build_ns": 29098000,
+          "pid": 77287,
+          "build_ns": 28352458,
           "kind": "map",
           "phase": "settled",
           "entries": 262144,
@@ -4838,34 +4839,34 @@
       "language": "go",
       "kind": "tree",
       "repeat": 0,
-      "peak_rss_bytes": 114802688,
+      "peak_rss_bytes": 114917376,
       "stages": [
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61510,
-          "build_ns": 823374000,
+          "pid": 77298,
+          "build_ns": 774100500,
           "entries": 5000000,
           "checksum": 0,
-          "rss_bytes": 114720768
+          "rss_bytes": 114835456
         },
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61510,
-          "build_ns": 823374000,
+          "pid": 77298,
+          "build_ns": 774100500,
           "entries": 5000000,
           "checksum": 7665871335770871176,
-          "rss_bytes": 114720768
+          "rss_bytes": 114835456
         },
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61510,
-          "build_ns": 823374000,
+          "pid": 77298,
+          "build_ns": 774100500,
           "entries": 5000000,
           "checksum": 7665871335770871176,
-          "rss_bytes": 114802688
+          "rss_bytes": 114917376
         }
       ]
     },
@@ -4877,8 +4878,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61524,
-          "build_ns": 640588917,
+          "pid": 77307,
+          "build_ns": 631765875,
           "kind": "tree",
           "phase": "built",
           "entries": 5000000,
@@ -4887,8 +4888,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61524,
-          "build_ns": 640588917,
+          "pid": 77307,
+          "build_ns": 631765875,
           "kind": "tree",
           "phase": "read",
           "entries": 5000000,
@@ -4897,8 +4898,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61524,
-          "build_ns": 640588917,
+          "pid": 77307,
+          "build_ns": 631765875,
           "kind": "tree",
           "phase": "settled",
           "entries": 5000000,
@@ -4911,34 +4912,34 @@
       "language": "go",
       "kind": "map",
       "repeat": 0,
-      "peak_rss_bytes": 117440512,
+      "peak_rss_bytes": 117538816,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 61531,
-          "build_ns": 923695750,
+          "pid": 77312,
+          "build_ns": 923253541,
           "entries": 5000000,
           "checksum": 0,
-          "rss_bytes": 113115136
+          "rss_bytes": 113082368
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 61531,
-          "build_ns": 923695750,
+          "pid": 77312,
+          "build_ns": 923253541,
           "entries": 5000000,
           "checksum": 7665871335770871176,
-          "rss_bytes": 117309440
+          "rss_bytes": 117473280
         },
         {
           "kind": "map",
           "phase": "collected",
-          "pid": 61531,
-          "build_ns": 923695750,
+          "pid": 77312,
+          "build_ns": 923253541,
           "entries": 5000000,
           "checksum": 7665871335770871176,
-          "rss_bytes": 117440512
+          "rss_bytes": 117538816
         }
       ]
     },
@@ -4950,8 +4951,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61537,
-          "build_ns": 634035833,
+          "pid": 77322,
+          "build_ns": 636866958,
           "kind": "map",
           "phase": "built",
           "entries": 5000000,
@@ -4960,8 +4961,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61537,
-          "build_ns": 634035833,
+          "pid": 77322,
+          "build_ns": 636866958,
           "kind": "map",
           "phase": "read",
           "entries": 5000000,
@@ -4970,8 +4971,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61537,
-          "build_ns": 634035833,
+          "pid": 77322,
+          "build_ns": 636866958,
           "kind": "map",
           "phase": "settled",
           "entries": 5000000,
@@ -4988,8 +4989,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61546,
-          "build_ns": 639406500,
+          "pid": 77331,
+          "build_ns": 631625166,
           "kind": "tree",
           "phase": "built",
           "entries": 5000000,
@@ -4998,8 +4999,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61546,
-          "build_ns": 639406500,
+          "pid": 77331,
+          "build_ns": 631625166,
           "kind": "tree",
           "phase": "read",
           "entries": 5000000,
@@ -5008,8 +5009,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61546,
-          "build_ns": 639406500,
+          "pid": 77331,
+          "build_ns": 631625166,
           "kind": "tree",
           "phase": "settled",
           "entries": 5000000,
@@ -5022,34 +5023,34 @@
       "language": "go",
       "kind": "tree",
       "repeat": 1,
-      "peak_rss_bytes": 114999296,
+      "peak_rss_bytes": 115032064,
       "stages": [
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61553,
-          "build_ns": 774190708,
+          "pid": 77338,
+          "build_ns": 762213584,
           "entries": 5000000,
           "checksum": 0,
-          "rss_bytes": 114950144
+          "rss_bytes": 114933760
         },
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61553,
-          "build_ns": 774190708,
+          "pid": 77338,
+          "build_ns": 762213584,
           "entries": 5000000,
           "checksum": 7665871335770871176,
-          "rss_bytes": 114950144
+          "rss_bytes": 114933760
         },
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61553,
-          "build_ns": 774190708,
+          "pid": 77338,
+          "build_ns": 762213584,
           "entries": 5000000,
           "checksum": 7665871335770871176,
-          "rss_bytes": 114999296
+          "rss_bytes": 115032064
         }
       ]
     },
@@ -5061,8 +5062,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61559,
-          "build_ns": 630994375,
+          "pid": 77344,
+          "build_ns": 642497708,
           "kind": "map",
           "phase": "built",
           "entries": 5000000,
@@ -5071,8 +5072,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61559,
-          "build_ns": 630994375,
+          "pid": 77344,
+          "build_ns": 642497708,
           "kind": "map",
           "phase": "read",
           "entries": 5000000,
@@ -5081,8 +5082,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61559,
-          "build_ns": 630994375,
+          "pid": 77344,
+          "build_ns": 642497708,
           "kind": "map",
           "phase": "settled",
           "entries": 5000000,
@@ -5095,142 +5096,142 @@
       "language": "go",
       "kind": "map",
       "repeat": 1,
-      "peak_rss_bytes": 117456896,
+      "peak_rss_bytes": 117538816,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 61566,
-          "build_ns": 934321750,
+          "pid": 77356,
+          "build_ns": 922977500,
           "entries": 5000000,
           "checksum": 0,
-          "rss_bytes": 113197056
+          "rss_bytes": 113180672
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 61566,
-          "build_ns": 934321750,
-          "entries": 5000000,
-          "checksum": 7665871335770871176,
-          "rss_bytes": 117391360
-        },
-        {
-          "kind": "map",
-          "phase": "collected",
-          "pid": 61566,
-          "build_ns": 934321750,
-          "entries": 5000000,
-          "checksum": 7665871335770871176,
-          "rss_bytes": 117456896
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "tree",
-      "repeat": 2,
-      "peak_rss_bytes": 114966528,
-      "stages": [
-        {
-          "kind": "tree",
-          "phase": "built",
-          "pid": 61576,
-          "build_ns": 781468834,
-          "entries": 5000000,
-          "checksum": 0,
-          "rss_bytes": 114835456
-        },
-        {
-          "kind": "tree",
-          "phase": "read",
-          "pid": 61576,
-          "build_ns": 781468834,
-          "entries": 5000000,
-          "checksum": 7665871335770871176,
-          "rss_bytes": 114835456
-        },
-        {
-          "kind": "tree",
-          "phase": "collected",
-          "pid": 61576,
-          "build_ns": 781468834,
-          "entries": 5000000,
-          "checksum": 7665871335770871176,
-          "rss_bytes": 114966528
-        }
-      ]
-    },
-    {
-      "language": "rust",
-      "kind": "tree",
-      "repeat": 2,
-      "peak_rss_bytes": 136445952,
-      "stages": [
-        {
-          "allocator": "mimalloc",
-          "pid": 61585,
-          "build_ns": 630796583,
-          "kind": "tree",
-          "phase": "built",
-          "entries": 5000000,
-          "checksum": 0,
-          "rss_bytes": 136429568
-        },
-        {
-          "allocator": "mimalloc",
-          "pid": 61585,
-          "build_ns": 630796583,
-          "kind": "tree",
-          "phase": "read",
-          "entries": 5000000,
-          "checksum": 7665871335770871176,
-          "rss_bytes": 136429568
-        },
-        {
-          "allocator": "mimalloc",
-          "pid": 61585,
-          "build_ns": 630796583,
-          "kind": "tree",
-          "phase": "settled",
-          "entries": 5000000,
-          "checksum": 7665871335770871176,
-          "rss_bytes": 136429568
-        }
-      ]
-    },
-    {
-      "language": "go",
-      "kind": "map",
-      "repeat": 2,
-      "peak_rss_bytes": 117424128,
-      "stages": [
-        {
-          "kind": "map",
-          "phase": "built",
-          "pid": 61591,
-          "build_ns": 933545709,
-          "entries": 5000000,
-          "checksum": 0,
-          "rss_bytes": 113164288
-        },
-        {
-          "kind": "map",
-          "phase": "read",
-          "pid": 61591,
-          "build_ns": 933545709,
-          "entries": 5000000,
-          "checksum": 7665871335770871176,
-          "rss_bytes": 117374976
-        },
-        {
-          "kind": "map",
-          "phase": "collected",
-          "pid": 61591,
-          "build_ns": 933545709,
+          "pid": 77356,
+          "build_ns": 922977500,
           "entries": 5000000,
           "checksum": 7665871335770871176,
           "rss_bytes": 117424128
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "pid": 77356,
+          "build_ns": 922977500,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 117538816
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "tree",
+      "repeat": 2,
+      "peak_rss_bytes": 114884608,
+      "stages": [
+        {
+          "kind": "tree",
+          "phase": "built",
+          "pid": 77363,
+          "build_ns": 764853125,
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 114851840
+        },
+        {
+          "kind": "tree",
+          "phase": "read",
+          "pid": 77363,
+          "build_ns": 764853125,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 114851840
+        },
+        {
+          "kind": "tree",
+          "phase": "collected",
+          "pid": 77363,
+          "build_ns": 764853125,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 114884608
+        }
+      ]
+    },
+    {
+      "language": "rust",
+      "kind": "tree",
+      "repeat": 2,
+      "peak_rss_bytes": 136445952,
+      "stages": [
+        {
+          "allocator": "mimalloc",
+          "pid": 77368,
+          "build_ns": 648641125,
+          "kind": "tree",
+          "phase": "built",
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 136429568
+        },
+        {
+          "allocator": "mimalloc",
+          "pid": 77368,
+          "build_ns": 648641125,
+          "kind": "tree",
+          "phase": "read",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136429568
+        },
+        {
+          "allocator": "mimalloc",
+          "pid": 77368,
+          "build_ns": 648641125,
+          "kind": "tree",
+          "phase": "settled",
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 136429568
+        }
+      ]
+    },
+    {
+      "language": "go",
+      "kind": "map",
+      "repeat": 2,
+      "peak_rss_bytes": 117342208,
+      "stages": [
+        {
+          "kind": "map",
+          "phase": "built",
+          "pid": 77390,
+          "build_ns": 933986167,
+          "entries": 5000000,
+          "checksum": 0,
+          "rss_bytes": 112967680
+        },
+        {
+          "kind": "map",
+          "phase": "read",
+          "pid": 77390,
+          "build_ns": 933986167,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 117276672
+        },
+        {
+          "kind": "map",
+          "phase": "collected",
+          "pid": 77390,
+          "build_ns": 933986167,
+          "entries": 5000000,
+          "checksum": 7665871335770871176,
+          "rss_bytes": 117342208
         }
       ]
     },
@@ -5242,8 +5243,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61602,
-          "build_ns": 631065750,
+          "pid": 77398,
+          "build_ns": 635242583,
           "kind": "map",
           "phase": "built",
           "entries": 5000000,
@@ -5252,8 +5253,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61602,
-          "build_ns": 631065750,
+          "pid": 77398,
+          "build_ns": 635242583,
           "kind": "map",
           "phase": "read",
           "entries": 5000000,
@@ -5262,8 +5263,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61602,
-          "build_ns": 631065750,
+          "pid": 77398,
+          "build_ns": 635242583,
           "kind": "map",
           "phase": "settled",
           "entries": 5000000,
@@ -5276,34 +5277,34 @@
       "language": "baseline",
       "kind": "tree",
       "repeat": 0,
-      "peak_rss_bytes": 1091502080,
+      "peak_rss_bytes": 1091338240,
       "stages": [
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61617,
-          "build_ns": 13540444625,
+          "pid": 77406,
+          "build_ns": 12521067000,
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1091452928
+          "rss_bytes": 1091256320
         },
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61617,
-          "build_ns": 13540444625,
+          "pid": 77406,
+          "build_ns": 12521067000,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091452928
+          "rss_bytes": 1091256320
         },
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61617,
-          "build_ns": 13540444625,
+          "pid": 77406,
+          "build_ns": 12521067000,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091502080
+          "rss_bytes": 1091338240
         }
       ]
     },
@@ -5311,34 +5312,34 @@
       "language": "go",
       "kind": "tree",
       "repeat": 0,
-      "peak_rss_bytes": 1091354624,
+      "peak_rss_bytes": 1091321856,
       "stages": [
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61639,
-          "build_ns": 12398660625,
+          "pid": 77431,
+          "build_ns": 12315005125,
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1091305472
+          "rss_bytes": 1091239936
         },
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61639,
-          "build_ns": 12398660625,
+          "pid": 77431,
+          "build_ns": 12315005125,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091305472
+          "rss_bytes": 1091239936
         },
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61639,
-          "build_ns": 12398660625,
+          "pid": 77431,
+          "build_ns": 12315005125,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091354624
+          "rss_bytes": 1091321856
         }
       ]
     },
@@ -5350,8 +5351,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61657,
-          "build_ns": 10089897458,
+          "pid": 77495,
+          "build_ns": 10043499000,
           "kind": "tree",
           "phase": "built",
           "entries": 50000000,
@@ -5360,8 +5361,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61657,
-          "build_ns": 10089897458,
+          "pid": 77495,
+          "build_ns": 10043499000,
           "kind": "tree",
           "phase": "read",
           "entries": 50000000,
@@ -5370,8 +5371,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61657,
-          "build_ns": 10089897458,
+          "pid": 77495,
+          "build_ns": 10043499000,
           "kind": "tree",
           "phase": "settled",
           "entries": 50000000,
@@ -5384,34 +5385,34 @@
       "language": "baseline",
       "kind": "map",
       "repeat": 0,
-      "peak_rss_bytes": 1091846144,
+      "peak_rss_bytes": 1091616768,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 61684,
-          "build_ns": 15896789208,
+          "pid": 77517,
+          "build_ns": 14787932959,
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1074987008
+          "rss_bytes": 1074741248
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 61684,
-          "build_ns": 15896789208,
+          "pid": 77517,
+          "build_ns": 14787932959,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091780608
+          "rss_bytes": 1091551232
         },
         {
           "kind": "map",
           "phase": "collected",
-          "pid": 61684,
-          "build_ns": 15896789208,
+          "pid": 77517,
+          "build_ns": 14787932959,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091846144
+          "rss_bytes": 1091616768
         }
       ]
     },
@@ -5419,22 +5420,22 @@
       "language": "go",
       "kind": "map",
       "repeat": 0,
-      "peak_rss_bytes": 1091731456,
+      "peak_rss_bytes": 1091747840,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 61709,
-          "build_ns": 14960522834,
+          "pid": 77554,
+          "build_ns": 14655144542,
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1074855936
+          "rss_bytes": 1074872320
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 61709,
-          "build_ns": 14960522834,
+          "pid": 77554,
+          "build_ns": 14655144542,
           "entries": 50000000,
           "checksum": 15532031892676780678,
           "rss_bytes": 1091682304
@@ -5442,11 +5443,11 @@
         {
           "kind": "map",
           "phase": "collected",
-          "pid": 61709,
-          "build_ns": 14960522834,
+          "pid": 77554,
+          "build_ns": 14655144542,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091731456
+          "rss_bytes": 1091747840
         }
       ]
     },
@@ -5454,37 +5455,37 @@
       "language": "rust",
       "kind": "map",
       "repeat": 0,
-      "peak_rss_bytes": 1348173824,
+      "peak_rss_bytes": 1348190208,
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61744,
-          "build_ns": 10135876875,
+          "pid": 77577,
+          "build_ns": 10073137083,
           "kind": "map",
           "phase": "built",
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1348157440
+          "rss_bytes": 1348173824
         },
         {
           "allocator": "mimalloc",
-          "pid": 61744,
-          "build_ns": 10135876875,
+          "pid": 77577,
+          "build_ns": 10073137083,
           "kind": "map",
           "phase": "read",
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1348157440
+          "rss_bytes": 1348173824
         },
         {
           "allocator": "mimalloc",
-          "pid": 61744,
-          "build_ns": 10135876875,
+          "pid": 77577,
+          "build_ns": 10073137083,
           "kind": "map",
           "phase": "settled",
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1348157440
+          "rss_bytes": 1348173824
         }
       ]
     },
@@ -5497,26 +5498,26 @@
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61766,
-          "build_ns": 12728792416,
+          "pid": 77597,
+          "build_ns": 12497897125,
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1091272704
+          "rss_bytes": 1091338240
         },
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61766,
-          "build_ns": 12728792416,
+          "pid": 77597,
+          "build_ns": 12497897125,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091272704
+          "rss_bytes": 1091338240
         },
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61766,
-          "build_ns": 12728792416,
+          "pid": 77597,
+          "build_ns": 12497897125,
           "entries": 50000000,
           "checksum": 15532031892676780678,
           "rss_bytes": 1091420160
@@ -5531,8 +5532,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61788,
-          "build_ns": 10078068833,
+          "pid": 77629,
+          "build_ns": 10113571833,
           "kind": "tree",
           "phase": "built",
           "entries": 50000000,
@@ -5541,8 +5542,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61788,
-          "build_ns": 10078068833,
+          "pid": 77629,
+          "build_ns": 10113571833,
           "kind": "tree",
           "phase": "read",
           "entries": 50000000,
@@ -5551,8 +5552,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61788,
-          "build_ns": 10078068833,
+          "pid": 77629,
+          "build_ns": 10113571833,
           "kind": "tree",
           "phase": "settled",
           "entries": 50000000,
@@ -5565,34 +5566,34 @@
       "language": "baseline",
       "kind": "tree",
       "repeat": 1,
-      "peak_rss_bytes": 1091354624,
+      "peak_rss_bytes": 1091371008,
       "stages": [
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61808,
-          "build_ns": 13961954584,
+          "pid": 77663,
+          "build_ns": 12649825625,
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1091321856
+          "rss_bytes": 1091289088
         },
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61808,
-          "build_ns": 13961954584,
+          "pid": 77663,
+          "build_ns": 12649825625,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091321856
+          "rss_bytes": 1091289088
         },
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61808,
-          "build_ns": 13961954584,
+          "pid": 77663,
+          "build_ns": 12649825625,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091354624
+          "rss_bytes": 1091371008
         }
       ]
     },
@@ -5600,34 +5601,34 @@
       "language": "go",
       "kind": "map",
       "repeat": 1,
-      "peak_rss_bytes": 1091862528,
+      "peak_rss_bytes": 1091764224,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 61842,
-          "build_ns": 14828844458,
+          "pid": 77685,
+          "build_ns": 14852395375,
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1074954240
+          "rss_bytes": 1074888704
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 61842,
-          "build_ns": 14828844458,
+          "pid": 77685,
+          "build_ns": 14852395375,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091780608
+          "rss_bytes": 1091682304
         },
         {
           "kind": "map",
           "phase": "collected",
-          "pid": 61842,
-          "build_ns": 14828844458,
+          "pid": 77685,
+          "build_ns": 14852395375,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091862528
+          "rss_bytes": 1091764224
         }
       ]
     },
@@ -5639,8 +5640,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61865,
-          "build_ns": 10292809125,
+          "pid": 77716,
+          "build_ns": 10099729333,
           "kind": "map",
           "phase": "built",
           "entries": 50000000,
@@ -5649,8 +5650,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61865,
-          "build_ns": 10292809125,
+          "pid": 77716,
+          "build_ns": 10099729333,
           "kind": "map",
           "phase": "read",
           "entries": 50000000,
@@ -5659,8 +5660,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61865,
-          "build_ns": 10292809125,
+          "pid": 77716,
+          "build_ns": 10099729333,
           "kind": "map",
           "phase": "settled",
           "entries": 50000000,
@@ -5673,34 +5674,34 @@
       "language": "baseline",
       "kind": "map",
       "repeat": 1,
-      "peak_rss_bytes": 1091796992,
+      "peak_rss_bytes": 1091649536,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 61889,
-          "build_ns": 15916976084,
+          "pid": 77741,
+          "build_ns": 15075773125,
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1074970624
+          "rss_bytes": 1074806784
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 61889,
-          "build_ns": 15916976084,
+          "pid": 77741,
+          "build_ns": 15075773125,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091780608
+          "rss_bytes": 1091600384
         },
         {
           "kind": "map",
           "phase": "collected",
-          "pid": 61889,
-          "build_ns": 15916976084,
+          "pid": 77741,
+          "build_ns": 15075773125,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091796992
+          "rss_bytes": 1091649536
         }
       ]
     },
@@ -5712,8 +5713,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61911,
-          "build_ns": 10083849292,
+          "pid": 77785,
+          "build_ns": 10128862250,
           "kind": "tree",
           "phase": "built",
           "entries": 50000000,
@@ -5722,8 +5723,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61911,
-          "build_ns": 10083849292,
+          "pid": 77785,
+          "build_ns": 10128862250,
           "kind": "tree",
           "phase": "read",
           "entries": 50000000,
@@ -5732,8 +5733,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61911,
-          "build_ns": 10083849292,
+          "pid": 77785,
+          "build_ns": 10128862250,
           "kind": "tree",
           "phase": "settled",
           "entries": 50000000,
@@ -5746,34 +5747,34 @@
       "language": "baseline",
       "kind": "tree",
       "repeat": 2,
-      "peak_rss_bytes": 1091043328,
+      "peak_rss_bytes": 1091338240,
       "stages": [
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61932,
-          "build_ns": 13839492833,
+          "pid": 77812,
+          "build_ns": 12851044917,
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1091026944
+          "rss_bytes": 1091289088
         },
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61932,
-          "build_ns": 13839492833,
+          "pid": 77812,
+          "build_ns": 12851044917,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091026944
+          "rss_bytes": 1091289088
         },
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61932,
-          "build_ns": 13839492833,
+          "pid": 77812,
+          "build_ns": 12851044917,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091043328
+          "rss_bytes": 1091338240
         }
       ]
     },
@@ -5786,8 +5787,8 @@
         {
           "kind": "tree",
           "phase": "built",
-          "pid": 61951,
-          "build_ns": 12642394958,
+          "pid": 77841,
+          "build_ns": 12743991709,
           "entries": 50000000,
           "checksum": 0,
           "rss_bytes": 1091223552
@@ -5795,8 +5796,8 @@
         {
           "kind": "tree",
           "phase": "read",
-          "pid": 61951,
-          "build_ns": 12642394958,
+          "pid": 77841,
+          "build_ns": 12743991709,
           "entries": 50000000,
           "checksum": 15532031892676780678,
           "rss_bytes": 1091223552
@@ -5804,8 +5805,8 @@
         {
           "kind": "tree",
           "phase": "collected",
-          "pid": 61951,
-          "build_ns": 12642394958,
+          "pid": 77841,
+          "build_ns": 12743991709,
           "entries": 50000000,
           "checksum": 15532031892676780678,
           "rss_bytes": 1091272704
@@ -5820,8 +5821,8 @@
       "stages": [
         {
           "allocator": "mimalloc",
-          "pid": 61983,
-          "build_ns": 10144329292,
+          "pid": 77873,
+          "build_ns": 10155594875,
           "kind": "map",
           "phase": "built",
           "entries": 50000000,
@@ -5830,8 +5831,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61983,
-          "build_ns": 10144329292,
+          "pid": 77873,
+          "build_ns": 10155594875,
           "kind": "map",
           "phase": "read",
           "entries": 50000000,
@@ -5840,8 +5841,8 @@
         },
         {
           "allocator": "mimalloc",
-          "pid": 61983,
-          "build_ns": 10144329292,
+          "pid": 77873,
+          "build_ns": 10155594875,
           "kind": "map",
           "phase": "settled",
           "entries": 50000000,
@@ -5854,34 +5855,34 @@
       "language": "baseline",
       "kind": "map",
       "repeat": 2,
-      "peak_rss_bytes": 1091452928,
+      "peak_rss_bytes": 1091764224,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 62002,
-          "build_ns": 15951609833,
+          "pid": 77896,
+          "build_ns": 15075320166,
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1074642944
+          "rss_bytes": 1074872320
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 62002,
-          "build_ns": 15951609833,
+          "pid": 77896,
+          "build_ns": 15075320166,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091436544
+          "rss_bytes": 1091682304
         },
         {
           "kind": "map",
           "phase": "collected",
-          "pid": 62002,
-          "build_ns": 15951609833,
+          "pid": 77896,
+          "build_ns": 15075320166,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091452928
+          "rss_bytes": 1091764224
         }
       ]
     },
@@ -5889,37 +5890,37 @@
       "language": "go",
       "kind": "map",
       "repeat": 2,
-      "peak_rss_bytes": 1091813376,
+      "peak_rss_bytes": 1091665920,
       "stages": [
         {
           "kind": "map",
           "phase": "built",
-          "pid": 62036,
-          "build_ns": 14982878708,
+          "pid": 77925,
+          "build_ns": 14815388292,
           "entries": 50000000,
           "checksum": 0,
-          "rss_bytes": 1074888704
+          "rss_bytes": 1074806784
         },
         {
           "kind": "map",
           "phase": "read",
-          "pid": 62036,
-          "build_ns": 14982878708,
+          "pid": 77925,
+          "build_ns": 14815388292,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091715072
+          "rss_bytes": 1091616768
         },
         {
           "kind": "map",
           "phase": "collected",
-          "pid": 62036,
-          "build_ns": 14982878708,
+          "pid": 77925,
+          "build_ns": 14815388292,
           "entries": 50000000,
           "checksum": 15532031892676780678,
-          "rss_bytes": 1091813376
+          "rss_bytes": 1091665920
         }
       ]
     }
   ],
-  "baseline_harness_source": "860335918e56d22262b88feb7960463a91e967b9"
+  "baseline_harness_source": "c1567888316ed3a0c2ff4e7895fddc6eb1558ad3"
 }
