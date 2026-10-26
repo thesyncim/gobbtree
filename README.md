@@ -2,7 +2,7 @@
 
 **Ordered maps for Go, with SIMD search and efficient range scans.**
 
-A Go adaptation of [XiangpengHao/bbtree](https://github.com/XiangpengHao/bbtree), built for **Go 1.27.x**. Generic keys and values, a concurrent map, and a single-owner tree. Pure Go: no handwritten assembly, cgo, or external runtime dependencies.
+A Go port of [XiangpengHao/bbtree](https://github.com/XiangpengHao/bbtree), built for **Go 1.27.x**. Generic keys and values, a concurrent map, a single-owner tree, and read-only file maps. Pure Go: no handwritten assembly, cgo, or external runtime dependencies.
 
 [![Tests](https://github.com/thesyncim/gobbtree/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/thesyncim/gobbtree/actions/workflows/test.yml)
 [![amd64 SIMD](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml/badge.svg?branch=main)](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml)
@@ -94,6 +94,28 @@ Ordering follows `cmp.Compare`: NaNs sort before other floating-point values, an
 - Synchronizing a map does not synchronize mutable objects referenced by its values.
 
 Do not modify a `Tree` while iterating over it.
+
+## File maps
+
+Write a snapshot, then query its pages directly from disk:
+
+```go
+if err := tree.WriteFile("index.bbt"); err != nil {
+    panic(err)
+}
+disk, err := gobbtree.MmapFile[string, int]("index.bbt")
+if err != nil {
+    panic(err)
+}
+defer disk.Close()
+value, found := disk.Get("alpha")
+```
+
+`ReadFile` loads the same pages into owned memory. Both paths validate the image and search it in place, without reconstructing a `Tree`. File maps support `GetMany`, `GetKeyValue`, forward and reverse iteration, and bounded scans. Returned values remain valid after `Close`.
+
+Files use the pinned Rust reference's version 1 format, checked in both directions by the Rust oracle. Integer and string keys, and numeric, plain-array, empty-struct, string and byte-slice values are supported on 64-bit targets. Match the Rust key/value types and platform layout; Go strings use Rust's `VarBytes` representation. Floating-point keys, pointer types, and nonempty structs are rejected. `mmap` is available on Linux, macOS and the BSDs; `ReadFile` also works elsewhere.
+
+`CreateFile(path, entries)` accepts an ascending `iter.Seq2`. `NewFileWriter` builds a reusable image; `WriteAt`, `ReadFileRange`, and `MmapFileRange` support embedded snapshots. `WriteFile` publishes a complete replacement by rename. A file map is immutable: publish a new snapshot to change it, and do not modify or truncate a mapped file.
 
 ## SIMD, written in Go
 
@@ -227,6 +249,6 @@ GOEXPERIMENT=simd go test -run '^$' -fuzz FuzzTree -fuzztime 20s
 
 Tests cover randomized operations against independent Go references, tree invariants, concurrent mutation, callback panic recovery, SIMD boundaries, and steady-state allocations. CI also runs a live Rust oracle for numeric keys and byte strings, checking return values, ranges in both directions, lengths, and deletion to empty.
 
-The upstream reference is pinned to [`8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). This port covers the in-memory ordered maps. Rust borrowing and allocator APIs, custom `InlineKey` strategies, sets, persistence, mmap, and the separate store crate are outside the current scope.
+The upstream reference is pinned to [`8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). The test suite includes Rust-generated file fixtures and optional live Rust oracles for container operations and file interoperability.
 
 Licensed under **MIT OR Apache-2.0**, following upstream. See [LICENSE](LICENSE).

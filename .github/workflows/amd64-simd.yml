@@ -65,7 +65,7 @@ jobs:
           rustc -vV > perf/rust-version.txt
           cargo build --release --locked --manifest-path internal/oracle/Cargo.toml --bin compare --bin memory
           go test -c -o ../simd.test
-          go tool objdump -s 'gobbtree.(lowerCode|lowerCompact|findCode|firstTag|upperTag|firstSharedTag|upperSharedTag)$' ../simd.test > perf/generated-code.txt
+          go tool objdump -s 'gobbtree.(lowerCode|lowerCompact|findCode|firstTag|upperTag|firstSharedTag|upperSharedTag|diskCount16|diskCount32|diskCount64)$' ../simd.test > perf/generated-code.txt
       - name: Compare public operations on the same CPU
         run: |
           for size in 4096 262144; do
