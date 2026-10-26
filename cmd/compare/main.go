@@ -341,11 +341,31 @@ func main() {
 			}
 		}
 	}
-	if *distinct {
-		other := make([]uint64, len(queries))
+	if *distinct && (doTree || doMap) {
+		count := min(*size, len(queries))
+		churnRounds := *rounds * (len(queries) / count)
+		queries = queries[:count]
+		other := make([]uint64, count)
+		// mix is a permutation: these two index domains produce unique,
+		// disjoint key sets. A coprime stride samples the full insertion domain.
+		step := uint64(0x9e3779b97f4a7c15) % uint64(*size)
+		for {
+			a, b := step, uint64(*size)
+			for b != 0 {
+				a, b = b, a%b
+			}
+			if a == 1 {
+				break
+			}
+			step++
+		}
+		x := uint64(17) % uint64(*size)
 		for i := range queries {
-			x := mix(uint64(i+17)) % uint64(*size)
 			queries[i], other[i] = mix(x), mix(x+uint64(*size))
+			x = (x + step) % uint64(*size)
+		}
+		reportDistinct := func(name string, start time.Time, sum uint64) {
+			fmt.Printf("%s %.3f ns/op checksum=%d\n", name, float64(time.Since(start).Nanoseconds())/float64(churnRounds*count), sum)
 		}
 		if doTree {
 			for _, q := range queries {
@@ -354,18 +374,23 @@ func main() {
 			runtime.GC()
 			var sum uint64
 			start := time.Now()
-			for r := 0; r < *rounds; r++ {
+			for r := 0; r < churnRounds; r++ {
 				remove, add := queries, other
 				if r&1 != 0 {
 					remove, add = other, queries
 				}
 				for i, q := range remove {
-					v, _ := tree.Delete(q)
+					v, ok := tree.Delete(q)
+					if !ok || v != q {
+						panic("distinct churn must delete an existing key")
+					}
 					sum += v
-					tree.Insert(add[i], add[i])
+					if _, replaced := tree.Insert(add[i], add[i]); replaced {
+						panic("distinct churn must insert a new key")
+					}
 				}
 			}
-			report("tree_churn_new_pair", start, sum)
+			reportDistinct("tree_churn_new_pair", start, sum)
 			if tree.Len() != *size {
 				panic("distinct churn changed tree size")
 			}
@@ -377,18 +402,23 @@ func main() {
 			runtime.GC()
 			var sum uint64
 			start := time.Now()
-			for r := 0; r < *rounds; r++ {
+			for r := 0; r < churnRounds; r++ {
 				remove, add := queries, other
 				if r&1 != 0 {
 					remove, add = other, queries
 				}
 				for i, q := range remove {
-					v, _ := concurrent.Delete(q)
+					v, ok := concurrent.Delete(q)
+					if !ok || v != q {
+						panic("distinct churn must delete an existing key")
+					}
 					sum += v
-					concurrent.Insert(add[i], add[i])
+					if _, replaced := concurrent.Insert(add[i], add[i]); replaced {
+						panic("distinct churn must insert a new key")
+					}
 				}
 			}
-			report("map_churn_new_pair", start, sum)
+			reportDistinct("map_churn_new_pair", start, sum)
 			if concurrent.Len() != *size {
 				panic("distinct churn changed map size")
 			}

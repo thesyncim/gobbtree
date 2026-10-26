@@ -1,6 +1,7 @@
 """Run each backend in a fresh process and validate matched checksums."""
 import argparse
 import json
+import math
 import re
 import subprocess
 from pathlib import Path
@@ -26,6 +27,22 @@ def main():
     if args.queries < 8 or args.queries & (args.queries - 1):
         parser.error("queries must be a power of two, at least eight")
     checksums = {}
+    distinct_queries = min(args.queries, args.size)
+    distinct_rounds = args.rounds * (args.queries // distinct_queries)
+    if args.distinct:
+        mask = (1 << 64) - 1
+        def mix(value):
+            value = ((value ^ (value >> 30)) * 0xbf58476d1ce4e5b9) & mask
+            value = ((value ^ (value >> 27)) * 0x94d049bb133111eb) & mask
+            return value ^ (value >> 31)
+        step = 0x9e3779b97f4a7c15 % args.size
+        while math.gcd(step,args.size) != 1:
+            step += 1
+        indices = [(17 + i*step) % args.size for i in range(distinct_queries)]
+        original = sum(mix(i) for i in indices)
+        alternate = sum(mix(i + args.size) for i in indices)
+        del indices
+        checksums["churn_new_pair"] = (original*((distinct_rounds+1)//2) + alternate*(distinct_rounds//2)) & mask
     kinds = list(dict.fromkeys(args.kinds)) + (["builtin", "syncmap"] if args.standard else [])
     for repeat in range(args.repeat):
         for kind in kinds:
@@ -60,7 +77,7 @@ def main():
                     cases.append({"name": name, "ns_per_op": float(elapsed), "checksum": checksum})
                 if not cases:
                     raise RuntimeError("benchmark returned no operations")
-                print(json.dumps({"language": language, "kind": kind, "repeat": repeat, "entries": args.size, "queries": args.queries, "rounds": args.rounds, "threads": args.threads, "mutations": args.mutations, "distinct": args.distinct, "build": lines[0], "cases": cases}), flush=True)
+                print(json.dumps({"language": language, "kind": kind, "repeat": repeat, "entries": args.size, "queries": args.queries, "rounds": args.rounds, "threads": args.threads, "mutations": args.mutations, "distinct": args.distinct, "distinct_queries": distinct_queries, "distinct_rounds": distinct_rounds, "build": lines[0], "cases": cases}), flush=True)
 
 
 if __name__ == "__main__":

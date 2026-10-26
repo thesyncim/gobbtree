@@ -220,11 +220,26 @@ fn main() {
         }
     }
     if args.iter().any(|arg| arg == "distinct") {
-        let mut other = vec![0_u64; query_count];
+        let count = query_count.min(size as usize);
+        let churn_rounds = rounds * (query_count / count);
+        queries.truncate(count);
+        let mut other = vec![0_u64; count];
+        let mut step = 0x9e3779b97f4a7c15_u64 % size;
+        loop {
+            let (mut a, mut b) = (step, size);
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            if a == 1 {
+                break;
+            }
+            step += 1;
+        }
+        let mut x = 17 % size;
         for (i, q) in queries.iter_mut().enumerate() {
-            let x = mix(i as u64 + 17) % size;
             *q = mix(x);
             other[i] = mix(x + size);
+            x = (x + step) % size;
         }
         if do_tree {
             for q in &queries {
@@ -232,18 +247,22 @@ fn main() {
             }
             let mut sum = 0_u64;
             let start = Instant::now();
-            for r in 0..rounds {
+            for r in 0..churn_rounds {
                 let (remove, add) = if r & 1 == 0 {
                     (&queries, &other)
                 } else {
                     (&other, &queries)
                 };
                 for (q, new_key) in black_box(remove).iter().zip(black_box(add)) {
-                    sum = sum.wrapping_add(tree.remove(q).unwrap_or(0));
-                    tree.insert(*new_key, *new_key);
+                    let value = tree
+                        .remove(q)
+                        .expect("distinct churn must delete an existing key");
+                    assert_eq!(value, *q);
+                    sum = sum.wrapping_add(value);
+                    assert!(tree.insert(*new_key, *new_key).is_none());
                 }
             }
-            report("tree_churn_new_pair", start, sum, rounds, query_count);
+            report("tree_churn_new_pair", start, sum, churn_rounds, count);
             assert_eq!(tree.len(), size as usize);
         }
         if do_map {
@@ -252,18 +271,22 @@ fn main() {
             }
             let mut sum = 0_u64;
             let start = Instant::now();
-            for r in 0..rounds {
+            for r in 0..churn_rounds {
                 let (remove, add) = if r & 1 == 0 {
                     (&queries, &other)
                 } else {
                     (&other, &queries)
                 };
                 for (q, new_key) in black_box(remove).iter().zip(black_box(add)) {
-                    sum = sum.wrapping_add(concurrent.remove(q).unwrap_or(0));
-                    concurrent.insert(*new_key, *new_key).unwrap();
+                    let value = concurrent
+                        .remove(q)
+                        .expect("distinct churn must delete an existing key");
+                    assert_eq!(value, *q);
+                    sum = sum.wrapping_add(value);
+                    assert!(concurrent.insert(*new_key, *new_key).unwrap().is_none());
                 }
             }
-            report("map_churn_new_pair", start, sum, rounds, query_count);
+            report("map_churn_new_pair", start, sum, churn_rounds, count);
             assert_eq!(concurrent.range_cloned::<u64, _>(..).count(), size as usize);
         }
     }
