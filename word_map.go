@@ -190,16 +190,22 @@ retry:
 			continue retry
 		}
 
-		var id, parentID uint32
+		var id uint32
 		var fill bool
 		if view.leaves != nil {
 			id, fill = view.leaves.lookup(key)
 		}
+		// While a leaf cell is empty, track the key bounds of each node so the
+		// leaf parent can fill it whenever that parent covers the whole cell.
+		low, high := uint64(0), ^uint64(0)
 		if id == 0 {
 			id = view.routes.lookupAtomic(key)
-			parentID = id
+
 			if id == 0 {
 				id = view.root
+			} else if fill {
+				low = view.routes.base | ((key-view.routes.base)>>view.routes.shift)<<view.routes.shift
+				high = low | ((uint64(1) << view.routes.shift) - 1)
 			}
 		}
 		for depth := 0; depth <= int(view.level); depth++ {
@@ -270,10 +276,19 @@ retry:
 					i--
 				}
 			}
-			if fill && id == parentID {
-				m.cacheLeafParent(view.leaves, n, key, i, count, version)
+			child := atomic.LoadUint32(&n.inner().children[i])
+			if fill {
+				if child&wordLeafID != 0 {
+					m.cacheLeafParent(view.leaves, n, key, i, count, version, low, high)
+				}
+				if i > 0 {
+					low = atomic.LoadUint64(&n.keys[i])
+				}
+				if i+1 < count {
+					high = atomic.LoadUint64(&n.keys[i+1]) - 1
+				}
 			}
-			id = atomic.LoadUint32(&n.inner().children[i])
+			id = child
 		}
 	}
 }

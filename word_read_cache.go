@@ -60,8 +60,10 @@ func (m *wordMap) cacheNode(cache *wordReadCache, id uint32) *wordNode {
 	if image == nil {
 		return nil
 	}
-	m.structure.RLock()
-	defer m.structure.RUnlock()
+	// Like a leaf writer, a serial filler holds only the writer mutex, so one
+	// goroutine mixing reads and writes does not permanently enable lanes.
+	guard := m.structure.acquire(0)
+	defer guard.unlock()
 	cache.fill.Lock()
 	defer cache.fill.Unlock()
 	view := m.view.Load()

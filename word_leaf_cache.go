@@ -71,9 +71,10 @@ func (c *wordLeafCache) lookup(key uint64) (uint32, bool) {
 	return uint32(id) | wordLeafID, false
 }
 
-// parent covers the complete coarse directory bucket, so it also covers
-// the finer cache bucket. All source reads participate in the map epoch.
-func (m *wordMap) cacheLeafParent(c *wordLeafCache, parent *wordNode, key uint64, position, count int, version uint64) {
+// parent holds every key in [parentLow, parentHigh]. A cell outside that range
+// spans several parents and uses ordinary descent. All source reads
+// participate in the map epoch.
+func (m *wordMap) cacheLeafParent(c *wordLeafCache, parent *wordNode, key uint64, position, count int, version, parentLow, parentHigh uint64) {
 	index := (key - c.base) >> c.shift
 	if index >= uint64(len(c.cells)) {
 		return
@@ -84,6 +85,12 @@ func (m *wordMap) cacheLeafParent(c *wordLeafCache, parent *wordNode, key uint64
 	}
 	low := c.base | index<<c.shift
 	high := low | ((uint64(1) << c.shift) - 1)
+	if low < parentLow || high > parentHigh {
+		if m.version.Load() == version {
+			cell.head.CompareAndSwap(0, 2)
+		}
+		return
+	}
 	first, last := position, position
 	for first > 0 && atomic.LoadUint64(&parent.keys[first]) > low {
 		first--
