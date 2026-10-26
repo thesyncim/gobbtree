@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--kinds", nargs="+", choices=["tree", "map"], default=["tree", "map"])
     parser.add_argument("--standard", action="store_true")
     parser.add_argument("--mutations", action="store_true")
+    parser.add_argument("--distinct", action="store_true")
     args = parser.parse_args()
     if args.size < 1 or args.rounds < 1 or args.repeat < 1 or args.threads < 0:
         parser.error("size, rounds and repeat must be positive; threads nonnegative")
@@ -42,6 +43,8 @@ def main():
                     command = [str(binary.resolve()), "-kind", kind, "-size", str(args.size), "-rounds", str(args.rounds), "-threads", str(args.threads), "-queries", str(args.queries)]
                 if args.mutations:
                     command.append("mutations" if language == "rust" else "-mutations")
+                if args.distinct:
+                    command.append("distinct" if language == "rust" else "-distinct")
                 output = subprocess.check_output(command, text=True)
                 lines = output.splitlines()
                 cases = []
@@ -57,7 +60,7 @@ def main():
                     cases.append({"name": name, "ns_per_op": float(elapsed), "checksum": checksum})
                 if not cases:
                     raise RuntimeError("benchmark returned no operations")
-                print(json.dumps({"language": language, "kind": kind, "repeat": repeat, "entries": args.size, "queries": args.queries, "rounds": args.rounds, "threads": args.threads, "mutations": args.mutations, "build": lines[0], "cases": cases}), flush=True)
+                print(json.dumps({"language": language, "kind": kind, "repeat": repeat, "entries": args.size, "queries": args.queries, "rounds": args.rounds, "threads": args.threads, "mutations": args.mutations, "distinct": args.distinct, "build": lines[0], "cases": cases}), flush=True)
 
 
 if __name__ == "__main__":

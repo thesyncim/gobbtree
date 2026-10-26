@@ -21,6 +21,7 @@ func mix(x uint64) uint64 {
 }
 func main() {
 	mutations := flag.Bool("mutations", false, "include replacement and delete/insert pairs")
+	distinct := flag.Bool("distinct", false, "include Tree/Map deletion followed by insertion of a different key")
 	kind := flag.String("kind", "all", "all, tree, map, builtin, or syncmap")
 	size := flag.Int("size", 262144, "entries")
 	queryCount := flag.Int("queries", 8192, "query buffer length (power of two)")
@@ -340,7 +341,59 @@ func main() {
 			}
 		}
 	}
-
+	if *distinct {
+		other := make([]uint64, len(queries))
+		for i := range queries {
+			x := mix(uint64(i+17)) % uint64(*size)
+			queries[i], other[i] = mix(x), mix(x+uint64(*size))
+		}
+		if doTree {
+			for _, q := range queries {
+				tree.Insert(q, q)
+			}
+			runtime.GC()
+			var sum uint64
+			start := time.Now()
+			for r := 0; r < *rounds; r++ {
+				remove, add := queries, other
+				if r&1 != 0 {
+					remove, add = other, queries
+				}
+				for i, q := range remove {
+					v, _ := tree.Delete(q)
+					sum += v
+					tree.Insert(add[i], add[i])
+				}
+			}
+			report("tree_churn_new_pair", start, sum)
+			if tree.Len() != *size {
+				panic("distinct churn changed tree size")
+			}
+		}
+		if doMap {
+			for _, q := range queries {
+				concurrent.Insert(q, q)
+			}
+			runtime.GC()
+			var sum uint64
+			start := time.Now()
+			for r := 0; r < *rounds; r++ {
+				remove, add := queries, other
+				if r&1 != 0 {
+					remove, add = other, queries
+				}
+				for i, q := range remove {
+					v, _ := concurrent.Delete(q)
+					sum += v
+					concurrent.Insert(add[i], add[i])
+				}
+			}
+			report("map_churn_new_pair", start, sum)
+			if concurrent.Len() != *size {
+				panic("distinct churn changed map size")
+			}
+		}
+	}
 }
 
 // The callback runs once per worker, outside the per-operation dispatch.

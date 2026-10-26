@@ -55,6 +55,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--go", required=True, type=Path)
     parser.add_argument("--rust", required=True, type=Path)
+    parser.add_argument("--baseline", type=Path)
     parser.add_argument("--size", type=int, default=5_000_000)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--kinds", nargs="+", choices=["tree", "map", "builtin", "syncmap"], default=["tree", "map", "builtin", "syncmap"])
@@ -65,6 +66,8 @@ def main():
     for repeat in range(args.repeat):
         for kind in args.kinds:
             commands = [("go", [str(args.go.resolve()), "-kind", kind, "-size", str(args.size)])]
+            if args.baseline and kind in ("tree", "map"):
+                commands.insert(0, ("baseline", [str(args.baseline.resolve()), "-kind", kind, "-size", str(args.size)]))
             if kind in ("tree", "map"):
                 commands.append(("rust", [str(args.rust.resolve()), kind, str(args.size)]))
             rotation = repeat % len(commands)

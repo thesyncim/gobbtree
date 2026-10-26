@@ -219,4 +219,52 @@ fn main() {
             }
         }
     }
+    if args.iter().any(|arg| arg == "distinct") {
+        let mut other = vec![0_u64; query_count];
+        for (i, q) in queries.iter_mut().enumerate() {
+            let x = mix(i as u64 + 17) % size;
+            *q = mix(x);
+            other[i] = mix(x + size);
+        }
+        if do_tree {
+            for q in &queries {
+                tree.insert(*q, *q);
+            }
+            let mut sum = 0_u64;
+            let start = Instant::now();
+            for r in 0..rounds {
+                let (remove, add) = if r & 1 == 0 {
+                    (&queries, &other)
+                } else {
+                    (&other, &queries)
+                };
+                for (q, new_key) in black_box(remove).iter().zip(black_box(add)) {
+                    sum = sum.wrapping_add(tree.remove(q).unwrap_or(0));
+                    tree.insert(*new_key, *new_key);
+                }
+            }
+            report("tree_churn_new_pair", start, sum, rounds, query_count);
+            assert_eq!(tree.len(), size as usize);
+        }
+        if do_map {
+            for q in &queries {
+                concurrent.insert(*q, *q).unwrap();
+            }
+            let mut sum = 0_u64;
+            let start = Instant::now();
+            for r in 0..rounds {
+                let (remove, add) = if r & 1 == 0 {
+                    (&queries, &other)
+                } else {
+                    (&other, &queries)
+                };
+                for (q, new_key) in black_box(remove).iter().zip(black_box(add)) {
+                    sum = sum.wrapping_add(concurrent.remove(q).unwrap_or(0));
+                    concurrent.insert(*new_key, *new_key).unwrap();
+                }
+            }
+            report("map_churn_new_pair", start, sum, rounds, query_count);
+            assert_eq!(concurrent.range_cloned::<u64, _>(..).count(), size as usize);
+        }
+    }
 }
