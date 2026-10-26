@@ -105,11 +105,30 @@ Do not modify a `Tree` while iterating over it.
 
 Kernels use Go's `simd` and `simd/archsimd` APIs. Runtime CPU checks select a supported path; `gobbtree.SIMD()` returns the selected hardware status and width. A normal build works without the SIMD experiment. `GODEBUG=simd=0` selects the scalar fallback for validation.
 
+## Performance status
+
+The target is **at least 30% lower operation time and real process memory than the pinned Rust reference across the full benchmark matrix**. **That target has not been achieved.** Some read workloads are faster; construction and several mutation workloads remain behind.
+
+The latest recorded development checkpoint is [`55907ff`](https://github.com/thesyncim/gobbtree/commit/55907ff08815d434de96af13b89e75e603680dd5) on [`leaf-density-tuning`](https://github.com/thesyncim/gobbtree/tree/leaf-density-tuning). It reduces numeric Map allocations by redistributing into sparse siblings and reusing cached parents during structural insertion. It has not been promoted to `main`.
+
+**Map memory on Apple M4 Max, Go 1.27.3, Rust 1.97.1:** medians of three fresh processes, in decimal MB. Totals include the runtime, GC headroom, and caches populated by reading every entry.
+
+| Entries | Go peak RSS | Rust peak RSS | Go RSS after collection | Rust RSS after settling |
+|---|---:|---:|---:|---:|
+| 5 million | 117.44 MB | 136.48 MB | 117.44 MB | 136.46 MB |
+| 50 million | 1,091.94 MB | 1,348.17 MB | 1,091.94 MB | 1,348.16 MB |
+
+Peak RSS is approximately **14% lower at 5M** and **19% lower at 50M** than Rust. The 50M checkpoint saves about 16 MB against the previous Go checkpoint. Local construction time was essentially unchanged. Background CPU activity was observed, so small timing differences are inconclusive.
+
+The [raw measurement report](benchmarks/arm64-2026-10-26.json) includes CPU results for 4K, 262K, 5M, and 50M entries, plus these memory measurements. Built-in `map` and `sync.Map` are included in the recorded CPU comparisons through 5M entries. ARM64 measurements do not establish amd64 performance.
+
+Local race, Rust-oracle, scalar-fallback, vet, and fuzz checks passed. Check the [native amd64 run](https://github.com/thesyncim/gobbtree/actions/runs/40292647038) and [CI correctness run](https://github.com/thesyncim/gobbtree/actions/runs/40292646998) for their latest status; validation was still pending when this report was published.
+
 ## Reproduce the comparisons
 
 Performance work compares the Go implementation with a pinned, optimized Rust build, plus Go's built-in `map` and `sync.Map`. Results depend on the workload, entry count, CPU, and concurrency level; the project does not yet meet its performance target in every case.
 
-Build the drivers from the repository root:
+To reproduce the recorded results, use source checkpoint `55907ff` in a separate checkout. Build the drivers from its repository root:
 
 ```sh
 GOEXPERIMENT=simd go build -o compare-go ./cmd/compare
@@ -123,13 +142,13 @@ Run the **50-million-entry** CPU comparison:
 ```sh
 python3 internal/cpu_compare.py \
   --go ./compare-go --rust internal/oracle/target/release/compare \
-  --size 50000000 --queries 1048576 --rounds 4 --threads 8 --repeat 3 \
-  --standard
+  --size 50000000 --queries 1048576 --rounds 4 --threads 4 --repeat 3 \
+  --standard --mutations
 ```
 
 Each backend runs in a fresh process. The drivers use `uint64`/`u64` keys and values. Rust uses the pinned upstream benchmark’s mimalloc allocator, full LTO, and native CPU tuning; Go uses its normal allocator and GC settings. Go and Rust receive identical keys, query streams, and operation counts; the driver checks checksums and rotates execution order. Eight-key batches use each library’s public batch API. Add `--mutations` to include existing-key replacements and delete/insert pairs after the read cases. Parallel timings exclude worker creation and final checksum reduction. Built-in `map` is read directly for read-only tests and protected by `RWMutex` for concurrent writes.
 
-Serial measurements keep the caller on one OS thread. The Go driver sets its worker limit before construction, using the requested parallel worker count, or one for serial-only runs. The output records this setting.
+At the recorded checkpoint, serial measurements keep the caller on one OS thread. The Go driver sets its worker limit before construction, using the requested parallel worker count, or one for serial-only runs. The output records this setting.
 
 Measure **real process memory**, separately from CPU timings:
 
