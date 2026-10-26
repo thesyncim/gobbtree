@@ -36,8 +36,8 @@ func TestWordArenaIDsAcrossSlabGrowth(t *testing.T) {
 			}
 		}
 		nodes := 0
-		for _, slab := range tr.slabs {
-			nodes += len(slab)
+		for i := range tr.slabs {
+			nodes += wordSlabSize(i)
 		}
 		cache := wordReadCache{nodes: make([]wordNode, nodes)}
 		positions := make(map[*wordNode]uint32)
@@ -184,7 +184,7 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 	depth, total := -1, 0
 	var walk func(uint32, int)
 	walk = func(id uint32, level int) {
-		if id == 0 || int(((id&^wordLeafID)-1)>>8) >= len(tr.slabs) || int(((id&^wordLeafID)-1)&255) >= len(tr.slabs[((id&^wordLeafID)-1)>>8]) {
+		if id == 0 || int(((id&^wordLeafID)-1)>>8) >= len(tr.slabs) || int(((id&^wordLeafID)-1)&255) >= wordSlabSize(int(((id&^wordLeafID)-1)>>8)) {
 			t.Fatalf("invalid node ID %d", id)
 		}
 		if seen[id] {

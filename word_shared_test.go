@@ -96,8 +96,8 @@ func TestSharedWordArenaReuse(t *testing.T) {
 				if b == nil {
 					continue
 				}
-				for i := range b.nodes {
-					n := &b.nodes[i]
+				for i := 0; i < wordSlabSize(blockIndex); i++ {
+					n := wordSlabNode(b, uint32(i))
 					// Retired readers may still load numeric words while the arena reuses
 					// them. All such accesses must stay atomic even across reclamation.
 					_ = n.sequence.Load()
@@ -144,7 +144,8 @@ func TestDeepRoutesAfterBoundaryChanges(t *testing.T) {
 	}
 	checkWordRoutes(t, &words.tree)
 	var boundaries []uint64
-	for _, slab := range words.tree.slabs {
+	for slabIndex, base := range words.tree.slabs {
+		slab := unsafe.Slice(base, wordSlabSize(slabIndex))
 		for i := range slab {
 			n := &slab[i]
 			if !n.leaf && n.level == 2 && n.n > 0 {

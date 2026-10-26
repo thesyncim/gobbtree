@@ -10,7 +10,7 @@ type wordReadView struct {
 	root     uint32
 	level    uint8
 	ready    bool
-	blocks   []atomic.Pointer[wordReadBlock]
+	blocks   []atomic.Pointer[wordNode]
 	routes   wordRoutes
 	cache    *wordReadCache
 	leaves   *wordLeafCache
@@ -74,8 +74,8 @@ func (m *wordMap) enableReads() {
 		view := *current
 		view.uncached = current
 		nodes := 0
-		for _, slab := range m.tree.slabs {
-			nodes += len(slab)
+		for i := range m.tree.slabs {
+			nodes += wordSlabSize(i)
 		}
 		view.cache = &wordReadCache{nodes: make([]wordNode, nodes)}
 		if root := m.tree.rootNode; root.level > 0 {
@@ -210,10 +210,10 @@ retry:
 				continue retry
 			}
 			block := view.blocks[blockIndex].Load()
-			if block == nil {
+			if block == nil || blockIndex < 8 && int(index&255) >= wordSlabSize(blockIndex) {
 				continue retry
 			}
-			n := &block.nodes[index&255]
+			n := wordSlabNode(block, index)
 			sequence := n.sequence.Load()
 			count := int(sequence >> 1 & 63)
 			if id&wordLeafID != 0 {
