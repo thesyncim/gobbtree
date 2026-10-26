@@ -59,7 +59,14 @@ func (t *wordTree) rebuildRoutes() {
 	shift, depth := uint8(width-radixBits), root.level-1
 	same := len(t.routes.ids) == count && t.routes.base == base && t.routes.shift == shift && t.routes.depth == depth
 	if !same {
-		t.routes = wordRoutes{base: base, shift: shift, depth: depth, ids: make([]uint32, count)}
+		ids := t.routes.ids
+		if len(ids) != count {
+			ids = make([]uint32, count)
+		}
+		// A changed domain rebuilds every cell below. Reuse equal-sized
+		// storage; shared readers validate the structural epoch around atomic
+		// cell loads, just as they do for an ordinary partial repair.
+		t.routes = wordRoutes{base: base, shift: shift, depth: depth, ids: ids}
 	}
 	id := t.root
 	low, high := uint64(0), ^uint64(0)
