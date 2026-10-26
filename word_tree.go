@@ -364,6 +364,12 @@ func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
 		}
 		return
 	}
+	if seqlockPlainStores {
+		// Inside the caller's leaf write; keep the epoch and odd bits.
+		n.insertLeafPlain(i, key, value)
+		n.sequence.Store(n.sequence.Load()&^(wordSequenceStep-2) | uint64(n.n)<<1)
+		return
+	}
 	count := int(n.n)
 	t.moveEntries(n, i+1, i, count-i)
 	t.storeEntry(n, i, wordEntry{key, value})
@@ -629,13 +635,17 @@ func (t *wordTree) remove(id uint32, key uint64) (uint64, bool) {
 func (t *wordTree) removeLeaf(n *wordNode, i int) uint64 {
 	value := n.entries()[i].value
 	t.moveEntries(n, i, i+1, int(n.n)-i-1)
-	if !t.shared || !t.atomicWrites {
+	if !t.shared || t.plainWrites() {
 		copy(n.tags[i:n.n-1], n.tags[i+1:n.n])
 	}
 	n.n--
 	t.storeEntry(n, int(n.n), wordEntry{key: ^uint64(0)})
 	if t.shared {
-		if t.atomicWrites {
+		if t.atomicWrites && seqlockPlainStores {
+			// Inside the caller's leaf write; keep the epoch and odd bits.
+			n.tags[n.n] = 0
+			n.sequence.Store(n.sequence.Load()&^(wordSequenceStep-2) | uint64(n.n)<<1)
+		} else if t.atomicWrites {
 			n.deleteTag(i)
 		} else {
 			n.tags[n.n] = 0

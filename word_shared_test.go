@@ -439,3 +439,68 @@ func TestNumericBuilderPublication(t *testing.T) {
 		checkWordTree(t, &m.words.Load().tree, m.Len())
 	}
 }
+
+// Optimistic readers must never return a torn or shifted entry while writers
+// move neighboring entries inside the same leaves. Even keys stay present with
+// fixed values; odd keys between them are deleted and reinserted continuously.
+func TestOptimisticReadsDuringLeafShifts(t *testing.T) {
+	const keys = 1 << 14
+	var m Map[uint64, uint64]
+	for k := uint64(0); k < keys; k += 2 {
+		m.Insert(k, k*3+1)
+	}
+	stop := make(chan struct{})
+	var writers sync.WaitGroup
+	for w := uint64(0); w < 3; w++ {
+		writers.Go(func() {
+			x := w*0x9e3779b97f4a7c15 + 1
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				x ^= x << 13
+				x ^= x >> 7
+				x ^= x << 17
+				k := x%keys | 1
+				if _, found := m.Delete(k); !found {
+					m.Insert(k, k*3+1)
+				}
+			}
+		})
+	}
+	var readers sync.WaitGroup
+	for r := uint64(0); r < 3; r++ {
+		readers.Go(func() {
+			x := r*0x2545f4914f6cdd1d + 7
+			var batch [8]uint64
+			var results [8]Result[uint64]
+			for i := 0; i < 200000; i++ {
+				x ^= x << 13
+				x ^= x >> 7
+				x ^= x << 17
+				k := x % keys &^ 1
+				if value, found := m.Get(k); !found || value != k*3+1 {
+					t.Errorf("Get(%d) = %d, %v during leaf shifts", k, value, found)
+					return
+				}
+				if i%8 == 0 {
+					for j := range batch {
+						batch[j] = (k + uint64(j)*2) % keys
+					}
+					m.GetMany(batch[:], results[:])
+					for j, result := range results {
+						if !result.OK || result.Value != batch[j]*3+1 {
+							t.Errorf("GetMany(%d) = %d, %v during leaf shifts", batch[j], result.Value, result.OK)
+							return
+						}
+					}
+				}
+			}
+		})
+	}
+	readers.Wait()
+	close(stop)
+	writers.Wait()
+}

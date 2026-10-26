@@ -121,8 +121,12 @@ func (n *wordNode) deleteTag(i int) {
 func (n *wordNode) beginLeafWrite() { n.sequence.Add(1) }
 func (n *wordNode) endLeafWrite()   { n.sequence.Add(wordSequenceStep - 1) }
 
+// Before optimistic reads start, or where seqlock writers may store plainly,
+// writers copy shared numeric fields with ordinary stores.
+func (t *wordTree) plainWrites() bool { return !t.atomicWrites || seqlockPlainStores }
+
 func (t *wordTree) storeEntry(n *wordNode, i int, value wordEntry) {
-	if !t.atomicWrites {
+	if t.plainWrites() {
 		n.entries()[i] = value
 		return
 	}
@@ -131,7 +135,7 @@ func (t *wordTree) storeEntry(n *wordNode, i int, value wordEntry) {
 	atomic.StoreUint64(&entry.value, value.value)
 }
 func (t *wordTree) copyEntries(n *wordNode, i int, src []wordEntry) {
-	if !t.atomicWrites {
+	if t.plainWrites() {
 		copy(n.entries()[i:], src)
 		return
 	}
@@ -143,7 +147,7 @@ func (t *wordTree) copyEntries(n *wordNode, i int, src []wordEntry) {
 	}
 }
 func (t *wordTree) moveEntries(n *wordNode, dst, src, count int) {
-	if !t.atomicWrites {
+	if t.plainWrites() {
 		copy(n.entries()[dst:dst+count], n.entries()[src:src+count])
 		return
 	}
@@ -165,14 +169,14 @@ func (t *wordTree) moveEntries(n *wordNode, dst, src, count int) {
 	}
 }
 func (t *wordTree) storeKey(n *wordNode, i int, key uint64) {
-	if t.atomicWrites {
+	if !t.plainWrites() {
 		atomic.StoreUint64(&n.keys[i], key)
 	} else {
 		n.keys[i] = key
 	}
 }
 func (t *wordTree) copyKeys(n *wordNode, i int, src []uint64) {
-	if !t.atomicWrites {
+	if t.plainWrites() {
 		copy(n.keys[i:], src)
 		return
 	}
@@ -181,7 +185,7 @@ func (t *wordTree) copyKeys(n *wordNode, i int, src []uint64) {
 	}
 }
 func (t *wordTree) moveKeys(n *wordNode, dst, src, count int) {
-	if !t.atomicWrites {
+	if t.plainWrites() {
 		copy(n.keys[dst:dst+count], n.keys[src:src+count])
 		return
 	}
@@ -196,14 +200,14 @@ func (t *wordTree) moveKeys(n *wordNode, dst, src, count int) {
 	}
 }
 func (t *wordTree) storeChild(n *wordNode, i int, child uint32) {
-	if t.atomicWrites {
+	if !t.plainWrites() {
 		atomic.StoreUint32(&n.inner().children[i], child)
 	} else {
 		n.inner().children[i] = child
 	}
 }
 func (t *wordTree) copyChildren(n *wordNode, i int, src []uint32) {
-	if !t.atomicWrites {
+	if t.plainWrites() {
 		copy(n.inner().children[i:], src)
 		return
 	}
@@ -212,7 +216,7 @@ func (t *wordTree) copyChildren(n *wordNode, i int, src []uint32) {
 	}
 }
 func (t *wordTree) moveChildren(n *wordNode, dst, src, count int) {
-	if !t.atomicWrites {
+	if t.plainWrites() {
 		copy(n.inner().children[dst:dst+count], n.inner().children[src:src+count])
 		return
 	}
