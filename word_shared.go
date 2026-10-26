@@ -108,8 +108,11 @@ func (t *wordTree) copyEntries(n *wordNode, i int, src []wordEntry) {
 		copy(n.entries()[i:], src)
 		return
 	}
+	entries := n.entries()
 	for j, value := range src {
-		t.storeEntry(n, i+j, value)
+		entry := &entries[i+j]
+		atomic.StoreUint64(&entry.key, value.key)
+		atomic.StoreUint64(&entry.value, value.value)
 	}
 }
 func (t *wordTree) moveEntries(n *wordNode, dst, src, count int) {
@@ -117,13 +120,20 @@ func (t *wordTree) moveEntries(n *wordNode, dst, src, count int) {
 		copy(n.entries()[dst:dst+count], n.entries()[src:src+count])
 		return
 	}
+	entries := n.entries()
 	if dst > src {
 		for i := count - 1; i >= 0; i-- {
-			t.storeEntry(n, dst+i, n.entries()[src+i])
+			value := entries[src+i]
+			entry := &entries[dst+i]
+			atomic.StoreUint64(&entry.key, value.key)
+			atomic.StoreUint64(&entry.value, value.value)
 		}
 	} else {
 		for i := 0; i < count; i++ {
-			t.storeEntry(n, dst+i, n.entries()[src+i])
+			value := entries[src+i]
+			entry := &entries[dst+i]
+			atomic.StoreUint64(&entry.key, value.key)
+			atomic.StoreUint64(&entry.value, value.value)
 		}
 	}
 }
