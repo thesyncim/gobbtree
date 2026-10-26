@@ -234,8 +234,8 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 			t.Fatal("uncollapsed numeric root")
 		}
 		for i := 0; i < nodeSize; i++ {
-			if n.inner().high[i] != uint32(n.keyAt(i)>>32) {
-				t.Fatal("stale numeric high summary")
+			if n.inner().inline[i] != uint16(n.keyAt(i)>>n.shift) {
+				t.Fatal("stale numeric inline summary")
 			}
 			if i >= int(n.n) {
 				if n.inner().children[i] != 0 {
@@ -291,7 +291,7 @@ func TestWordNodePointerFree(t *testing.T) {
 			}
 		case reflect.Array:
 			check(typ.Elem())
-		case reflect.Int32, reflect.Uint8, reflect.Uint32, reflect.Uint64, reflect.Bool:
+		case reflect.Int32, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Bool:
 		default:
 			t.Fatalf("GC-scanned field %v", typ)
 		}
@@ -527,6 +527,60 @@ func TestWordLeafSearchBounds(t *testing.T) {
 				found := got < count && n.entries()[got].key == key
 				if found != (want < count && keys[want] == key) {
 					t.Fatalf("distribution=%d count=%d key=%x exact=%d", distribution, count, key, got)
+				}
+			}
+		}
+	}
+}
+
+func TestWordInternalRoutingBounds(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		for distribution := 0; distribution < 6; distribution++ {
+			for count := 1; count <= nodeSize; count++ {
+				keys := make([]uint64, count)
+				for i := range keys {
+					switch distribution {
+					case 0:
+						keys[i] = uint64(i)
+					case 1:
+						keys[i] = math.MaxUint64 - uint64(i)
+					case 2:
+						keys[i] = uint64(i) << 47
+					case 3:
+						keys[i] = 0xa700000000000000 | uint64(i)<<16
+					case 4:
+						keys[i] = uint64(i)
+						if i == count-1 {
+							keys[i] = math.MaxUint64
+						}
+					case 5:
+						keys[i] = mixedKey(uint64(i))
+					}
+				}
+				slices.Sort(keys)
+				n := &wordNode{n: uint8(count)}
+				copy(n.keys[:], keys)
+				tr := wordTree{shared: shared, atomicWrites: shared}
+				tr.refit(n)
+				probes := []uint64{0, math.MaxUint64}
+				for _, key := range keys {
+					probes = append(probes, key, key-1, key+1)
+				}
+				for i := 0; i < 100; i++ {
+					probes = append(probes, mixedKey(uint64(i+100)))
+				}
+				for _, key := range probes {
+					want := max(0, sort.Search(len(keys), func(i int) bool { return keys[i] > key })-1)
+					directory := n.directory
+					n.directory = 0
+					got := tr.route(n, key)
+					n.directory = directory
+					if got != want {
+						t.Fatalf("shared=%v distribution=%d count=%d key=%x inline=%d want=%d", shared, distribution, count, key, got, want)
+					}
+					if got := tr.route(n, key); got != want {
+						t.Fatalf("shared=%v distribution=%d count=%d key=%x route=%d want=%d", shared, distribution, count, key, got, want)
+					}
 				}
 			}
 		}

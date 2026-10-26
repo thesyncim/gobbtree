@@ -66,14 +66,17 @@ func (t *Tree[K, V]) Get(key K) (V, bool) {
 			index := 0
 			if n.directory != 0 {
 				index = directoryRoute(&n.keys, &words.directories[n.directory-1], int(n.n), code)
-			} else if n.compact {
-				if code == ^uint64(0) {
-					index = int(n.n) - 1
-				} else {
-					index = max(0, lowerCompact(&n.keys, &n.inner().high, int(n.n), code+1)-1)
-				}
 			} else {
-				index = routeCode(&n.keys, int(n.n), code)
+				projection := code >> n.shift
+				prefix := (*n.prefixWord() >> n.shift) &^ uint64(65535)
+				if projection > prefix|65535 {
+					index = int(n.n) - 1
+				} else if projection >= prefix {
+					index = max(0, upperWordInline(&n.inner().inline, int(n.n), uint16(projection))-1)
+					if index > 0 && n.inner().inline[index] == uint16(projection) && n.keys[index] > code {
+						index = max(0, lowerCodeScalar(&n.keys, index+1, code+1)-1)
+					}
+				}
 			}
 			n = words.node(n.inner().children[index])
 		}
@@ -139,14 +142,17 @@ func (t *Tree[K, V]) Insert(key K, value V) (V, bool) {
 				index := 0
 				if n.directory != 0 {
 					index = directoryRoute(&n.keys, &words.directories[n.directory-1], int(n.n), code)
-				} else if n.compact {
-					if code == ^uint64(0) {
-						index = int(n.n) - 1
-					} else {
-						index = max(0, lowerCompact(&n.keys, &n.inner().high, int(n.n), code+1)-1)
-					}
 				} else {
-					index = routeCode(&n.keys, int(n.n), code)
+					projection := code >> n.shift
+					prefix := (*n.prefixWord() >> n.shift) &^ uint64(65535)
+					if projection > prefix|65535 {
+						index = int(n.n) - 1
+					} else if projection >= prefix {
+						index = max(0, upperWordInline(&n.inner().inline, int(n.n), uint16(projection))-1)
+						if index > 0 && n.inner().inline[index] == uint16(projection) && n.keys[index] > code {
+							index = max(0, lowerCodeScalar(&n.keys, index+1, code+1)-1)
+						}
+					}
 				}
 				n = words.node(n.inner().children[index])
 			}

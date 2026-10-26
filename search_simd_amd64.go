@@ -221,3 +221,14 @@ func upperSharedTag(words *[4]uint64, n int, key uint8) (int, bool) {
 	archsimd.ClearAVXUpperBits()
 	return min(bits.TrailingZeros32(greater), n), equal != 0
 }
+
+// Two byte sign bits represent each word mask, avoiding AVX-512-only mask
+// extraction on the AVX2 and 128-bit paths.
+func mask16Count256(mask archsimd.Mask16x16) int {
+	bytes := mask.ToInt16x16().AsInt8x32()
+	return bits.OnesCount32(bytes.Less(archsimd.Int8x32{}).ToBits()) / 2
+}
+func mask16Count128(mask archsimd.Mask16x8) int {
+	bytes := mask.ToInt16x8().AsInt8x16()
+	return bits.OnesCount16(bytes.Less(archsimd.Int8x16{}).ToBits()) / 2
+}

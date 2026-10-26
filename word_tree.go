@@ -1,6 +1,7 @@
 package gobbtree
 
 import (
+	"math/bits"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -10,7 +11,8 @@ import (
 // child and sibling links are indexes, not hidden Go pointers.
 type wordNode struct {
 	n                     uint8
-	leaf, compact         bool
+	leaf                  bool
+	shift                 uint8
 	level                 uint8
 	directory, prev, next uint32
 	tags                  [nodeSize]uint8
@@ -54,9 +56,12 @@ func (n *wordNode) exactEntry(key uint64) int {
 	return n.lowerEntry(key)
 }
 
+// The ordered 16-bit column fits the existing node allocation. Leaves retain
+// their byte hash tags; they do not pay for an extra search column.
 type wordInner struct {
 	children [nodeSize]uint32
-	high     [nodeSize]uint32
+	inline   [nodeSize]uint16
+	_        [nodeSize * 2]byte
 }
 
 // The union contains only integers. Both views occupy exactly 256 bytes;
@@ -137,7 +142,7 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 	// Once optimistic reads start, shared slots keep their kind and mutex.
 	// Before that barrier, the structural lock excludes every reader and writer.
 	if t.shared && t.atomicWrites {
-		n.n, n.leaf, n.compact, n.level, n.directory = 0, leaf, false, 0, 0
+		n.n, n.leaf, n.shift, n.level, n.directory = 0, leaf, 0, 0, 0
 		if leaf {
 			n.prev, n.next = 0, 0
 		} else {
@@ -154,7 +159,7 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 			for i := 0; i < nodeSize; i++ {
 				t.storeChild(n, i, 0)
 			}
-			clear(n.inner().high[:])
+			clear(n.inner().inline[:])
 		}
 		n.storeTags([nodeSize]uint8{})
 		n.sequence.Store(0)
@@ -220,10 +225,16 @@ func (t *wordTree) refit(n *wordNode) {
 	}
 
 	inner := n.inner()
-	for i, k := range n.keys {
-		inner.high[i] = uint32(k >> 32)
+	n.shift = 0
+	if count > 0 {
+		n.shift = uint8(max(0, bits.Len64(n.keys[0]^n.keys[count-1])-16))
 	}
-	n.compact = count > 0 && n.keys[0]>>32 != n.keys[count-1]>>32
+	for i, k := range n.keys {
+		inner.inline[i] = uint16(k >> n.shift)
+	}
+	if !t.shared {
+		*n.prefixWord() = n.keys[0]
+	}
 	if count >= 4 && n.keys[count-1]>>56-n.keys[0]>>56 >= uint64(2*count) {
 		if n.directory == 0 {
 			if end := len(t.freeDirectories); end > 0 {
@@ -247,10 +258,20 @@ func (t *wordTree) route(n *wordNode, key uint64) int {
 	if n.directory != 0 {
 		return directoryRoute(&n.keys, &t.directories[n.directory-1], int(n.n), key)
 	}
-	if n.compact {
-		return routeCompact(&n.keys, &n.inner().high, int(n.n), key)
+	projection := key >> n.shift
+	prefix := (*n.prefixWord() >> n.shift) &^ uint64(65535)
+	if projection < prefix {
+		return 0
 	}
-	return routeCode(&n.keys, int(n.n), key)
+	if projection > prefix|65535 {
+		return int(n.n) - 1
+	}
+	i := max(0, upperWordInline(&n.inner().inline, int(n.n), uint16(projection))-1)
+	if i > 0 && n.inner().inline[i] == uint16(projection) && n.keys[i] > key {
+		// This guard excludes MaxUint64, so the upper-bound key cannot wrap.
+		i = max(0, lowerCodeScalar(&n.keys, i+1, key+1)-1)
+	}
+	return i
 }
 func (t *wordTree) leafFor(key uint64) uint32 {
 	id := t.routes.lookup(key)
