@@ -19,15 +19,13 @@ type wordReadCache struct {
 func (m *wordMap) disableReadCache() {
 	for {
 		previous := m.view.Load()
-		if previous == nil || (previous.cache == nil && previous.leaves == nil) {
+		if previous == nil || previous.uncached == nil {
 			return
 		}
-		view := *previous
-		view.cache = nil
-		view.leaves = nil
-		// Publish before any key mutation. Another writer must observe retirement
-		// before it changes keys, even if the publishing goroutine is preempted.
-		if m.view.CompareAndSwap(previous, &view) {
+		// Activation already created an uncached ready view. Reuse it here
+		// so retirement allocates nothing and cache reads stay immutable.
+		// Publish before changing keys, including when another writer wins.
+		if m.view.CompareAndSwap(previous, previous.uncached) {
 			return
 		}
 	}

@@ -20,6 +20,9 @@ func TestNumericLeafRouteCache(t *testing.T) {
 		words := m.words.Load()
 		words.structure.Lock()
 		view := *words.view.Load()
+		if view.uncached == nil {
+			view.uncached = words.view.Load()
+		}
 		view.cache = nil
 		view.leaves = newWordLeafCache(view.routes, int64(m.Len()))
 		words.view.Store(&view)

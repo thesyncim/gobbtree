@@ -7,13 +7,14 @@ import (
 )
 
 type wordReadView struct {
-	root   uint32
-	level  uint8
-	ready  bool
-	blocks []atomic.Pointer[wordReadBlock]
-	routes wordRoutes
-	cache  *wordReadCache
-	leaves *wordLeafCache
+	root     uint32
+	level    uint8
+	ready    bool
+	blocks   []atomic.Pointer[wordReadBlock]
+	routes   wordRoutes
+	cache    *wordReadCache
+	leaves   *wordLeafCache
+	uncached *wordReadView
 }
 type wordMap struct {
 	version            atomic.Uint64
@@ -65,11 +66,13 @@ func (m *wordMap) enableReads() {
 	if current := m.view.Load(); current != nil {
 		if m.count.Load() > smallReadCacheLimit {
 			view := *current
+			view.uncached = current
 			view.leaves = newWordLeafCache(view.routes, m.count.Load())
 			m.view.Store(&view)
 			return
 		}
 		view := *current
+		view.uncached = current
 		nodes := 0
 		for _, slab := range m.tree.slabs {
 			nodes += len(slab)
