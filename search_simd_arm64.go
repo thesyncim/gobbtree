@@ -6,6 +6,7 @@ import (
 	"simd"
 	"simd/archsimd"
 	"sync/atomic"
+	"unsafe"
 )
 
 // NEON is mandatory on Go's arm64 targets. Direct Go intrinsics avoid the
@@ -23,6 +24,27 @@ func lowerCode(keys *[nodeSize]uint64, n int, key uint64) int {
 	d := countEight((*[8]uint64)(keys[24:32]), target)
 	sum := a.Add(b).Add(c.Add(d))
 	return min(-int(sum.GetElem(0)+sum.GetElem(1)), n)
+}
+
+// Unused leaf slots hold MaxUint64, so counting keys below key over every
+// slot is the lower bound. Each vector holds one key and its value; only the
+// key lanes are summed. The loads are independent, unlike a binary search.
+func lowerEntries(entries *[nodeSize]wordEntry, key uint64) int {
+	if simd.Emulated() {
+		return lowerEntriesScalar(entries, key)
+	}
+	words := (*[2 * nodeSize]uint64)(unsafe.Pointer(entries))
+	target := archsimd.BroadcastUint64x2(key)
+	a := countEight((*[8]uint64)(words[0:8]), target)
+	b := countEight((*[8]uint64)(words[8:16]), target)
+	c := countEight((*[8]uint64)(words[16:24]), target)
+	d := countEight((*[8]uint64)(words[24:32]), target)
+	e := countEight((*[8]uint64)(words[32:40]), target)
+	f := countEight((*[8]uint64)(words[40:48]), target)
+	g := countEight((*[8]uint64)(words[48:56]), target)
+	h := countEight((*[8]uint64)(words[56:64]), target)
+	sum := a.Add(b).Add(c.Add(d)).Add(e.Add(f).Add(g.Add(h)))
+	return -int(sum.GetElem(0))
 }
 
 // SIMD reports whether this build uses hardware SIMD and its vector width.

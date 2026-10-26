@@ -586,3 +586,70 @@ func TestWordInternalRoutingBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestRefillDirectoryMatchesFill(t *testing.T) {
+	random := uint64(1)
+	next := func() uint64 {
+		random ^= random << 13
+		random ^= random >> 7
+		random ^= random << 17
+		return random
+	}
+	for trial := 0; trial < 20000; trial++ {
+		n := 3 + int(next()%(nodeSize-2))
+		var codes [nodeSize]uint64
+		for i := range codes {
+			codes[i] = ^uint64(0)
+		}
+		for i := 0; i < n; i++ {
+			codes[i] = next()
+		}
+		slices.Sort(codes[:n])
+		var directory [256]uint8
+		fillDirectory(&directory, &codes, n)
+		first := 1 + int(next()%uint64(n-2))
+		last := min(n-2, first+int(next()%2))
+		// Replace interior codes while preserving order against their neighbors.
+		low, high := codes[first-1], codes[last+1]
+		for i := first; i <= last; i++ {
+			codes[i] = low + (high-low)/uint64(last-first+2)*uint64(i-first+1)
+		}
+		refillDirectory(&directory, &codes, first, last)
+		var want [256]uint8
+		fillDirectory(&want, &codes, n)
+		if directory != want {
+			t.Fatalf("trial %d: n=%d first=%d last=%d directory mismatch", trial, n, first, last)
+		}
+	}
+}
+
+func TestWordLowerEntryMatchesBinarySearch(t *testing.T) {
+	for count := 0; count <= nodeSize; count++ {
+		var n wordNode
+		n.leaf = true
+		for i := range n.entries() {
+			n.entries()[i] = wordEntry{key: ^uint64(0), value: uint64(i) * 0x9e3779b97f4a7c15}
+		}
+		for i := 0; i < count; i++ {
+			n.entries()[i].key = uint64(10 + 10*i)
+		}
+		if count == nodeSize {
+			n.entries()[count-1].key = ^uint64(0) - 1
+		}
+		n.n = uint8(count)
+		probes := []uint64{0, 1, ^uint64(0), ^uint64(0) - 1, ^uint64(0) - 2}
+		for i := 0; i < count; i++ {
+			k := n.entries()[i].key
+			probes = append(probes, k-1, k, k+1)
+		}
+		for _, key := range probes {
+			want := 0
+			for want < count && n.entries()[want].key < key {
+				want++
+			}
+			if got := n.lowerEntry(key); got != want {
+				t.Fatalf("count %d key %d: got %d want %d", count, key, got, want)
+			}
+		}
+	}
+}

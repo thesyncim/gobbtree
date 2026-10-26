@@ -33,6 +33,19 @@ func fillDirectory(directory *[256]uint8, codes *[nodeSize]uint64, n int) {
 		directory[bucket] = uint8(i)
 	}
 }
+
+// Refill the buckets that interior codes first..last can affect. Their
+// unchanged neighbors bound them, so no other bucket's lower bound moves.
+func refillDirectory(directory *[256]uint8, codes *[nodeSize]uint64, first, last int) {
+	i := first
+	end := int(codes[last+1] >> 56)
+	for bucket := int(codes[first-1]>>56) + 1; bucket <= end; bucket++ {
+		for i <= last && codes[i] < uint64(bucket)<<56 {
+			i++
+		}
+		directory[bucket] = uint8(i)
+	}
+}
 func directoryRoute(codes *[nodeSize]uint64, directory *[256]uint8, n int, code uint64) int {
 	i := int(directory[code>>56])
 	for i < n && codes[i] <= code {

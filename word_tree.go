@@ -35,9 +35,12 @@ func (n *wordNode) keyAt(i int) uint64 {
 	}
 	return n.keys[i]
 }
-func (n *wordNode) lowerEntry(key uint64) int {
-	lo, hi := 0, int(n.n)
-	entries := n.entries()
+func (n *wordNode) lowerEntry(key uint64) int { return lowerEntries(n.entries(), key) }
+
+// Unused slots hold MaxUint64, which is never below a key, so every leaf
+// search may cover all slots. Writers that lower a count pad the slots freed.
+func lowerEntriesScalar(entries *[nodeSize]wordEntry, key uint64) int {
+	lo, hi := 0, nodeSize
 	for lo < hi {
 		mid := int(uint(lo+hi) >> 1)
 		if entries[mid].key < key {
@@ -202,11 +205,14 @@ func (t *wordTree) release(id uint32) {
 // Updating an adjacent pair of interior separators leaves the count, key
 // domain, padding, and compression shifts unchanged. Update just its summaries.
 func (t *wordTree) refitSeparators(n *wordNode, first, last int) {
-	if first == 0 || last == int(n.n)-1 || n.directory != 0 {
+	if first == 0 || last == int(n.n)-1 {
 		t.refit(n)
 		return
 	}
 	t.invalidateRoutes(n)
+	if n.directory != 0 {
+		refillDirectory(&t.directories[n.directory-1], &n.keys, first, last)
+	}
 	if t.shared {
 		t.refitSharedSeparators(n, first, last)
 		return
@@ -229,6 +235,15 @@ func (t *wordTree) invalidateRoutes(n *wordNode) {
 
 func (t *wordTree) refit(n *wordNode) {
 	count := int(n.n)
+	if n.leaf && !t.atomicWrites {
+		n.refitLeafPlain(count)
+		if t.shared {
+			// publishNumeric's leaf summary: shift zero and the new count.
+			sequence := n.sequence.Load()
+			n.sequence.Store(sequence&^(wordSequenceStep-2) | uint64(count)<<1)
+		}
+		return
+	}
 	t.invalidateRoutes(n)
 	for i := 0; i < count; i++ {
 		if !t.shared {
@@ -282,6 +297,20 @@ func (t *wordTree) refit(n *wordNode) {
 	}
 	if t.shared {
 		n.publishNumeric(t.atomicWrites)
+	}
+}
+
+// Before optimistic readers start, nothing loads a leaf concurrently: derive
+// its tags and pad the unused slots without per-slot mode checks.
+func (n *wordNode) refitLeafPlain(count int) {
+	entries := n.entries()
+	tags := &n.tags
+	for i := 0; i < count && i < nodeSize; i++ {
+		tags[i] = uint8(entries[i].key)
+	}
+	for i := count; i < nodeSize; i++ {
+		entries[i] = wordEntry{key: ^uint64(0)}
+		tags[i] = 0
 	}
 }
 func (t *wordTree) route(n *wordNode, key uint64) int {
@@ -877,17 +906,22 @@ func (t *wordTree) borrowOuterLeaf(parent *wordNode, index int) int {
 	// Balance the available space across all three leaves.
 	moved := (2*(nodeSize-count) + 1) / 3
 	pair := index
+	var middle *wordNode
 	if outside < index {
-		middle := t.node(children[index-1])
+		middle = t.node(children[index-1])
 		t.copyEntries(outer, count, middle.entries()[:moved])
 		t.moveEntries(middle, 0, moved, nodeSize-moved)
-		middle.n -= uint8(moved)
 		pair--
 	} else {
-		middle := t.node(children[index+1])
+		middle = t.node(children[index+1])
 		t.moveEntries(outer, moved, 0, count)
 		t.copyEntries(outer, 0, middle.entries()[nodeSize-moved:])
-		middle.n -= uint8(moved)
+	}
+	middle.n -= uint8(moved)
+	// The caller searches this leaf before refitting it, and leaf searches
+	// count padded unused slots.
+	for i := int(middle.n); i < nodeSize; i++ {
+		t.storeEntry(middle, i, wordEntry{key: ^uint64(0)})
 	}
 	outer.n += uint8(moved)
 	t.refit(outer)

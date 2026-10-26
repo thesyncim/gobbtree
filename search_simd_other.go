@@ -23,3 +23,7 @@ func firstSharedTag(words *[4]uint64, n int, key uint64) int {
 func upperSharedTag(words *[4]uint64, n int, key uint8) (int, bool) {
 	return upperSharedTagFallback(words, n, key)
 }
+
+func lowerEntries(entries *[nodeSize]wordEntry, key uint64) int {
+	return lowerEntriesScalar(entries, key)
+}

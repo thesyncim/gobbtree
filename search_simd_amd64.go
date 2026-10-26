@@ -232,3 +232,7 @@ func mask16Count128(mask archsimd.Mask16x8) int {
 	bytes := mask.ToInt16x8().AsInt8x16()
 	return bits.OnesCount16(bytes.Less(archsimd.Int8x16{}).ToBits()) / 2
 }
+
+func lowerEntries(entries *[nodeSize]wordEntry, key uint64) int {
+	return lowerEntriesScalar(entries, key)
+}
