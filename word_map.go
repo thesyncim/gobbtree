@@ -305,21 +305,27 @@ func (m *wordMap) leafFor(key uint64) uint32 {
 		id = n.inner().children[m.tree.route(n, key)]
 	}
 }
+
+// While the map is serial, acquire holds the writer mutex: it excludes every
+// other writer and is itself the structural lock. Leaf latches are needed only
+// once lanes admit concurrent leaf writers, and a structural change can then
+// proceed without releasing and reacquiring the writer.
 func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	guard := m.structure.acquire(key)
+	serial := guard.lane == nil
 	if id := m.leafFor(key); id != 0 {
 		n := m.tree.node(id)
-		n.mu.Lock()
+		if !serial {
+			n.mu.Lock()
+		}
 		i := n.exactEntry(key)
 		if i < int(n.n) && n.entries()[i].key == key {
 			old := n.entries()[i].value
 			m.storeValue(id, n, i, value)
-			n.mu.Unlock()
-			if guard.lane != nil {
-				guard.lane.RUnlock()
-			} else {
-				guard.g.writer.Unlock()
+			if !serial {
+				n.mu.Unlock()
 			}
+			guard.unlock()
 			return old, true
 		}
 		if n.n < nodeSize {
@@ -336,24 +342,24 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 				if m.tree.atomicWrites {
 					n.endLeafWrite()
 				}
-				n.mu.Unlock()
-				if guard.lane != nil {
-					guard.lane.RUnlock()
-				} else {
-					guard.g.writer.Unlock()
+				if !serial {
+					n.mu.Unlock()
 				}
+				guard.unlock()
 				return 0, false
 			}
 		}
-		n.mu.Unlock()
+		if !serial {
+			n.mu.Unlock()
+		}
 	}
-	if guard.lane != nil {
-		guard.lane.RUnlock()
+	if serial {
+		defer guard.unlock()
 	} else {
-		guard.g.writer.Unlock()
+		guard.unlock()
+		m.structure.Lock()
+		defer m.structure.Unlock()
 	}
-	m.structure.Lock()
-	defer m.structure.Unlock()
 	m.disableReadCache()
 	m.version.Add(1)
 	defer m.finishStructure()
@@ -369,53 +375,48 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 }
 func (m *wordMap) delete(key uint64) (uint64, bool) {
 	guard := m.structure.acquire(key)
-	if id := m.leafFor(key); id != 0 {
-		n := m.tree.node(id)
-		n.mu.Lock()
-		i := n.exactEntry(key)
-		if i == int(n.n) || n.entries()[i].key != key {
-			n.mu.Unlock()
-			if guard.lane != nil {
-				guard.lane.RUnlock()
-			} else {
-				guard.g.writer.Unlock()
-			}
-			return 0, false
-		}
-		if n.n > minNodeSize && i > 0 {
-			if m.tree.atomicWrites {
-				m.disableReadCache()
-				n.beginLeafWrite()
-			}
-			value := m.tree.removeLeaf(n, i)
-			m.count.Add(-1)
-			if m.tree.atomicWrites {
-				n.endLeafWrite()
-			}
-			n.mu.Unlock()
-			if guard.lane != nil {
-				guard.lane.RUnlock()
-			} else {
-				guard.g.writer.Unlock()
-			}
-			return value, true
-		}
-		n.mu.Unlock()
-	} else {
-		if guard.lane != nil {
-			guard.lane.RUnlock()
-		} else {
-			guard.g.writer.Unlock()
-		}
+	serial := guard.lane == nil
+	id := m.leafFor(key)
+	if id == 0 {
+		guard.unlock()
 		return 0, false
 	}
-	if guard.lane != nil {
-		guard.lane.RUnlock()
-	} else {
-		guard.g.writer.Unlock()
+	n := m.tree.node(id)
+	if !serial {
+		n.mu.Lock()
 	}
-	m.structure.Lock()
-	defer m.structure.Unlock()
+	i := n.exactEntry(key)
+	if i == int(n.n) || n.entries()[i].key != key {
+		if !serial {
+			n.mu.Unlock()
+		}
+		guard.unlock()
+		return 0, false
+	}
+	if n.n > minNodeSize && i > 0 {
+		if m.tree.atomicWrites {
+			m.disableReadCache()
+			n.beginLeafWrite()
+		}
+		value := m.tree.removeLeaf(n, i)
+		m.count.Add(-1)
+		if m.tree.atomicWrites {
+			n.endLeafWrite()
+		}
+		if !serial {
+			n.mu.Unlock()
+		}
+		guard.unlock()
+		return value, true
+	}
+	if serial {
+		defer guard.unlock()
+	} else {
+		n.mu.Unlock()
+		guard.unlock()
+		m.structure.Lock()
+		defer m.structure.Unlock()
+	}
 	m.disableReadCache()
 	m.version.Add(1)
 	defer m.finishStructure()

@@ -87,15 +87,21 @@ type structuralGuard struct {
 // While operations are serial, the writer mutex alone excludes structural
 // changes. Contention permanently enables independent lanes. The transition
 // holds writer, so it cannot race a structural operation that skipped lanes.
+// A serial guard excludes every writer: parallel is rechecked under writer,
+// because another writer may enable lanes between the first check and TryLock.
 func (s *structuralLock) acquire(code uint64) structuralGuard {
 	g := s.gates()
 	if !g.parallel.Load() {
 		if g.writer.TryLock() {
-			return structuralGuard{g: g}
+			if !g.parallel.Load() {
+				return structuralGuard{g: g}
+			}
+			g.writer.Unlock()
+		} else {
+			g.writer.Lock()
+			g.parallel.Store(true)
+			g.writer.Unlock()
 		}
-		g.writer.Lock()
-		g.parallel.Store(true)
-		g.writer.Unlock()
 	}
 	lane := g.lane(code)
 	lane.RLock()
