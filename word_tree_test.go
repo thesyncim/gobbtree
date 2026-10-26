@@ -7,6 +7,54 @@ import (
 	"unsafe"
 )
 
+func TestWordArenaIDsAcrossSlabGrowth(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		tr := wordTree{shared: shared, atomicWrites: shared}
+		live := make(map[uint32]uint64)
+		for i := 0; i < 16000; i++ {
+			leaf := i%23 != 0
+			id := tr.alloc(leaf)
+			if _, exists := live[id]; exists {
+				t.Fatalf("shared=%v: allocated live ID %d twice", shared, id)
+			}
+			n := tr.node(id)
+			if n.leaf != leaf || (id&wordLeafID != 0) != leaf {
+				t.Fatal("allocated node has the wrong kind")
+			}
+			value := uint64(i + 1)
+			if leaf {
+				n.entries()[0].key = value
+			} else {
+				n.keys[0] = value
+			}
+			live[id] = value
+			if i%7 == 0 {
+				tr.release(id)
+				delete(live, id)
+			}
+		}
+		nodes := 0
+		for _, slab := range tr.slabs {
+			nodes += len(slab)
+		}
+		cache := wordReadCache{nodes: make([]wordNode, nodes)}
+		positions := make(map[*wordNode]uint32)
+		for id, value := range live {
+			if got := tr.node(id).keyAt(0); got != value {
+				t.Fatalf("ID %d changed during growth: got %d, want %d", id, got, value)
+			}
+			n := cache.node(id)
+			if n == nil {
+				t.Fatalf("ID %d cannot address the compact read cache", id)
+			}
+			if other, exists := positions[n]; exists {
+				t.Fatalf("IDs %d and %d alias in the read cache", id, other)
+			}
+			positions[n] = id
+		}
+	}
+}
+
 func checkWordTree(t testing.TB, tr *wordTree, length int) {
 	t.Helper()
 	checkWordRoutes(t, tr)

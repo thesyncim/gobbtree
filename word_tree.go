@@ -68,19 +68,19 @@ var _ [unsafe.Sizeof(wordInner{}) - unsafe.Sizeof([nodeSize]uint64{})]byte
 var _ [unsafe.Sizeof([nodeSize]uint64{}) - unsafe.Sizeof(wordInner{})]byte
 
 type wordTree struct {
-	root, free           uint32
-	freeInner            uint32
-	shared, atomicWrites bool
-	readBlocks           []atomic.Pointer[wordReadBlock]
-	rootNode             *wordNode
-	slabs                [][]wordNode
-	used                 int
-	directories          [][256]uint8
-	freeDirectories      []uint32
-	keyKind, valueKind   uint8
-	routes               wordRoutes
-	routesDirty          bool
-	routeNode            *wordNode
+	root, free              uint32
+	freeInner               uint32
+	shared, atomicWrites    bool
+	readBlocks              []atomic.Pointer[wordReadBlock]
+	rootNode                *wordNode
+	slabs                   [][]wordNode
+	leafCursor, innerCursor uint32
+	directories             [][256]uint8
+	freeDirectories         []uint32
+	keyKind, valueKind      uint8
+	routes                  wordRoutes
+	routesDirty             bool
+	routeNode               *wordNode
 }
 
 func (t *wordTree) node(id uint32) *wordNode {
@@ -98,7 +98,16 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 		id = *free
 		*free = t.node(id).directory
 	} else {
-		if len(t.slabs) == 0 || t.used == len(t.slabs[len(t.slabs)-1]) {
+		// Keep the initial growing slabs compact. Full-size slabs group
+		// internal nodes separately from leaves to improve page locality.
+		separate := len(t.slabs) > 8 || len(t.slabs) == 8 && t.leafCursor&511 == 128
+		cursor := &t.leafCursor
+		if separate && !leaf {
+			cursor = &t.innerCursor
+		}
+		// Nine low bits hold the number of used slots, including 256.
+		slab, used := int(*cursor>>9), int(*cursor&511)
+		if len(t.slabs) == 0 || separate && slab < 8 || used == len(t.slabs[slab]) {
 			if len(t.slabs) >= (1<<23)-1 {
 				panic("gobbtree: numeric arena exhausted")
 			}
@@ -110,10 +119,11 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 			if t.shared {
 				t.readBlocks = appendWordBlock(t.readBlocks, t.slabs[len(t.slabs)-1])
 			}
-			t.used = 0
+			slab, used = len(t.slabs)-1, 0
+			*cursor = uint32(slab) << 9
 		}
-		id = (uint32(len(t.slabs)-1)<<8 | uint32(t.used)) + 1
-		t.used++
+		id = (uint32(slab)<<8 | uint32(used)) + 1
+		*cursor++
 	}
 	if leaf {
 		id |= wordLeafID
@@ -387,7 +397,8 @@ func (t *wordTree) delete(key uint64) (uint64, bool) {
 	}
 	root := t.node(t.root)
 	if root.n == 0 {
-		t.root, t.free, t.freeInner, t.used = 0, 0, 0, 0
+		t.root, t.free, t.freeInner = 0, 0, 0
+		t.leafCursor, t.innerCursor = 0, 0
 		t.readBlocks = nil
 		t.rootNode = nil
 		t.routes = wordRoutes{}
