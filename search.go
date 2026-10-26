@@ -1,5 +1,7 @@
 package gobbtree
 
+import "encoding/binary"
+
 // Routing uses the upper bound: each internal slot is its child's minimum.
 // Keeping this independent of the generic node lets it inline into descent.
 func routeCode(keys *[nodeSize]uint64, n int, code uint64) int {
@@ -24,13 +26,18 @@ func lowerCodeScalar(keys *[nodeSize]uint64, n int, key uint64) int {
 
 // Broad numeric nodes index the first key in each top-byte bucket.
 // The directory only narrows the search; full codes settle bucket boundaries.
+// Each eight-bucket word starts at the count of keys in earlier words; a key
+// adds one to the buckets above its own within its word.
 func fillDirectory(directory *[256]uint8, codes *[nodeSize]uint64, n int) {
+	const ones = 0x0101010101010101
 	i := 0
-	for bucket := 0; bucket < 256; bucket++ {
-		for i < n && codes[i] < uint64(bucket)<<56 {
+	for word := 0; word < 256/8; word++ {
+		counts := uint64(i) * ones
+		for i < n && int(codes[i]>>59) == word {
+			counts += ones << (8 * (codes[i]>>56&7 + 1))
 			i++
 		}
-		directory[bucket] = uint8(i)
+		binary.LittleEndian.PutUint64(directory[word*8:], counts)
 	}
 }
 
