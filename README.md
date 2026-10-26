@@ -111,9 +111,9 @@ Apple M4 Max (ARM64), Go 1.27.3 with Go SIMD, and Rust 1.97.1 with native CPU tu
 
 ### Operation time
 
-![Go versus Rust speed ratios across four sizes and eight workloads](benchmarks/cpu-arm64.svg)
+![Change in Go operation time versus Rust across four sizes and eight workloads](benchmarks/cpu-arm64.svg)
 
-The chart shows **Rust time / Go time**: above 1× favors Go; below 1× favors Rust. Batch timings are per key. Delete + insert is one pair. Parallel cases use four workers; the mixed case replaces existing values on 10% of operations.
+Each cell shows the **percentage change in Go time versus Rust**. Negative means faster Go; positive means slower Go. Gray cells are within 5%. Batch timings are per key. Delete + insert is one pair. Parallel cases use four workers; the mixed case replaces existing values on 10% of operations.
 
 <details>
 <summary>Exact timings — Go / Rust, ns/op; lower is better</summary>
@@ -146,9 +146,13 @@ The chart shows **Rust time / Go time**: above 1× favors Go; below 1× favors R
 
 ### Memory and construction
 
-![Go versus Rust peak RSS and construction time for Tree and Map at four sizes](benchmarks/memory-arm64.svg)
+![Go versus Rust peak RSS for Tree and Map at four sizes](benchmarks/memory-arm64.svg)
 
-Memory includes each process’s runtime, allocator, GC headroom, and caches populated by a full read pass. Go uses its default GC settings. Construction measures inserting all entries into an empty container.
+Memory includes each process’s runtime, allocator, GC headroom, and caches populated by a full read pass. Go uses its default GC settings. MB are decimal.
+
+![Go versus Rust construction time for Tree and Map at four sizes](benchmarks/build-arm64.svg)
+
+Construction measures inserting all entries into an empty container. Small cases use milliseconds; large cases use seconds.
 
 <details>
 <summary>Memory and build measurements — each cell is Go / Rust</summary>

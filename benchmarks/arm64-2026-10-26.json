@@ -31,7 +31,7 @@
       "memory": "bytes",
       "build": "nanoseconds"
     },
-    "chart_statistic": "ratio of median Rust operation time to median Go operation time",
+    "chart_statistic": "100 * (median Go operation time / median Rust operation time - 1)",
     "renderer": "internal/render_benchmarks.py"
   },
   "limitations": [

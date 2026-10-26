@@ -3,7 +3,6 @@
 Requires matplotlib; run from the repository root.
 """
 import json
-import math
 from collections import defaultdict
 from pathlib import Path
 from statistics import median
@@ -11,7 +10,7 @@ from statistics import median
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, Rectangle
 
 ROOT = Path(__file__).resolve().parent.parent
 REPORT = ROOT / "benchmarks/arm64-2026-10-26.json"
@@ -55,7 +54,7 @@ def main():
         return median(r["stages"][index]["rss_bytes"] for r in rows) / 1e6
 
     plt.rcParams.update({
-        "font.family": "DejaVu Sans", "font.size": 12,
+        "font.family": "DejaVu Sans", "font.size": 16,
         "text.color": INK, "axes.labelcolor": MUTED,
         "xtick.color": MUTED, "ytick.color": INK,
         "svg.fonttype": "path", "svg.hashsalt": "gobbtree-benchmarks",
@@ -69,76 +68,83 @@ def main():
         path.write_text("\n".join(line.rstrip() for line in path.read_text().splitlines()) + "\n")
         plt.close(fig)
 
-    def style(ax):
-        ax.set_facecolor("white")
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        ax.tick_params(length=0, pad=8)
-        ax.set_axisbelow(True)
+    # One matrix keeps every workload label next to its four comparisons.
+    fig = plt.figure(figsize=(900/72, 1115/72))
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set(xlim=(0, 900), ylim=(1115, 0))
+    ax.axis("off")
 
-    fig, axes = plt.subplots(2, 4, figsize=(1200/72, 850/72))
-    fig.subplots_adjust(left=.195, right=.97, top=.79, bottom=.12, hspace=.58, wspace=.22)
-    fig.text(.04, .945, "Go vs Rust: operation time", fontsize=27, weight="bold")
-    fig.text(.04, .906, "Apple M4 Max · Go 1.27.3 · Rust 1.97.1 · median of 3 runs", color=MUTED, fontsize=13)
-    fig.legend(handles=[Patch(color=GO, label="Go faster"), Patch(color=RUST, label="Rust faster")],
-               loc="upper left", bbox_to_anchor=(.035, .88), ncol=2, frameon=False, fontsize=12)
-    ratios = [time(s, k, "rust", c) / time(s, k, "go", c)
-              for s in SIZES for k in ("tree", "map") for c, _ in CASES[:6 if k == "tree" else 8]]
-    limit = max(2.5, math.ceil(max(ratios) * 1.16 * 2) / 2)
-    for row, kind in enumerate(("tree", "map")):
-        cases = CASES[:6 if kind == "tree" else 8]
-        for col, (size, label) in enumerate(zip(SIZES, LABELS)):
-            ax = axes[row, col]
-            style(ax)
-            values = [time(size, kind, "rust", c) / time(size, kind, "go", c) for c, _ in cases]
-            ax.barh(range(len(cases)), values, height=.58,
-                    color=[GO if v >= 1 else RUST for v in values])
-            ax.set_yticks(range(len(cases)), [label for _, label in cases] if col == 0 else [])
-            ax.set_ylim(len(cases)-.4, -.6)
-            ax.set_xlim(0, limit)
-            ax.set_xticks([0, 1, 2], ["0", "1×", "2×"])
-            ax.grid(axis="x", color=GRID, linewidth=.8)
-            ax.axvline(1, color=INK, linewidth=1, linestyle=(0, (3, 3)))
-            ax.set_title(f"{label} entries", fontsize=14, weight="bold", pad=16)
-            for y, value in enumerate(values):
-                ax.text(value + .045, y, f"{value:.2f}×", va="center", fontsize=11, weight="bold",
-                        bbox={"facecolor": "white", "edgecolor": "none", "pad": .6})
-        fig.text(.04, axes[row, 0].get_position().y1 + .04,
-                 "TREE · single owner" if kind == "tree" else "MAP · concurrent", fontsize=15, weight="bold")
-    fig.text(.195, .062, "Relative speed = Rust ns/op ÷ Go ns/op.  1× is equal; higher favors Go.", fontsize=12)
-    fig.text(.195, .031, "Host CPU activity was present; small gaps are inconclusive. Source: 55907ff / 8adae97.", color=MUTED, fontsize=10.5)
-    save(fig, "cpu-arm64", "Go versus Rust operation time by size and workload")
+    def label(x, y, value, size=17, color=INK, weight="normal", align="left"):
+        ax.text(x, y, value, fontsize=size, color=color, weight=weight,
+                ha=align, va="center")
 
-    fig, axes = plt.subplots(2, 4, figsize=(1200/72, 760/72))
-    fig.subplots_adjust(left=.08, right=.97, top=.77, bottom=.17, hspace=.7, wspace=.36)
-    fig.text(.04, .945, "Go vs Rust: memory and construction", fontsize=27, weight="bold")
-    fig.text(.04, .9, "Whole-process RSS includes the runtime, GC headroom, and populated read caches.", color=MUTED, fontsize=13)
-    fig.legend(handles=[Patch(color=GO, label="Go"), Patch(color=RUST, label="Rust")],
-               loc="upper left", bbox_to_anchor=(.035, .876), ncol=2, frameon=False, fontsize=12)
-    for row, metric in enumerate(("peak", "build")):
-        for col, (size, label) in enumerate(zip(SIZES, LABELS)):
-            ax = axes[row, col]
-            style(ax)
-            maximum = max(memory(size, k, l, metric) for k in ("tree", "map") for l in ("go", "rust"))
+    label(40, 42, "Go vs Rust: operation time", size=28, weight="bold")
+    label(40, 83, "Change in Go time vs Rust. Negative means faster Go.", size=18)
+    label(40, 116, "Apple M4 Max · median of 3 fresh-process runs", size=16, color=MUTED)
+    for x, color, title in [(40, "#d1eee3", "Go uses less time"),
+                             (335, "#e8edf2", "Within 5%"),
+                             (560, "#f8dfd3", "Go uses more time")]:
+        ax.add_patch(Rectangle((x, 146), 19, 19, facecolor=color, edgecolor="none"))
+        label(x+29, 156, title, size=16)
+    label(40, 199, "WORKLOAD", size=14, color=MUTED, weight="bold")
+    centers = [407, 537, 667, 797]
+    for x, name in zip(centers, LABELS):
+        label(x, 199, name + " entries", size=17, weight="bold", align="center")
+    for kind, heading, first in [("tree", 238, 282), ("map", 588, 632)]:
+        label(40, heading, "TREE · single owner" if kind == "tree" else "MAP · concurrent",
+              size=20, weight="bold")
+        for row, (case, title) in enumerate(CASES[:6 if kind == "tree" else 8]):
+            y = first + row*48
+            label(40, y, title)
+            for x, size in zip(centers, SIZES):
+                change = 100*(time(size, kind, "go", case)/time(size, kind, "rust", case)-1)
+                fill, ink = ("#d1eee3", "#095d48") if change < -5 else ("#f8dfd3", "#922f12")
+                if abs(change) <= 5:
+                    fill, ink = "#e8edf2", "#405469"
+                ax.add_patch(Rectangle((x-59, y-21), 118, 42, facecolor=fill, edgecolor="none"))
+                value = "0%" if round(change, 1) == 0 else f"{change:+.1f}%"
+                label(x, y, value, size=22, color=ink, weight="bold", align="center")
+    label(40, 1030, "Batch: per key · delete + insert: one pair · parallel: 4 workers", size=14)
+    label(40, 1058, "Small timing gaps are inconclusive: host CPU activity was present.", size=14, color=MUTED)
+    label(40, 1087, "Go 1.27.3 / 55907ff · Rust 1.97.1 / 8adae97 · (Go time ÷ Rust time − 1) × 100", size=13, color=MUTED)
+    save(fig, "cpu-arm64", "Percentage change in Go operation time versus Rust")
+
+    # Four roomy panels per figure; keep memory and build time separate.
+    for metric in ("peak", "build"):
+        fig, axes = plt.subplots(2, 2, figsize=(900/72, 900/72))
+        fig.subplots_adjust(left=.095, right=.96, top=.755, bottom=.16, hspace=.65, wspace=.32)
+        title = "Go vs Rust: peak memory" if metric == "peak" else "Go vs Rust: construction time"
+        fig.text(.04, .945, title, fontsize=28, weight="bold")
+        subtitle = "Whole-process RSS in MB · lower is better" if metric == "peak" else "Time to insert all entries · lower is better"
+        fig.text(.04, .9, subtitle, fontsize=18)
+        fig.legend(handles=[Patch(color=GO, label="Go"), Patch(color=RUST, label="Rust")],
+                   loc="upper left", bbox_to_anchor=(.025, .878), ncol=2, frameon=False, fontsize=18)
+        for ax, size, name in zip(axes.flat, SIZES, LABELS):
+            ax.set_facecolor("white")
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            ax.tick_params(length=0, pad=8)
+            ax.set_axisbelow(True)
+            factor = 1000 if metric == "build" and size < 1000000 else 1
+            unit = "MB" if metric == "peak" else "ms" if factor == 1000 else "s"
+            maximum = max(memory(size, k, l, metric)*factor for k in ("tree", "map") for l in ("go", "rust"))
             for language, offset, color in (("go", -.18, GO), ("rust", .18, RUST)):
-                values = [memory(size, k, language, metric) for k in ("tree", "map")]
+                values = [memory(size, k, language, metric)*factor for k in ("tree", "map")]
                 positions = [i + offset for i in range(2)]
                 ax.bar(positions, values, width=.31, color=color)
                 for x, value in zip(positions, values):
-                    text = f"{value:,.1f}" if metric == "peak" and value >= 100 else f"{value:.2f}"
-                    if metric == "build" and value < .01:
-                        text = f"{value:.4f}"
-                    ax.text(x, value + maximum*.035, text, ha="center", va="bottom", fontsize=10)
+                    text = f"{value:,.1f}" if value >= 10 else f"{value:.2f}"
+                    ax.text(x, value + maximum*.045, text, ha="center", va="bottom", fontsize=17)
             ax.set_xticks([0, 1], ["Tree", "Map"])
-            ax.set_ylim(0, maximum*1.3)
+            ax.set_ylim(0, maximum*1.32)
+            ax.locator_params(axis="y", nbins=4)
             ax.grid(axis="y", color=GRID, linewidth=.8)
-            ax.set_title(f"{label} entries", fontsize=14, weight="bold", pad=16)
-            if col == 0:
-                ax.set_ylabel("Peak RSS · MB" if metric == "peak" else "Build time · seconds", fontsize=12)
-    fig.text(.08, .095, "Lower is better. Each panel starts at zero and uses its own scale. MB are decimal.", fontsize=12)
-    fig.text(.08, .063, "Apple M4 Max · Go 1.27.3 · Rust 1.97.1 · median of 3 fresh processes per case", color=MUTED, fontsize=10.5)
-    fig.text(.08, .03, "Source: Go 55907ff / Rust 8adae97. Host CPU activity can affect construction times.", color=MUTED, fontsize=10.5)
-    save(fig, "memory-arm64", "Go versus Rust peak memory and construction time")
+            ax.set_title(f"{name} entries · {unit}", fontsize=20, weight="bold", pad=19)
+        fig.text(.095, .09, "Each panel starts at zero and uses its own scale.", fontsize=15)
+        detail = "Includes the runtime, GC headroom, and populated read caches." if metric == "peak" else "Construction timings are subject to background CPU activity."
+        fig.text(.095, .06, detail, fontsize=14, color=MUTED)
+        fig.text(.095, .025, "M4 Max · 3 runs · Go 1.27.3 / 55907ff · Rust 1.97.1 / 8adae97", fontsize=13, color=MUTED)
+        save(fig, "memory-arm64" if metric == "peak" else "build-arm64", title)
 
     text = ["## Benchmarks", "",
             "Apple M4 Max (ARM64), Go 1.27.3 with Go SIMD, and Rust 1.97.1 with native CPU tuning, full LTO, and mimalloc. "
@@ -147,8 +153,8 @@ def main():
             "Timings and memory figures are medians of three fresh-process runs using identical datasets and checked results. "
             "4K and 262K denote 4,096 and 262,144 entries.", "",
             "### Operation time", "",
-            "![Go versus Rust speed ratios across four sizes and eight workloads](benchmarks/cpu-arm64.svg)", "",
-            "The chart shows **Rust time / Go time**: above 1× favors Go; below 1× favors Rust. "
+            "![Change in Go operation time versus Rust across four sizes and eight workloads](benchmarks/cpu-arm64.svg)", "",
+            "Each cell shows the **percentage change in Go time versus Rust**. Negative means faster Go; positive means slower Go. Gray cells are within 5%. "
             "Batch timings are per key. Delete + insert is one pair. Parallel cases use four workers; the mixed case replaces existing values on 10% of operations.", "",
             "<details>", "<summary>Exact timings — Go / Rust, ns/op; lower is better</summary>", ""]
     for kind in ("tree", "map"):
@@ -158,9 +164,11 @@ def main():
             text.append("| " + label + " | " + " | ".join(cells) + " |")
         text.append("")
     text += ["</details>", "", "### Memory and construction", "",
-             "![Go versus Rust peak RSS and construction time for Tree and Map at four sizes](benchmarks/memory-arm64.svg)", "",
+             "![Go versus Rust peak RSS for Tree and Map at four sizes](benchmarks/memory-arm64.svg)", "",
              "Memory includes each process’s runtime, allocator, GC headroom, and caches populated by a full read pass. "
-             "Go uses its default GC settings. Construction measures inserting all entries into an empty container.", "",
+             "Go uses its default GC settings. MB are decimal.", "",
+             "![Go versus Rust construction time for Tree and Map at four sizes](benchmarks/build-arm64.svg)", "",
+             "Construction measures inserting all entries into an empty container. Small cases use milliseconds; large cases use seconds.", "",
              "<details>", "<summary>Memory and build measurements — each cell is Go / Rust</summary>", "",
              "| Container | Entries | Peak RSS, MB | After reads, MB | Collected / settled RSS, MB | Build, seconds |",
              "|---|---:|---:|---:|---:|---:|"]
