@@ -6,6 +6,23 @@ import (
 	"unsafe"
 )
 
+// Match atomic.Uint64 alignment while allowing the construction phase to
+// access metadata normally. enableReads drains every writer before exposing
+// optimistic reads; after that barrier all sequence access remains atomic.
+type wordSequence struct {
+	_     [0]atomic.Uint64
+	value uint64
+}
+
+func (s *wordSequence) Load() uint64            { return atomic.LoadUint64(&s.value) }
+func (s *wordSequence) Store(value uint64)      { atomic.StoreUint64(&s.value, value) }
+func (s *wordSequence) Add(delta uint64) uint64 { return atomic.AddUint64(&s.value, delta) }
+
+var _ [unsafe.Sizeof(wordSequence{}) - 8]byte
+var _ [8 - unsafe.Sizeof(wordSequence{})]byte
+var _ [unsafe.Alignof(wordSequence{}) - 8]byte
+var _ [8 - unsafe.Alignof(wordSequence{})]byte
+
 const wordLeafID uint32 = 1 << 31
 const wordSequenceStep uint64 = 1 << 13
 
@@ -63,13 +80,15 @@ func (n *wordNode) publishNumeric(atomicWrites bool) {
 			tags[i] = 255
 		}
 	}
+	metadata := uint64(n.n)<<1 | uint64(shift)<<7
 	if atomicWrites {
 		n.storeTags(tags)
+		sequence := n.sequence.Load()
+		n.sequence.Store(sequence&^(wordSequenceStep-2) | metadata)
 	} else {
 		n.tags = tags
+		n.sequence.value = n.sequence.value&^(wordSequenceStep-2) | metadata
 	}
-	sequence := n.sequence.Load()
-	n.sequence.Store(sequence&^(wordSequenceStep-2) | uint64(n.n)<<1 | uint64(shift)<<7)
 }
 
 // The leaf or structural lock excludes other writers while tags are copied.

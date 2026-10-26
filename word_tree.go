@@ -16,7 +16,7 @@ type wordNode struct {
 	level                 uint8
 	directory, prev, next uint32
 	tags                  [nodeSize]uint8
-	sequence              atomic.Uint64
+	sequence              wordSequence
 	mu                    sync.Mutex
 	payload               [nodeSize]uint64
 	keys                  [nodeSize]uint64
@@ -308,7 +308,7 @@ func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
 	if !t.atomicWrites {
 		n.insertLeafPlain(i, key, value)
 		if t.shared {
-			n.sequence.Store(uint64(n.n) << 1)
+			n.sequence.value = uint64(n.n) << 1
 		}
 		return
 	}
@@ -322,7 +322,7 @@ func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
 		} else {
 			copy(n.tags[i+1:count+1], n.tags[i:count])
 			n.tags[i] = uint8(key)
-			n.sequence.Store(uint64(n.n) << 1)
+			n.sequence.value = uint64(n.n) << 1
 		}
 	} else {
 		copy(n.tags[i+1:count+1], n.tags[i:count])
@@ -587,7 +587,7 @@ func (t *wordTree) removeLeaf(n *wordNode, i int) uint64 {
 			n.deleteTag(i)
 		} else {
 			n.tags[n.n] = 0
-			n.sequence.Store(uint64(n.n) << 1)
+			n.sequence.value = uint64(n.n) << 1
 		}
 	} else {
 		n.tags[n.n] = 0
