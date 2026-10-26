@@ -26,25 +26,26 @@ func lowerCode(keys *[nodeSize]uint64, n int, key uint64) int {
 	return min(-int(sum.GetElem(0)+sum.GetElem(1)), n)
 }
 
-// Unused leaf slots hold MaxUint64, so counting keys below key over every
-// slot is the lower bound. Each vector holds one key and its value; only the
-// key lanes are summed. The loads are independent, unlike a binary search.
+// Unused leaf slots hold MaxUint64, so counting keys below key is the lower
+// bound. Two probes select an aligned run of eight entries; a cold leaf then
+// loads about three cache lines instead of all eight. Each vector holds one
+// key and its value; only the key lanes are summed.
 func lowerEntries(entries *[nodeSize]wordEntry, key uint64) int {
 	if simd.Emulated() {
 		return lowerEntriesScalar(entries, key)
 	}
-	words := (*[2 * nodeSize]uint64)(unsafe.Pointer(entries))
+	base := 0
+	if entries[nodeSize/2-1].key < key {
+		base = nodeSize / 2
+	}
+	if entries[base+7].key < key {
+		base += 8
+	}
+	words := (*[16]uint64)(unsafe.Pointer(&entries[base&(nodeSize-8)]))
 	target := archsimd.BroadcastUint64x2(key)
 	a := countEight((*[8]uint64)(words[0:8]), target)
 	b := countEight((*[8]uint64)(words[8:16]), target)
-	c := countEight((*[8]uint64)(words[16:24]), target)
-	d := countEight((*[8]uint64)(words[24:32]), target)
-	e := countEight((*[8]uint64)(words[32:40]), target)
-	f := countEight((*[8]uint64)(words[40:48]), target)
-	g := countEight((*[8]uint64)(words[48:56]), target)
-	h := countEight((*[8]uint64)(words[56:64]), target)
-	sum := a.Add(b).Add(c.Add(d)).Add(e.Add(f).Add(g.Add(h)))
-	return -int(sum.GetElem(0))
+	return base - int(a.Add(b).GetElem(0))
 }
 
 // SIMD reports whether this build uses hardware SIMD and its vector width.
