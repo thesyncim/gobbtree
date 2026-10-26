@@ -56,7 +56,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build comparison programs
         run: |
-          git worktree add ../simd-baseline cf9a945c47ad464a64efa142542d7f1bc5cea14d
+          git worktree add ../simd-baseline c1567888316ed3a0c2ff4e7895fddc6eb1558ad3
           cp cmd/compare/main.go ../simd-baseline/cmd/compare/main.go
           cp standard_benchmark_test.go mutation_benchmark_test.go ../simd-baseline/
           (cd ../simd-baseline && go build -o ../compare-baseline ./cmd/compare && go build -o ../memory-baseline ./cmd/memory)
@@ -71,7 +71,7 @@ jobs:
       - name: Compare public operations on the same CPU
         run: |
           for size in 4096 262144; do
-            python3 internal/cpu_compare.py --go ../compare-current --baseline ../compare-baseline --rust internal/oracle/target/release/compare --size "$size" --queries 8192 --rounds 512 --threads 4 --repeat 3 --standard > "perf/compare-$size.jsonl"
+            python3 internal/cpu_compare.py --go ../compare-current --baseline ../compare-baseline --rust internal/oracle/target/release/compare --size "$size" --queries 8192 --rounds 512 --threads 4 --repeat 3 --standard --mutations --distinct > "perf/compare-$size.jsonl"
           done
           go test -run '^$' -bench 'BenchmarkLookup|BenchmarkMutation|BenchmarkBuild|BenchmarkParallelGet' -benchtime=200ms -count=3 >> perf/public-bench.txt
           go test -run '^$' -bench BenchmarkConcurrentMaps -cpu=4 -benchtime=250ms -count=3 > perf/standard-maps.txt
