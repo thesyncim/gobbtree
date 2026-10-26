@@ -56,7 +56,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build comparison programs
         run: |
-          git worktree add ../simd-baseline 924fff6
+          git worktree add ../simd-baseline a62b480
           cp cmd/compare/main.go ../simd-baseline/cmd/compare/main.go
           cp standard_benchmark_test.go mutation_benchmark_test.go ../simd-baseline/
           (cd ../simd-baseline && go build -o ../compare-baseline ./cmd/compare)
