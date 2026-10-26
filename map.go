@@ -46,8 +46,18 @@ func (m *Map[K, V]) Clear() {
 	m.version.Add(1)
 }
 func (m *Map[K, V]) Get(key K) (V, bool) {
-	if words := m.numericMap(); words != nil {
+	words := m.words.Load()
+	if words == nil && !m.wordDisabled.Load() {
+		words = m.initNumericMap()
+	}
+	if words != nil {
 		value, found := words.get(numericCode(key))
+		if words.valueKind == 1 {
+			if !found {
+				value = 0
+			}
+			return any(value).(V), found
+		}
 		return mapWordValue[V](value, found, words.valueKind)
 	}
 	return m.optimisticGet(key)
@@ -55,8 +65,18 @@ func (m *Map[K, V]) Get(key K) (V, bool) {
 
 func (m *Map[K, V]) Contains(key K) bool { _, ok := m.Get(key); return ok }
 func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
-	if words := m.numericMap(); words != nil {
+	words := m.words.Load()
+	if words == nil && !m.wordDisabled.Load() {
+		words = m.initNumericMap()
+	}
+	if words != nil {
 		old, found := words.insert(numericCode(key), packWord(value))
+		if words.valueKind == 1 {
+			if !found {
+				old = 0
+			}
+			return any(old).(V), found
+		}
 		return mapWordValue[V](old, found, words.valueKind)
 	}
 	lane := m.structure.lane(structuralLaneCode(key))
@@ -102,8 +122,18 @@ func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
 	return old, replaced
 }
 func (m *Map[K, V]) Delete(key K) (V, bool) {
-	if words := m.numericMap(); words != nil {
+	words := m.words.Load()
+	if words == nil && !m.wordDisabled.Load() {
+		words = m.initNumericMap()
+	}
+	if words != nil {
 		old, found := words.delete(numericCode(key))
+		if words.valueKind == 1 {
+			if !found {
+				old = 0
+			}
+			return any(old).(V), found
+		}
 		return mapWordValue[V](old, found, words.valueKind)
 	}
 	lane := m.structure.lane(structuralLaneCode(key))
@@ -264,14 +294,26 @@ func (m *Map[K, V]) GetMany(keys []K, dst []Result[V]) {
 	if len(dst) < len(keys) {
 		panic("gobbtree: GetMany destination too short")
 	}
-	if words := m.numericMap(); words != nil {
+	words := m.words.Load()
+	if words == nil && !m.wordDisabled.Load() {
+		words = m.initNumericMap()
+	}
+	if words != nil {
 		if view := words.view.Load(); len(keys) > 1 && view != nil && view.leaves != nil {
 			for start := 0; start < len(keys); start += batchLanes {
 				count := min(batchLanes, len(keys)-start)
 				if count < batchLanes {
 					for j := 0; j < count; j++ {
 						v, found := words.get(numericCode(keys[start+j]))
-						dst[start+j].Value, dst[start+j].OK = mapWordValue[V](v, found, words.valueKind)
+						if words.valueKind == 1 {
+							value := v
+							if !found {
+								value = 0
+							}
+							dst[start+j].Value, dst[start+j].OK = any(value).(V), found
+						} else {
+							dst[start+j].Value, dst[start+j].OK = mapWordValue[V](v, found, words.valueKind)
+						}
 					}
 					continue
 				}
@@ -282,14 +324,30 @@ func (m *Map[K, V]) GetMany(keys []K, dst []Result[V]) {
 				}
 				words.getMany8(&codes, &values)
 				for j := 0; j < count; j++ {
-					dst[start+j].Value, dst[start+j].OK = mapWordValue[V](values[j].Value, values[j].OK, words.valueKind)
+					if words.valueKind == 1 {
+						value := values[j].Value
+						if !values[j].OK {
+							value = 0
+						}
+						dst[start+j].Value, dst[start+j].OK = any(value).(V), values[j].OK
+					} else {
+						dst[start+j].Value, dst[start+j].OK = mapWordValue[V](values[j].Value, values[j].OK, words.valueKind)
+					}
 				}
 			}
 			return
 		}
 		for i, key := range keys {
 			v, found := words.get(numericCode(key))
-			dst[i].Value, dst[i].OK = mapWordValue[V](v, found, words.valueKind)
+			if words.valueKind == 1 {
+				value := v
+				if !found {
+					value = 0
+				}
+				dst[i].Value, dst[i].OK = any(value).(V), found
+			} else {
+				dst[i].Value, dst[i].OK = mapWordValue[V](v, found, words.valueKind)
+			}
 		}
 		return
 	}

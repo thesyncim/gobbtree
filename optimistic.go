@@ -154,7 +154,15 @@ func wordKind[V any]() uint8 {
 		return 0
 	}
 }
+
+// Keep the common conversion within the inlining budget.
 func packWord[V any](value V) uint64 {
+	if word, ok := any(value).(uint64); ok {
+		return word
+	}
+	return packWordOther(value)
+}
+func packWordOther[V any](value V) uint64 {
 	switch v := any(value).(type) {
 	case uint64:
 		return v
