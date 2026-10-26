@@ -9,7 +9,7 @@ import (
 // Map is a concurrent ordered map. Its zero value is ready to use.
 // Get validates optimistic reads of numeric arenas or immutable search images.
 // Built-in word values use atomic loads; other values use a leaf latch. Writers
-// latch leaves independently; splits, merges and new minima take a structural
+// latch leaves independently; splits, merges and routing changes take a structural
 // latch exclusively. Scans and callbacks also hold the structural read latch.
 // Do not copy a Map after first use. Callbacks must not reenter the same Map.
 type Map[K cmp.Ordered, V any] struct {
@@ -100,6 +100,9 @@ func (m *Map[K, V]) Insert(key K, value V) (V, bool) {
 		}
 		return mapWordValue[V](old, found, words.valueKind)
 	}
+	return m.insertGeneric(key, value)
+}
+func (m *Map[K, V]) insertGeneric(key K, value V) (V, bool) {
 	lane := m.structure.lane(structuralLaneCode(key))
 	lane.RLock()
 	if m.tree.root != nil {
@@ -168,6 +171,9 @@ func (m *Map[K, V]) Delete(key K) (V, bool) {
 		}
 		return mapWordValue[V](old, found, words.valueKind)
 	}
+	return m.deleteGeneric(key)
+}
+func (m *Map[K, V]) deleteGeneric(key K) (V, bool) {
 	lane := m.structure.lane(structuralLaneCode(key))
 	lane.RLock()
 	if m.tree.root == nil {
