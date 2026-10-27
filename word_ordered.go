@@ -230,3 +230,180 @@ func (m *wordMap) getMany8Ordered(view *wordReadView, keys *[batchLanes]uint64, 
 	}
 	return acc
 }
+
+// slabNode resolves a node ID through a published view, or nil.
+func (view *wordReadView) slabNode(id uint32) *wordNode {
+	index := (id &^ wordLeafID) - 1
+	blockIndex := int(index >> 8)
+	if id == 0 || blockIndex >= len(view.blocks) {
+		return nil
+	}
+	block := *(**wordNode)(unsafe.Pointer(&view.blocks[blockIndex]))
+	if block == nil || blockIndex < 8 && int(index&255) >= wordSlabSize(blockIndex) {
+		return nil
+	}
+	return wordSlabNode(block, index)
+}
+
+// leafOrdered routes key to its leaf with plain loads, as getOrdered does;
+// acc carries every word read, for the caller's closing validation.
+func (m *wordMap) leafOrdered(view *wordReadView, key uint64) (id uint32, acc uint64, ok bool) {
+	if c := view.leaves; c != nil {
+		var fill bool
+		id, fill, acc = c.lookupOrdered(key)
+		if fill {
+			id = 0
+		}
+	}
+	if id == 0 {
+		routes := &view.routes
+		if index := (key - routes.base) >> routes.shift; index < uint64(len(routes.ids)) {
+			id = routes.ids[index]
+		}
+		if id == 0 {
+			id = view.root
+		}
+	}
+	for depth := 0; depth <= int(view.level); depth++ {
+		acc ^= uint64(id)
+		if id&wordLeafID != 0 {
+			return id, acc, true
+		}
+		n := view.slabNode(id)
+		if n == nil {
+			return 0, 0, false
+		}
+		sequence := *(*uint64)(unsafe.Pointer(&n.sequence))
+		acc ^= sequence
+		count := int(sequence >> 1 & 63)
+		if count == 0 {
+			return 0, 0, false
+		}
+		shift := uint(sequence >> 7 & 63)
+		prefix := *n.prefixWord() >> shift
+		acc ^= prefix
+		projection := key >> shift
+		var i int
+		if projection < prefix {
+			i = 0
+		} else if projection > prefix|255 {
+			i = count - 1
+		} else {
+			upper := upperTag(&n.tags, count, uint8(projection))
+			i = max(0, upper-1)
+			if upper > 0 && n.tags[upper-1] == uint8(projection) {
+				for i > 0 {
+					separator := n.keys[i]
+					acc ^= separator
+					if separator <= key {
+						break
+					}
+					i--
+				}
+			}
+		}
+		acc ^= uint64(i)
+		id = n.inner().children[i]
+	}
+	return 0, 0, false
+}
+
+// copyOrdered is copyLeaf without latches: leaves are copied with plain
+// loads and validated by their sequences and the structural epoch, as
+// lookups are. One loadFence orders a batch's copies before its closing
+// checks. ok is false when a writer interfered; the caller retries or latches.
+func (m *wordMap) copyOrdered(low, high uint64, limited, reverse, bounded bool, buf *[scanLeaves * nodeSize]wordEntry, next *uint32, epoch *uint64) (count int, done, ok bool) {
+	version := m.version.Load()
+	if version&1 != 0 {
+		return 0, false, false
+	}
+	view := m.view.Load()
+	if view == nil {
+		return 0, true, m.version.Load() == version
+	}
+	if !view.ready {
+		// As in get, the first optimistic reader activates the arena.
+		m.enableReads()
+		return 0, false, false
+	}
+	var id uint32
+	// Only a leaf reached by descent holds keys outside the range still to
+	// visit; a chained leaf starts past everything already visited.
+	searched := false
+	switch {
+	case *next != 0 && *epoch == version:
+		id = *next
+	case !reverse:
+		id, _, _ = m.leafOrdered(view, low)
+	case limited:
+		id, _, _ = m.leafOrdered(view, high)
+	default:
+		id, _, _ = m.leafOrdered(view, ^uint64(0))
+	}
+	searched = *next == 0 || *epoch != version
+	var leaves [scanLeaves]*wordNode
+	var sequences [scanLeaves]uint64
+	copied := 0
+	for id != 0 {
+		n := view.slabNode(id)
+		if n == nil {
+			return 0, false, false
+		}
+		sequence := *(*uint64)(unsafe.Pointer(&n.sequence))
+		if sequence&1 != 0 {
+			return 0, false, false
+		}
+		leaves[copied], sequences[copied] = n, sequence
+		copied++
+		// The guarded words load after the opening sequence.
+		n = after(n, sequence)
+		entries := n.entries()
+		size := min(int(sequence>>1&63), nodeSize)
+		if reverse {
+			end := size
+			if limited && searched {
+				end = n.lowerEntry(high)
+			}
+			for i := min(end, size) - 1; i >= 0; i-- {
+				entry := entries[i]
+				if bounded && entry.key < low {
+					done = true
+					break
+				}
+				buf[count] = entry
+				count++
+			}
+			id = n.prev
+		} else {
+			start := 0
+			if searched {
+				start = n.lowerEntry(low)
+			}
+			for i := start; i < size; i++ {
+				entry := entries[i]
+				if bounded && entry.key >= high {
+					done = true
+					break
+				}
+				buf[count] = entry
+				count++
+			}
+			id = n.next
+		}
+		searched = false
+		if done || copied == scanLeaves {
+			break
+		}
+	}
+	loadFence()
+	for i := 0; i < copied; i++ {
+		if leaves[i].sequence.Load() != sequences[i] {
+			return 0, false, false
+		}
+	}
+	if m.version.Load() != version {
+		return 0, false, false
+	}
+	*next, *epoch = id, version
+	return count, done || id == 0, true
+}

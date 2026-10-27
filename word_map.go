@@ -594,7 +594,18 @@ func (m *wordMap) walk(lower, upper uint64, reverse, bounded bool, visit func(ui
 	var next uint32
 	var epoch uint64
 	for {
-		count, done := m.copyLeaf(low, high, started, reverse, bounded, &buf, &next, &epoch)
+		count, done, ok := 0, false, false
+		if seqlockPlainStores {
+			for attempt := 0; attempt < 4 && !ok; attempt++ {
+				count, done, ok = m.copyOrdered(low, high, started, reverse, bounded, &buf, &next, &epoch)
+				if !ok {
+					next = 0
+				}
+			}
+		}
+		if !ok {
+			count, done = m.copyLeaf(low, high, started, reverse, bounded, &buf, &next, &epoch)
+		}
 		for i := 0; i < count; i++ {
 			if !visit(buf[i].key, buf[i].value) {
 				return
