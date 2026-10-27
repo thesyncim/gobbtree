@@ -167,12 +167,16 @@ Not carried over, because Go has no counterpart:
 - **References into the map.** Go takes values out and puts them back (the `Update` family and `Entry`), so `get_mut`, `iter_mut` and `range_mut` become `Update`, `UpdateAll` and `UpdateRange`.
 - **Rust-only traits.** There is no operator overloading for `Index` (use `Get`) and no `Hash` trait.
 - **Allocators and `InsertError`.** Go's allocation failure is fatal, so `Insert` has no error path.
-- **`NodeConfig` page sizes.** Go array lengths cannot be type parameters, so nodes hold a fixed 32 entries.
+- **`NodeConfig` page sizes.** Nodes hold a fixed 32 entries. Go generics can index an array type parameter but cannot slice it or point into it, which shifting entries and the SIMD searches do, so another size would mean another copy of the node code.
 - **The rest of `InlineKey`:** `WIDTH`, `hash_tag`, `cmp_prefix`, and `cmp_from` on custom keys. These tune upstream's node layout, and a generic Go container cannot call an optional key method without boxing the key.
 - **Leaf annexes and their `*_with_leaf` methods.** They let `bbtree-store` manage manually allocated pages, which Go's garbage collector manages here.
 - **The `inspect` and `check_invariants` debugging helpers.**
 
-Additions beyond upstream: `Len`, `First`, `Last`, `PopFirst`, `PopLast`, `Ascend` and `Descend` on `Map`; `LowerBound` and `UpperBound` on `Tree`; and `Range(lo, hi)` as shorthand for `Scan(Between(lo, hi))`.
+Additions beyond upstream:
+- **`Map`:** `Len`, `First`, `Last`, `PopFirst`, `PopLast`, `LoadOrStoreFunc`, `UpdateAll`, `UpdateRange`, `WriteFile`, `Ascend` and `Descend`.
+- **`Tree`:** `LowerBound`, `UpperBound`, `LoadOrStore`, `LoadOrStoreFunc` and `UpdateOrInsert`.
+- **`FileMap`:** `ByteLen`, `WriteTo`, `Close`, `Ascend`, `Descend`, `Reverse` and `RangeReverse`.
+- **Everywhere:** `Range(lo, hi)` as shorthand for `Scan(Between(lo, hi))`.
 
 ## SIMD
 
