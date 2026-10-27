@@ -1,6 +1,7 @@
 package gobbtree
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -80,8 +81,7 @@ func (n *node[K, V, O]) pad() {
 func (n *node[K, V, O]) refit() {
 	n.prefix = 0
 	if n.strings && n.n > 1 {
-		var order O
-		n.prefix = order.sharedPrefix(n.keys[0], n.keys[n.n-1])
+		n.prefix = sharedPrefix[O](n.keys[0], n.keys[n.n-1])
 	}
 	n.prefixHead = prefixHead[O](n.keys[0], n.prefix)
 	for i := 0; i < n.n; i++ {
@@ -107,7 +107,7 @@ func (n *node[K, V, O]) lowerExact(key K) (int, bool) {
 		i := n.lowerNumeric(code)
 		return i, i < n.n && n.codes[i] == code
 	}
-	s := keySearch[K, O]{key: key}
+	s := newKeySearch[O](key)
 	return n.lowerSearch(&s)
 }
 func (n *node[K, V, O]) lowerSearch(s *keySearch[K, O]) (int, bool) {
@@ -118,31 +118,40 @@ func (n *node[K, V, O]) lowerSearch(s *keySearch[K, O]) (int, bool) {
 	if c > 0 {
 		return n.n, false
 	}
-	return lowerTied[O](&n.keys, &n.codes, n.n, s.key, code)
+	return lowerTied[O](&n.keys, &n.codes, n.n, s, code)
 }
 
 // lowerTied finds key's position from its window code. Usually one entry
 // shares the code; full ordering settles ties in truncated windows, and makes
 // zero-padding and total-order floating point semantics exact.
-func lowerTied[O keyOrder[K], K any](keys *[nodeSize]K, codes *[nodeSize]uint64, n int, key K, code uint64) (int, bool) {
+func lowerTied[O keyOrder[K], K any](keys *[nodeSize]K, codes *[nodeSize]uint64, n int, s *keySearch[K, O], code uint64) (int, bool) {
 	i := lowerCode(codes, n, code)
 	if i == n || codes[i] != code {
 		return i, false
 	}
-	c := compareKeys[O](keys[i], key)
+	c := s.compareTied(&keys[i])
 	if c >= 0 {
 		return i, c == 0
 	}
 	lo, hi := i+1, n
 	for lo < hi {
 		mid := int(uint(lo+hi) >> 1)
-		if codes[mid] == code && compareKeys[O](keys[mid], key) < 0 {
+		if codes[mid] == code && s.compareTied(&keys[mid]) < 0 {
 			lo = mid + 1
 		} else {
 			hi = mid
 		}
 	}
-	return lo, lo < n && codes[lo] == code && compareKeys[O](keys[lo], key) == 0
+	return lo, lo < n && codes[lo] == code && s.compareTied(&keys[lo]) == 0
+}
+
+// compareTied orders a stored key whose window ties the search key's.
+func (s *keySearch[K, O]) compareTied(stored *K) int {
+	if s.direct {
+		return strings.Compare(textView(stored), textView(&s.key))
+	}
+	var o O
+	return o.compare(*stored, s.key)
 }
 
 // Exact probes use the byte fingerprints; ordered positions still use lower.
@@ -158,7 +167,7 @@ func (n *node[K, V, O]) childIndex(key K) int {
 	if !n.strings {
 		return n.routeNumeric(numericKey[O](key))
 	}
-	s := keySearch[K, O]{key: key}
+	s := newKeySearch[O](key)
 	return n.routeSearch(&s)
 }
 func (n *node[K, V, O]) routeSearch(s *keySearch[K, O]) int {
@@ -172,7 +181,7 @@ func (n *node[K, V, O]) findLeaf(key K) *node[K, V, O] {
 	if !n.strings {
 		return n.findLeafCode(numericKey[O](key))
 	}
-	s := keySearch[K, O]{key: key}
+	s := newKeySearch[O](key)
 	return n.findLeafSearch(&s)
 }
 

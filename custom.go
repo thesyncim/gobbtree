@@ -1,8 +1,10 @@
 package gobbtree
 
 import (
+	"bytes"
 	"iter"
 	"math/bits"
+	"strings"
 	"unsafe"
 )
 
@@ -19,9 +21,14 @@ import (
 // example a uint32 as four big-endian bytes followed by a string's bytes.
 // StringWindow, BytesWindow and Uint64Window window common encodings.
 //
-// Keys are compared while they are stored, so Compare and Window must not
-// depend on mutable state. Like a wrong Compare, a Window that breaks the
-// contract gives wrong answers but never corrupts memory.
+// Equal keys must have equal windows. Keys are compared while they are
+// stored, so Compare and Window must not depend on mutable state. Like a
+// wrong Compare, a Window that breaks the contract gives wrong answers but
+// never corrupts memory.
+//
+// A key that refers to memory its caller may reuse, such as a byte slice,
+// also implements Clone() K. Containers then store the clone of each newly
+// inserted key and never retain a lookup's key.
 type Key[K any] interface {
 	Compare(other K) int
 	Window(offset int) uint64
@@ -63,6 +70,16 @@ func (s *SetOf[K]) IsSubset(other *SetOf[K]) bool   { return s.isSubset(&other.s
 func (s *SetOf[K]) IsSuperset(other *SetOf[K]) bool { return other.isSubset(&s.setCore) }
 func (s *SetOf[K]) IsDisjoint(other *SetOf[K]) bool { return s.isDisjoint(&other.setCore) }
 
+// Bytes is a byte-string key ordered like bytes.Compare; nil and empty are
+// the same key. Containers store a copy of each new key, so callers may reuse
+// their buffers, and lookups do not allocate. Keys returned by a container
+// share its storage and must not be modified.
+type Bytes []byte
+
+func (b Bytes) Compare(other Bytes) int  { return bytes.Compare(b, other) }
+func (b Bytes) Window(offset int) uint64 { return BytesWindow(b, offset) }
+func (b Bytes) Clone() Bytes             { return bytes.Clone(b) }
+
 // StringWindow windows a string's bytes, which order like the string.
 func StringWindow(s string, offset int) uint64 { return stringCode(s, offset) }
 
@@ -90,6 +107,18 @@ const customPrefixLimit = 64
 func (custom[K]) compare(a, b K) int              { return a.Compare(b) }
 func (custom[K]) window(key K, offset int) uint64 { return key.Window(offset) }
 func (custom[K]) textual() bool                   { return true }
+func (custom[K]) own(key K) K {
+	if b, ok := any(key).(Bytes); ok {
+		clone := b.Clone()
+		return *(*K)(unsafe.Pointer(&clone))
+	}
+	// Test the type with its zero value, so keys without Clone never box.
+	var zero K
+	if _, ok := any(zero).(interface{ Clone() K }); !ok {
+		return key
+	}
+	return any(key).(interface{ Clone() K }).Clone()
+}
 func (custom[K]) sharedPrefix(a, b K) int {
 	for offset := 0; offset < customPrefixLimit; offset += 8 {
 		if x, y := a.Window(offset), b.Window(offset); x != y {
@@ -129,10 +158,19 @@ func wordKeyKind[O keyOrder[K], K any]() uint8 {
 // already read; built-in keys use their direct paths.
 type keySearch[K any, O keyOrder[K]] struct {
 	key    K
+	direct bool // directText, decided once per search
 	filled int
 	words  [4]uint64
 }
 
+func newKeySearch[O keyOrder[K], K any](key K) keySearch[K, O] {
+	return keySearch[K, O]{key: key, direct: directText[O, K]()}
+}
+
+// cachedWindows reports keys whose windows come from Window calls.
+func cachedWindows[O keyOrder[K], K any]() bool {
+	return isCustom[O, K]() && !directText[O, K]()
+}
 func isCustom[O keyOrder[K], K any]() bool {
 	var o O
 	return unsafe.Sizeof(o) != 0
@@ -159,7 +197,7 @@ func (s *keySearch[K, O]) fill(i int) uint64 {
 
 // numeric is the key's leading window, as numericKey computes it.
 func (s *keySearch[K, O]) numeric() uint64 {
-	if !isCustom[O, K]() {
+	if !cachedWindows[O, K]() {
 		return numericKey[O](s.key)
 	}
 	return s.aligned(0)
@@ -167,7 +205,7 @@ func (s *keySearch[K, O]) numeric() uint64 {
 
 // window is the key's window at offset.
 func (s *keySearch[K, O]) window(offset int) uint64 {
-	if !isCustom[O, K]() {
+	if !cachedWindows[O, K]() {
 		return windowKey[O](s.key, offset)
 	}
 	i, r := offset>>3, uint(offset&7)
@@ -180,7 +218,7 @@ func (s *keySearch[K, O]) window(offset int) uint64 {
 // comparePrefix orders the key's first prefix bytes against first's, whose
 // leading windows a node caches in head.
 func (s *keySearch[K, O]) comparePrefix(first *K, head *[2]uint64, prefix int) int {
-	if !isCustom[O, K]() {
+	if !cachedWindows[O, K]() {
 		return comparePrefix[O](s.key, *first, prefix)
 	}
 	for i := 0; 8*i < prefix; i++ {
@@ -209,7 +247,16 @@ func (s *keySearch[K, O]) comparePrefix(first *K, head *[2]uint64, prefix int) i
 // and, when they match, returns the key's window past them: the node's
 // search code. Custom keys read each cached word once.
 func (s *keySearch[K, O]) locate(first *K, head *[2]uint64, prefix int) (int, uint64) {
-	if !isCustom[O, K]() {
+	if s.direct {
+		key := textView(&s.key)
+		if prefix > 0 {
+			if c := strings.Compare(key[:min(len(key), prefix)], textView(first)[:prefix]); c != 0 {
+				return c, 0
+			}
+		}
+		return 0, stringCode(key, prefix)
+	}
+	if !cachedWindows[O, K]() {
 		if prefix > 0 {
 			if c := comparePrefix[O](s.key, *first, prefix); c != 0 {
 				return c, 0
@@ -249,7 +296,7 @@ func compareWords(x, y uint64) int {
 
 // prefixHead caches the leading windows of a custom node's first key.
 func prefixHead[O keyOrder[K], K any](first K, prefix int) (head [2]uint64) {
-	if !isCustom[O, K]() || prefix == 0 {
+	if !cachedWindows[O, K]() || prefix == 0 {
 		return head
 	}
 	var o O

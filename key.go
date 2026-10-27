@@ -120,11 +120,14 @@ type keyOrder[K any] interface {
 	sharedPrefix(a, b K) int
 	// comparePrefix orders key's first prefix encoding bytes against first's.
 	comparePrefix(key, first K, prefix int) int
+	// own returns the key to store for a newly inserted key.
+	own(key K) K
 }
 
 type natural[K cmp.Ordered] struct{}
 
 func (natural[K]) compare(a, b K) int { return cmp.Compare(a, b) }
+func (natural[K]) own(key K) K        { return key }
 func (natural[K]) window(key K, offset int) uint64 {
 	if s, ok := keyString(key); ok {
 		return stringCode(s, offset)
@@ -162,24 +165,60 @@ func naturalText[O keyOrder[K], K any]() bool {
 	var k K
 	return unsafe.Sizeof(o) == 0 && unsafe.Sizeof(k) == unsafe.Sizeof("")
 }
+
+// directText adds the exact Bytes key, whose slice header begins with a
+// string header over the same bytes, to the direct textual paths.
+func directText[O keyOrder[K], K any]() bool {
+	if naturalText[O, K]() {
+		return true
+	}
+	var k K
+	if unsafe.Sizeof(k) != unsafe.Sizeof(Bytes(nil)) {
+		return false
+	}
+	_, ok := any(k).(Bytes)
+	return ok
+}
 func textView[K any](key *K) string { return *(*string)(unsafe.Pointer(key)) }
 
 func compareKeys[O keyOrder[K], K any](a, b K) int {
-	if naturalText[O, K]() {
+	if directText[O, K]() {
 		return strings.Compare(textView(&a), textView(&b))
 	}
 	var o O
 	return o.compare(a, b)
 }
+func ownKey[O keyOrder[K], K any](key K) K {
+	if !isCustom[O, K]() {
+		return key
+	}
+	var o O
+	return o.own(key)
+}
 func windowKey[O keyOrder[K], K any](key K, offset int) uint64 {
-	if naturalText[O, K]() {
+	if directText[O, K]() {
 		return stringCode(textView(&key), offset)
 	}
 	var o O
 	return o.window(key, offset)
 }
+
+// sharedPrefix measures direct textual keys on their bytes, which their
+// prefix comparisons slice.
+func sharedPrefix[O keyOrder[K], K any](a, b K) int {
+	if directText[O, K]() {
+		x, y := textView(&a), textView(&b)
+		end, prefix := min(len(x), len(y), 65535), 0
+		for prefix < end && x[prefix] == y[prefix] {
+			prefix++
+		}
+		return prefix
+	}
+	var o O
+	return o.sharedPrefix(a, b)
+}
 func comparePrefix[O keyOrder[K], K any](key, first K, prefix int) int {
-	if naturalText[O, K]() {
+	if directText[O, K]() {
 		s, f := textView(&key), textView(&first)
 		return strings.Compare(s[:min(len(s), prefix)], f[:prefix])
 	}

@@ -35,7 +35,7 @@ func (n *searchImage[K, V, O]) lower(key K) int {
 	return i
 }
 func (n *searchImage[K, V, O]) lowerExact(key K) (int, bool) {
-	s := keySearch[K, O]{key: key}
+	s := newKeySearch[O](key)
 	return n.lowerSearch(&s)
 }
 func (n *searchImage[K, V, O]) lowerSearch(s *keySearch[K, O]) (int, bool) {
@@ -46,10 +46,10 @@ func (n *searchImage[K, V, O]) lowerSearch(s *keySearch[K, O]) (int, bool) {
 	if c > 0 {
 		return n.n, false
 	}
-	return lowerTied[O](n.keys, n.codes, n.n, s.key, code)
+	return lowerTied[O](n.keys, n.codes, n.n, s, code)
 }
 func (n *searchImage[K, V, O]) childIndex(key K) int {
-	s := keySearch[K, O]{key: key}
+	s := newKeySearch[O](key)
 	return n.routeSearch(&s)
 }
 func (n *searchImage[K, V, O]) routeSearch(s *keySearch[K, O]) int {
@@ -67,7 +67,7 @@ func (n *searchImage[K, V, O]) readValue(key K, code uint64, epoch *atomic.Uint6
 		return value, false, false
 	}
 	if n.node != nil {
-		s := keySearch[K, O]{key: key}
+		s := newKeySearch[O](key)
 		value, found, valid = n.node.latchedGet(&s, epoch, version)
 		return value, found, valid
 	}

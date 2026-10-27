@@ -44,7 +44,7 @@ Build with `GOEXPERIMENT=simd` to enable the vector search. Without it, the same
 | `Map[K, V]` · `New` | Concurrent readers and writers |
 | `Tree[K, V]` · `NewTree` | A single owner; concurrent reads only while nobody writes |
 | `Set[K]` · `NewSet` | A single-owner set with union, intersection, difference and subset tests |
-| `MapOf`, `TreeOf`, `SetOf` | The same three containers, for [custom keys](#custom-keys) |
+| `MapOf`, `TreeOf`, `SetOf` | The same three containers, for [custom keys](#custom-keys) and `[]byte` keys (`Bytes`) |
 | `FileMap[K, V]` | A read-only snapshot, searched in place on disk ([file maps](#file-maps)) |
 
 All zero values are ready to use. Don't copy a container after first use.
@@ -92,6 +92,17 @@ tags := gobbtree.NewMapOf[Tag, int]()
 tags.Insert("Go", 1)
 tags.Insert("GO", 2) // same key: replaces the value, keeps "Go"
 ```
+
+Byte-slice keys are built in as `gobbtree.Bytes`:
+
+```go
+index := gobbtree.NewMapOf[gobbtree.Bytes, int]()
+buf := []byte("user:42")
+index.Insert(buf, 1)     // stores a copy: buf may be reused
+v, ok := index.Get(buf)  // lookups never allocate or retain buf
+```
+
+A key type whose values refer to reusable memory implements `Clone() K`, and containers store a clone of each new key. Equal keys must have equal windows.
 
 A composite key encodes its fields one after another. For example, a `uint32` tenant becomes four big-endian bytes, followed by a name. `StringWindow`, `BytesWindow` and `Uint64Window` window the common encodings. Windows that tie are resolved by `Compare`, so even a constant `Window` is correct, just slower. This is the Go counterpart of upstream's `InlineKey` trait.
 

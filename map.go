@@ -126,7 +126,7 @@ func (m *mapCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 			}
 			if i > 0 {
 				n.advanceSequence()
-				n.insertLeaf(i, key, value)
+				n.insertLeaf(i, ownKey[O](key), value)
 				m.count.Add(1)
 				n.advanceSequence()
 				n.leaf.mu.Unlock()

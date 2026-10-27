@@ -319,3 +319,104 @@ func TestCustomMapConcurrent(t *testing.T) {
 		t.Fatalf("iterated %d, len %d", n, m.Len())
 	}
 }
+
+func TestBytesKeysMatchReference(t *testing.T) {
+	r := rand.New(rand.NewPCG(11, 11))
+	keys := []Bytes{nil, {0}, {0, 0}, {0, 1}, {1}, {0xff}}
+	for _, s := range distinctStrings(r, 3000, strings.Repeat("\x00shared/", 6)) {
+		keys = append(keys, Bytes(s))
+	}
+	checkOrdered(t, keys, 30000, 6)
+}
+
+func TestBytesKeysAreCopied(t *testing.T) {
+	var tr TreeOf[Bytes, int]
+	var m MapOf[Bytes, int]
+	buf := make(Bytes, 0, 64)
+	for i := range 2000 {
+		buf = fmt.Appendf(buf[:0], "key-%05d", i)
+		tr.Insert(buf, i)
+		m.Insert(buf, i)
+	}
+	for i := range buf[:cap(buf)] {
+		buf[:cap(buf)][i] = 'x'
+	}
+	for i := range 2000 {
+		key := fmt.Appendf(nil, "key-%05d", i)
+		if v, ok := tr.Get(key); !ok || v != i {
+			t.Fatalf("tree %s: %d %v", key, v, ok)
+		}
+		if v, ok := m.Get(key); !ok || v != i {
+			t.Fatalf("map %s: %d %v", key, v, ok)
+		}
+	}
+	checkCore(t, &tr.treeCore)
+	if k, _, _ := tr.First(); string(k) != "key-00000" {
+		t.Fatalf("first %q", k)
+	}
+	if v, ok := tr.Get(Bytes("")); ok || v != 0 {
+		t.Fatal("empty key found")
+	}
+	tr.Insert(nil, 7)
+	if v, ok := tr.Get(Bytes{}); !ok || v != 7 {
+		t.Fatal("nil and empty keys differ")
+	}
+}
+
+func TestBytesLookupsDoNotAllocate(t *testing.T) {
+	var tr TreeOf[Bytes, int]
+	var m MapOf[Bytes, [2]int]
+	for i := range 1000 {
+		key := fmt.Appendf(nil, "key-%04d", i)
+		tr.Insert(key, i)
+		m.Insert(key, [2]int{i})
+	}
+	buf := Bytes("key-0500")
+	for name, call := range map[string]func(){
+		"tree get":     func() { tr.Get(buf) },
+		"tree replace": func() { tr.Insert(buf, 1) },
+		"map get":      func() { m.Get(buf) },
+		"map replace":  func() { m.Insert(buf, [2]int{1}) },
+	} {
+		if n := testing.AllocsPerRun(100, call); n != 0 {
+			t.Errorf("%s: %v allocations", name, n)
+		}
+	}
+	if n := testing.AllocsPerRun(100, func() { tr.Delete(buf); tr.Insert(buf, 2) }); n != 1 {
+		t.Errorf("tree churn: %v allocations, want the key copy", n)
+	}
+}
+
+func TestBytesMapConcurrentBufferReuse(t *testing.T) {
+	m := NewMapOf[Bytes, int]()
+	const writers, per = 4, 2000
+	var wg sync.WaitGroup
+	for w := range writers {
+		wg.Go(func() {
+			buf := make(Bytes, 0, 32)
+			for i := range per {
+				buf = fmt.Appendf(buf[:0], "%d/%06d", w, i)
+				m.Insert(buf, i)
+				if v, ok := m.Get(buf); !ok || v != i {
+					t.Errorf("read back %s: %d %v", buf, v, ok)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	n := 0
+	var prev Bytes
+	for k, v := range m.All() {
+		var w, i int
+		fmt.Sscanf(string(k), "%d/%06d", &w, &i)
+		if v != i || (prev != nil && prev.Compare(k) >= 0) {
+			t.Fatalf("%s=%d after %s", k, v, prev)
+		}
+		prev = k
+		n++
+	}
+	if n != writers*per {
+		t.Fatalf("%d entries", n)
+	}
+}

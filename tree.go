@@ -109,7 +109,7 @@ func (t *treeCore[K, V, O]) Get(key K) (V, bool) {
 			var zero V
 			return zero, false
 		}
-		search := keySearch[K, O]{key: key}
+		search := newKeySearch[O](key)
 		n := t.root.findLeafSearch(&search)
 		if i, equal := n.lowerSearch(&search); equal {
 			return n.leaf.values[i], true
@@ -205,7 +205,7 @@ func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 	full := true
 	var i int
 	var equal bool
-	search := keySearch[K, O]{key: key}
+	search := newKeySearch[O](key)
 	if n.strings {
 		n, full = n.findLeafSearchForInsert(&search)
 		i, equal = n.lowerSearch(&search)
@@ -223,7 +223,7 @@ func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 			i = n.lower(key)
 		}
 		if i > 0 {
-			n.insertLeaf(i, key, value)
+			n.insertLeaf(i, ownKey[O](key), value)
 			t.length++
 			var zero V
 			return zero, false
@@ -251,7 +251,7 @@ func (t *treeCore[K, V, O]) insertAbsent(n *node[K, V, O], search *keySearch[K, 
 		} else {
 			i = n.lower(key)
 		}
-		n.insertLeaf(i, key, value)
+		n.insertLeaf(i, ownKey[O](key), value)
 		return
 	}
 	i := 0
@@ -599,13 +599,14 @@ func (t *treeCore[K, V, O]) GetMany(keys []K, dst []Result[V]) {
 		for j := 0; j < count; j++ {
 			var result Result[V]
 			if n := nodes[j]; n != nil {
-				i := 0
+				i, found := 0, false
 				if !n.strings {
 					i = findCode(&n.codes, &n.tags, n.n, codes[j])
+					found = i < n.n && n.codes[i] == codes[j]
 				} else {
-					i = n.lower(keys[start+j])
+					i, found = n.lowerExact(keys[start+j])
 				}
-				if i < n.n && ((!n.strings && n.codes[i] == codes[j]) || (n.strings && compareKeys[O](n.keys[i], keys[start+j]) == 0)) {
+				if found {
 					result = Result[V]{n.leaf.values[i], true}
 				}
 			}

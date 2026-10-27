@@ -285,7 +285,7 @@ func (m *mapCore[K, V, O]) structuralEnd(held [3]*node[K, V, O]) {
 
 func (m *mapCore[K, V, O]) optimisticGet(key K) (V, bool) {
 	var zero V
-	search := keySearch[K, O]{key: key}
+	search := newKeySearch[O](key)
 	code := search.numeric()
 retry:
 	for {
