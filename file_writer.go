@@ -312,9 +312,11 @@ func (w *FileWriter[K, V]) WriteAt(file *os.File, offset int64) (FileRange, erro
 }
 
 // WriteFile publishes a complete snapshot atomically in the destination
-// directory. An existing mapped snapshot remains valid across replacement.
+// directory, syncing the file and then the directory. An existing mapped
+// snapshot remains valid across replacement.
 func (w *FileWriter[K, V]) WriteFile(path string) (err error) {
-	f, err := os.CreateTemp(filepath.Dir(path), ".bbtree-*")
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".bbtree-*")
 	if err != nil {
 		return err
 	}
@@ -329,7 +331,10 @@ func (w *FileWriter[K, V]) WriteFile(path string) (err error) {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err = os.Rename(name, path); err != nil {
+		return err
+	}
+	return syncDir(dir)
 }
 
 func CreateFile[K cmp.Ordered, V any](path string, entries iter.Seq2[K, V]) error {
