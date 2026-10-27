@@ -483,74 +483,77 @@ func (m *mapCore[K, V, O]) InsertMany(entries []Entry[K, V], dst []Result[V]) {
 }
 
 // Range iterates the entries with keys in [lower, upper), ascending, as
-// upstream's scan and range_cloned do: a few leaves are copied under their
-// latches, or validated without latches for numeric maps, and visited with
-// no latch held, so the loop body may use the map. It is not a snapshot: an
-// entry present throughout is visited exactly once; entries inserted or
-// removed meanwhile may or may not be.
+// Scan(Between(lower, upper)) does.
 func (m *mapCore[K, V, O]) Range(lower, upper K) iter.Seq2[K, V] {
-	return func(yield func(K, V) bool) { m.scan(&lower, &upper, false, yield) }
+	return m.Scan(Between(lower, upper))
 }
 
 // RangeReverse is Range in descending order.
 func (m *mapCore[K, V, O]) RangeReverse(lower, upper K) iter.Seq2[K, V] {
-	return func(yield func(K, V) bool) { m.scan(&lower, &upper, true, yield) }
+	return m.ScanReverse(Between(lower, upper))
 }
 
 // Ascend iterates the entries with keys at or above from, ascending.
-func (m *mapCore[K, V, O]) Ascend(from K) iter.Seq2[K, V] {
-	return func(yield func(K, V) bool) { m.scan(&from, nil, false, yield) }
-}
+func (m *mapCore[K, V, O]) Ascend(from K) iter.Seq2[K, V] { return m.Scan(AtLeast(from)) }
 
 // Descend iterates the entries with keys at or below from, descending.
-func (m *mapCore[K, V, O]) Descend(from K) iter.Seq2[K, V] {
+func (m *mapCore[K, V, O]) Descend(from K) iter.Seq2[K, V] { return m.ScanReverse(AtMost(from)) }
+
+// Scan iterates the entries with keys in b, ascending, as upstream's scan and
+// range_cloned do: a few leaves are copied under their latches, or validated
+// without latches for numeric maps, and visited with no latch held, so the
+// loop body may use the map. It is not a snapshot: an entry present
+// throughout is visited exactly once; entries inserted or removed meanwhile
+// may or may not be. Iterating it panics on bounds upstream rejects (see
+// Bounds).
+func (m *mapCore[K, V, O]) Scan(b Bounds[K]) iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
-		var key K
-		var value V
-		if m.Read(from, func(k K, v V) { key, value = k, v }) && !yield(key, value) {
-			return
-		}
-		m.scan(nil, &from, true, yield)
+		checkBounds[K, O](&b)
+		m.scan(&b, false, yield)
 	}
 }
 
-// All iterates every entry in ascending order, as Range does.
+// ScanReverse is Scan in descending order, as upstream's scan_rev.
+func (m *mapCore[K, V, O]) ScanReverse(b Bounds[K]) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		checkBounds[K, O](&b)
+		m.scan(&b, true, yield)
+	}
+}
+
+// All iterates every entry in ascending order, as Scan does.
 func (m *mapCore[K, V, O]) All() iter.Seq2[K, V] {
-	return func(yield func(K, V) bool) { m.scan(nil, nil, false, yield) }
+	return func(yield func(K, V) bool) { m.scan(&Bounds[K]{}, false, yield) }
 }
 
-// Reverse iterates every entry in descending order, as Range does.
+// Reverse iterates every entry in descending order, as Scan does.
 func (m *mapCore[K, V, O]) Reverse() iter.Seq2[K, V] {
-	return func(yield func(K, V) bool) { m.scan(nil, nil, true, yield) }
+	return func(yield func(K, V) bool) { m.scan(&Bounds[K]{}, true, yield) }
 }
 
-// scan visits keys in [lower, upper); a nil bound is open. Descending scans
-// have an upper bound or none: Descend reads its inclusive end separately.
-func (m *mapCore[K, V, O]) scan(lower, upper *K, reverse bool, visit func(K, V) bool) {
+// scan visits the keys in b.
+func (m *mapCore[K, V, O]) scan(b *Bounds[K], reverse bool, visit func(K, V) bool) {
 	if words := m.numericMap(); words != nil {
-		low, high := uint64(0), uint64(0)
-		if lower != nil {
-			low = numericKey[O](*lower)
-		}
-		if upper != nil {
-			high = numericKey[O](*upper)
+		low, high, open, empty := wordBounds[K, O](b)
+		if empty {
+			return
 		}
 		// An unbounded walk starts at low ascending and at the last key
 		// descending; a bounded one checks both ends.
-		words.walk(low, high, reverse, upper != nil, func(k, v uint64) bool {
+		words.walk(low, high, reverse, !open, func(k, v uint64) bool {
+			if open && reverse && k < low {
+				return false
+			}
 			return visit(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
 		})
 		return
 	}
-	if lower != nil && upper != nil && compareKeys[O](*lower, *upper) >= 0 {
-		return
-	}
-	m.walk(lower, upper, reverse, visit)
+	m.walk(b, reverse, visit)
 }
 
-// walk visits leaf copies from lower (inclusive) to upper (exclusive); a nil
-// bound is open. It resumes past the last key it visited.
-func (m *mapCore[K, V, O]) walk(lower, upper *K, reverse bool, visit func(K, V) bool) {
+// walk visits leaf copies of the keys in b. It resumes past the last key it
+// visited.
+func (m *mapCore[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V) bool) {
 	var keys [scanLeaves * nodeSize]K
 	var values [scanLeaves * nodeSize]V
 	var last K
@@ -559,7 +562,7 @@ func (m *mapCore[K, V, O]) walk(lower, upper *K, reverse bool, visit func(K, V) 
 	var next *node[K, V, O]
 	var epoch uint64
 	for {
-		count, done := m.copyLeaf(lower, upper, &last, resumed, reverse, &keys, &values, &next, &epoch)
+		count, done := m.copyLeaf(b, &last, resumed, reverse, &keys, &values, &next, &epoch)
 		for i := 0; i < count; i++ {
 			if !visit(keys[i], values[i]) {
 				return
@@ -575,7 +578,7 @@ func (m *mapCore[K, V, O]) walk(lower, upper *K, reverse bool, visit func(K, V) 
 // copyLeaf copies, in visiting order, the entries of up to scanLeaves leaves
 // from the first that holds any in range and past last when resumed. done reports that no later
 // leaf can hold more.
-func (m *mapCore[K, V, O]) copyLeaf(lower, upper, last *K, resumed, reverse bool, keys *[scanLeaves * nodeSize]K, values *[scanLeaves * nodeSize]V, chain **node[K, V, O], epoch *uint64) (count int, done bool) {
+func (m *mapCore[K, V, O]) copyLeaf(b *Bounds[K], last *K, resumed, reverse bool, keys *[scanLeaves * nodeSize]K, values *[scanLeaves * nodeSize]V, chain **node[K, V, O], epoch *uint64) (count int, done bool) {
 	m.structure.RLock()
 	defer m.structure.RUnlock()
 	if m.tree.root == nil {
@@ -589,12 +592,12 @@ func (m *mapCore[K, V, O]) copyLeaf(lower, upper, last *K, resumed, reverse bool
 		n = *chain
 	case resumed:
 		n = m.tree.root.findLeaf(*last)
-	case reverse && upper != nil:
-		n = m.tree.root.findLeaf(*upper)
+	case reverse && b.upperKind != unbounded:
+		n = m.tree.root.findLeaf(b.upper)
 	case reverse:
 		n = m.tree.lastLeaf()
-	case lower != nil:
-		n = m.tree.root.findLeaf(*lower)
+	case b.lowerKind != unbounded:
+		n = m.tree.root.findLeaf(b.lower)
 	default:
 		n = m.tree.firstLeaf()
 	}
@@ -604,11 +607,14 @@ func (m *mapCore[K, V, O]) copyLeaf(lower, upper, last *K, resumed, reverse bool
 			end := n.n
 			if resumed {
 				end = n.lower(*last)
-			} else if upper != nil {
-				end = n.lower(*upper)
+			} else if b.upperKind != unbounded {
+				end = n.lower(b.upper)
+				if b.upperKind == included && end < n.n && compareKeys[O](n.keys[end], b.upper) == 0 {
+					end++
+				}
 			}
 			for i := end - 1; i >= 0; i-- {
-				if lower != nil && compareKeys[O](n.keys[i], *lower) < 0 {
+				if !aboveLower[K, O](b, n.keys[i]) {
 					done = true
 					break
 				}
@@ -622,11 +628,14 @@ func (m *mapCore[K, V, O]) copyLeaf(lower, upper, last *K, resumed, reverse bool
 				if start < n.n && compareKeys[O](n.keys[start], *last) == 0 {
 					start++
 				}
-			} else if lower != nil {
-				start = n.lower(*lower)
+			} else if b.lowerKind != unbounded {
+				start = n.lower(b.lower)
+				if b.lowerKind == excluded && start < n.n && compareKeys[O](n.keys[start], b.lower) == 0 {
+					start++
+				}
 			}
 			for i := start; i < n.n; i++ {
-				if upper != nil && compareKeys[O](n.keys[i], *upper) >= 0 {
+				if !belowUpper[K, O](b, n.keys[i]) {
 					done = true
 					break
 				}
@@ -656,10 +665,10 @@ func (m *mapCore[K, V, O]) First() (key K, value V, ok bool) {
 	return key, value, false
 }
 
-// FirstInRange returns the smallest entry with a key in [lower, upper), read
-// like a scan, as upstream's first_copied.
-func (m *mapCore[K, V, O]) FirstInRange(lower, upper K) (key K, value V, ok bool) {
-	for key, value = range m.Range(lower, upper) {
+// FirstIn returns the smallest entry with a key in b, read like a scan, as
+// upstream's first_copied.
+func (m *mapCore[K, V, O]) FirstIn(b Bounds[K]) (key K, value V, ok bool) {
+	for key, value = range m.Scan(b) {
 		return key, value, true
 	}
 	return key, value, false
@@ -674,7 +683,7 @@ func (m *mapCore[K, V, O]) Last() (key K, value V, ok bool) {
 		})
 		return key, value, ok
 	}
-	m.walk(nil, nil, true, func(k K, v V) bool {
+	m.walk(&Bounds[K]{}, true, func(k K, v V) bool {
 		key, value, ok = k, v, true
 		return false
 	})
@@ -754,11 +763,11 @@ func (m *mapCore[K, V, O]) LoadOrStoreFunc(key K, make func() V) (V, bool) {
 	return m.LoadOrStore(key, make())
 }
 
-// UpdateRange replaces each value with keys in [lower, upper) by
-// change(key, value), in key order. Each replacement is atomic, as Update is;
-// the walk is not a snapshot, like Range.
-func (m *mapCore[K, V, O]) UpdateRange(lower, upper K, change func(K, V) V) {
-	for k := range m.Range(lower, upper) {
+// UpdateRange replaces each value with keys in b by change(key, value), in
+// key order. Each replacement is atomic, as Update is; the walk is not a
+// snapshot, like Scan.
+func (m *mapCore[K, V, O]) UpdateRange(b Bounds[K], change func(K, V) V) {
+	for k := range m.Scan(b) {
 		m.Update(k, func(v V) V { return change(k, v) })
 	}
 }

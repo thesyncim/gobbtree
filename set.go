@@ -71,6 +71,12 @@ func (s *setCore[K, O]) RangeReverse(lower, upper K) iter.Seq[K] {
 	return setKeys(s.tree.RangeReverse(lower, upper))
 }
 
+// Scan iterates the keys in b, ascending, as upstream's range does.
+func (s *setCore[K, O]) Scan(b Bounds[K]) iter.Seq[K] { return setKeys(s.tree.Scan(b)) }
+
+// ScanReverse is Scan in descending order.
+func (s *setCore[K, O]) ScanReverse(b Bounds[K]) iter.Seq[K] { return setKeys(s.tree.ScanReverse(b)) }
+
 // Ascend iterates the keys at or above from, ascending.
 func (s *setCore[K, O]) Ascend(from K) iter.Seq[K] { return setKeys(s.tree.Ascend(from)) }
 
@@ -111,9 +117,10 @@ func (s *setCore[K, O]) splitOff(key K) *setCore[K, O] {
 func (s *setCore[K, O]) Retain(keep func(K) bool) {
 	s.tree.Retain(func(k K, _ struct{}) bool { return keep(k) })
 }
-func (s *setCore[K, O]) ExtractIf(lower, upper K, predicate func(K) bool) iter.Seq[K] {
+func (s *setCore[K, O]) ExtractIf(b Bounds[K], predicate func(K) bool) iter.Seq[K] {
+	extracted := s.tree.ExtractIf(b, func(k K, _ struct{}) bool { return predicate(k) })
 	return func(yield func(K) bool) {
-		for k := range s.tree.ExtractIf(lower, upper, func(k K, _ struct{}) bool { return predicate(k) }) {
+		for k := range extracted {
 			if !yield(k) {
 				return
 			}

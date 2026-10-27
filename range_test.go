@@ -19,8 +19,8 @@ type rangeSource struct {
 	forward, backward     func() iter.Seq[uint64]
 }
 
-func keysOf[V any](seq iter.Seq2[uint64, V]) iter.Seq[uint64] {
-	return func(yield func(uint64) bool) {
+func keysOf[K, V any](seq iter.Seq2[K, V]) iter.Seq[K] {
+	return func(yield func(K) bool) {
 		for k := range seq {
 			if !yield(k) {
 				return
@@ -112,6 +112,9 @@ func TestRangeIteratorsMatchReference(t *testing.T) {
 		}
 		for i, lo := range bounds {
 			hi := bounds[(i*7+3)%len(bounds)]
+			if lo > hi {
+				lo, hi = hi, lo
+			}
 			var inRange, atOrAbove, atOrBelow []uint64
 			for _, k := range want {
 				if k >= lo && k < hi {
@@ -199,7 +202,7 @@ type parityOps[K comparable] interface {
 	Get(K) (int, bool)
 	Len() int
 	InsertAll(iter.Seq2[K, int])
-	UpdateRange(lower, upper K, change func(K, int) int)
+	UpdateRange(b Bounds[K], change func(K, int) int)
 	UpdateAll(change func(K, int) int)
 	LoadOrStoreFunc(K, func() int) (int, bool)
 }
@@ -216,7 +219,7 @@ func checkParityOps[K comparable](t *testing.T, c parityOps[K], key func(int) K)
 	if c.Len() != 1000 {
 		t.Fatalf("InsertAll len %d", c.Len())
 	}
-	c.UpdateRange(key(100), key(200), func(_ K, v int) int { return v + 1000 })
+	c.UpdateRange(Between(key(100), key(200)), func(_ K, v int) int { return v + 1000 })
 	c.UpdateAll(func(_ K, v int) int { return v * 2 })
 	for i := range 1000 {
 		want := 2 * i
@@ -263,7 +266,7 @@ func TestParityOperations(t *testing.T) {
 	}
 }
 
-func TestMapFirstInRange(t *testing.T) {
+func TestMapFirstIn(t *testing.T) {
 	r := rand.New(rand.NewPCG(5, 5))
 	var m Map[uint64, uint64]
 	var keys []uint64
@@ -280,13 +283,16 @@ func TestMapFirstInRange(t *testing.T) {
 		if r.IntN(4) == 0 {
 			lo = keys[r.IntN(len(keys))]
 		}
-		k, v, ok := m.FirstInRange(lo, hi)
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		k, v, ok := m.FirstIn(Between(lo, hi))
 		i, _ := slices.BinarySearch(keys, lo)
 		if want := i < len(keys) && keys[i] < hi; ok != want || ok && (k != keys[i] || v != ^k) {
-			t.Fatalf("FirstInRange(%d, %d) = %d, %d, %v", lo, hi, k, v, ok)
+			t.Fatalf("FirstIn(%d, %d) = %d, %d, %v", lo, hi, k, v, ok)
 		}
 	}
-	if _, _, ok := (&Map[uint64, uint64]{}).FirstInRange(0, math.MaxUint64); ok {
+	if _, _, ok := (&Map[uint64, uint64]{}).FirstIn(Between[uint64](0, math.MaxUint64)); ok {
 		t.Fatal("empty map has a first entry")
 	}
 }

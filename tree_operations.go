@@ -127,14 +127,24 @@ func (t *treeCore[K, V, O]) Retain(keep func(K, V) bool) {
 	}
 }
 
-// ExtractIf removes and yields matching entries in [lower,upper). Stopping
-// iteration leaves the remaining entries unvisited and unchanged.
-func (t *treeCore[K, V, O]) ExtractIf(lower, upper K, predicate func(K, V) bool) iter.Seq2[K, V] {
+// ExtractIf removes and yields the entries in b that predicate accepts, as
+// upstream's extract_if does. Stopping iteration leaves the remaining entries
+// unvisited and unchanged.
+func (t *treeCore[K, V, O]) ExtractIf(b Bounds[K], predicate func(K, V) bool) iter.Seq2[K, V] {
+	checkBounds[K, O](&b)
 	return func(yield func(K, V) bool) {
-		if compareKeys[O](lower, upper) >= 0 {
-			return
+		var k K
+		var v V
+		var ok bool
+		switch b.lowerKind {
+		case unbounded:
+			k, v, ok = t.First()
+		case included:
+			k, v, ok = t.LowerBound(b.lower)
+		case excluded:
+			k, v, ok = t.UpperBound(b.lower)
 		}
-		for k, v, ok := t.LowerBound(lower); ok && compareKeys[O](k, upper) < 0; k, v, ok = t.UpperBound(k) {
+		for ; ok && belowUpper[K, O](&b, k); k, v, ok = t.UpperBound(k) {
 			if predicate(k, v) {
 				t.Delete(k)
 				if !yield(k, v) {
@@ -197,17 +207,18 @@ func (t *treeCore[K, V, O]) LoadOrStoreFunc(key K, make func() V) (V, bool) {
 	return v, false
 }
 
-// UpdateRange replaces each value with keys in [lower, upper) by
-// change(key, value), in key order, as upstream's range_mut allows.
-func (t *treeCore[K, V, O]) UpdateRange(lower, upper K, change func(K, V) V) {
+// UpdateRange replaces each value with keys in b by change(key, value), in
+// key order, as upstream's range_mut allows.
+func (t *treeCore[K, V, O]) UpdateRange(b Bounds[K], change func(K, V) V) {
+	checkBounds[K, O](&b)
 	// Replacing a value never moves an entry, so the walk stays valid.
-	t.scan(&lower, &upper, false, func(k K, v V) bool { t.Insert(k, change(k, v)); return true })
+	t.scan(&b, false, func(k K, v V) bool { t.Insert(k, change(k, v)); return true })
 }
 
 // UpdateAll replaces every value by change(key, value), in key order, as
 // upstream's iter_mut and values_mut allow.
 func (t *treeCore[K, V, O]) UpdateAll(change func(K, V) V) {
-	t.scan(nil, nil, false, func(k K, v V) bool { t.Insert(k, change(k, v)); return true })
+	t.scan(&Bounds[K]{}, false, func(k K, v V) bool { t.Insert(k, change(k, v)); return true })
 }
 
 // InsertAll inserts every entry of seq, as upstream's Extend does.

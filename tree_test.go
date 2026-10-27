@@ -298,7 +298,7 @@ func TestRangesBatchesAndOwnership(t *testing.T) {
 	for i := 0; i < 5000; i++ {
 		tr.Insert(i, i*2)
 	}
-	for _, bounds := range [][2]int{{-5, 0}, {-5, 90}, {15, 33}, {16, 32}, {319, 811}, {4990, 6000}, {9, 9}, {8, 4}} {
+	for _, bounds := range [][2]int{{-5, 0}, {-5, 90}, {15, 33}, {16, 32}, {319, 811}, {4990, 6000}, {9, 9}} {
 		var got, rev []int
 		visitRange(tr.Range(bounds[0], bounds[1]), func(k, v int) bool {
 			if v != k*2 {

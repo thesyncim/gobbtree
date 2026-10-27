@@ -61,7 +61,7 @@ func TestUpstreamSetOracle(t *testing.T) {
 			fmt.Fprintf(&input, "E %d %d %d %d\n", slot, key, key+300, limit)
 			if limit > 0 {
 				count := 0
-				for k := range s.ExtractIf(key, key+300, func(k uint64) bool { return k%2 == 0 }) {
+				for k := range s.ExtractIf(Between(key, key+300), func(k uint64) bool { return k%2 == 0 }) {
 					fmt.Fprintf(&want, "%d,", k)
 					count++
 					if count == limit {
@@ -183,7 +183,7 @@ func TestSetOperations(t *testing.T) {
 	}
 	before := clone.Len()
 	count := 0
-	for k := range clone.ExtractIf(0, 2000, func(k int) bool { return true }) {
+	for k := range clone.ExtractIf(Between(0, 2000), func(k int) bool { return true }) {
 		count++
 		if clone.Contains(k) {
 			t.Fatal("not extracted")

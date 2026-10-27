@@ -497,59 +497,68 @@ func (t *treeCore[K, V, O]) PopLast() (K, V, bool) {
 	return k, v, ok
 }
 
-// Range iterates the entries with keys in [lower, upper), ascending.
-// Neither the loop body nor another goroutine may mutate the tree meanwhile.
+// Range iterates the entries with keys in [lower, upper), ascending, as
+// Scan(Between(lower, upper)) does.
 func (t *treeCore[K, V, O]) Range(lower, upper K) iter.Seq2[K, V] {
-	return func(yield func(K, V) bool) { t.scan(&lower, &upper, false, yield) }
+	return t.Scan(Between(lower, upper))
 }
 
-// RangeReverse iterates the entries with keys in [lower, upper), descending.
+// RangeReverse is Range in descending order.
 func (t *treeCore[K, V, O]) RangeReverse(lower, upper K) iter.Seq2[K, V] {
-	return func(yield func(K, V) bool) { t.scan(&lower, &upper, true, yield) }
+	return t.ScanReverse(Between(lower, upper))
 }
 
 // Ascend iterates the entries with keys at or above from, ascending.
-func (t *treeCore[K, V, O]) Ascend(from K) iter.Seq2[K, V] {
-	return func(yield func(K, V) bool) { t.scan(&from, nil, false, yield) }
-}
+func (t *treeCore[K, V, O]) Ascend(from K) iter.Seq2[K, V] { return t.Scan(AtLeast(from)) }
 
 // Descend iterates the entries with keys at or below from, descending.
-func (t *treeCore[K, V, O]) Descend(from K) iter.Seq2[K, V] {
+func (t *treeCore[K, V, O]) Descend(from K) iter.Seq2[K, V] { return t.ScanReverse(AtMost(from)) }
+
+// Scan iterates the entries with keys in b, ascending, as upstream's range
+// does. Neither the loop body nor another goroutine may mutate the tree
+// meanwhile. Iterating it panics on bounds upstream rejects (see Bounds).
+func (t *treeCore[K, V, O]) Scan(b Bounds[K]) iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
-		if k, v, ok := t.GetKeyValue(from); ok && !yield(k, v) {
-			return
-		}
-		t.scan(nil, &from, true, yield)
+		checkBounds[K, O](&b)
+		t.scan(&b, false, yield)
 	}
 }
 
-// scan visits keys in [lower, upper); a nil bound is open.
-func (t *treeCore[K, V, O]) scan(lower, upper *K, reverse bool, visit func(K, V) bool) {
+// ScanReverse is Scan in descending order.
+func (t *treeCore[K, V, O]) ScanReverse(b Bounds[K]) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		checkBounds[K, O](&b)
+		t.scan(&b, true, yield)
+	}
+}
+
+// scan visits the keys in b.
+func (t *treeCore[K, V, O]) scan(b *Bounds[K], reverse bool, visit func(K, V) bool) {
 	if words := t.words; words != nil {
-		low, high, open := uint64(0), uint64(0), upper == nil
-		if lower != nil {
-			low = numericKey[O](*lower)
+		low, high, open, empty := wordBounds[K, O](b)
+		if !empty {
+			words.scan(low, high, open, reverse, func(k, v uint64) bool { return visit(decodeWordKey[K](k, words.keyKind), t.wordValue(v)) })
 		}
-		if upper != nil {
-			high = numericKey[O](*upper)
-		}
-		words.scan(low, high, open, reverse, func(k, v uint64) bool { return visit(decodeWordKey[K](k, words.keyKind), t.wordValue(v)) })
 		return
 	}
-	if t.root == nil || lower != nil && upper != nil && compareKeys[O](*lower, *upper) >= 0 {
+	if t.root == nil {
 		return
 	}
 	if reverse {
 		n, i := t.lastLeaf(), 0
-		if upper != nil {
-			n = t.root.findLeaf(*upper)
-			i = n.lower(*upper) - 1
+		if b.upperKind != unbounded {
+			n = t.root.findLeaf(b.upper)
+			i = n.lower(b.upper)
+			if b.upperKind == included && i < n.n && compareKeys[O](n.keys[i], b.upper) == 0 {
+				i++
+			}
+			i--
 		} else {
 			i = n.n - 1
 		}
 		for ; n != nil; n = n.leaf.prev {
 			for ; i >= 0; i-- {
-				if lower != nil && compareKeys[O](n.keys[i], *lower) < 0 || !visit(n.keys[i], n.leaf.values[i]) {
+				if !aboveLower[K, O](b, n.keys[i]) || !visit(n.keys[i], n.leaf.values[i]) {
 					return
 				}
 			}
@@ -560,13 +569,16 @@ func (t *treeCore[K, V, O]) scan(lower, upper *K, reverse bool, visit func(K, V)
 		return
 	}
 	n, i := t.firstLeaf(), 0
-	if lower != nil {
-		n = t.root.findLeaf(*lower)
-		i = n.lower(*lower)
+	if b.lowerKind != unbounded {
+		n = t.root.findLeaf(b.lower)
+		i = n.lower(b.lower)
+		if b.lowerKind == excluded && i < n.n && compareKeys[O](n.keys[i], b.lower) == 0 {
+			i++
+		}
 	}
 	for ; n != nil; n = n.leaf.next {
 		for ; i < n.n; i++ {
-			if upper != nil && compareKeys[O](n.keys[i], *upper) >= 0 || !visit(n.keys[i], n.leaf.values[i]) {
+			if !belowUpper[K, O](b, n.keys[i]) || !visit(n.keys[i], n.leaf.values[i]) {
 				return
 			}
 		}

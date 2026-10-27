@@ -55,11 +55,12 @@ All zero values are ready to use. Don't copy a container after first use.
 | `Take(k)` | Removes `k`, returning the stored key and value |
 | `GetMany(keys, dst)` · `InsertMany(entries, dst)` | Per-key results, in caller-provided storage |
 | `Range(lo, hi)` · `RangeReverse(lo, hi)` | Iterates `[lo, hi)`, ascending or descending |
+| `Scan(b)` · `ScanReverse(b)` | Iterates any `Bounds`: `Between(a, b)`, `AtLeast(a).AtMost(b)`, `Above(a)`, `Below(b)`, … |
 | `Ascend(from)` · `Descend(from)` | Iterates keys `>= from` ascending, or `<= from` descending |
 | `All()` · `Reverse()`, plus `Keys()` · `Values()` on Tree | Iterates everything |
 | `First()` · `Last()` · `PopFirst()` · `PopLast()` | The end entries |
 | `Update` · `LoadOrStore` · `LoadOrStoreFunc` · `UpdateOrInsert` | Read-modify-write; atomic on `Map` |
-| `UpdateRange(lo, hi, f)` · `UpdateAll(f)` · `InsertAll(seq)` | Bulk changes |
+| `UpdateRange(b, f)` · `UpdateAll(f)` · `InsertAll(seq)` | Bulk changes |
 | `Read` · `ReadMany` · `UpdateOrInsertMany` · `DeleteIf` | Callback reads, batched upserts and conditional delete on `Map` |
 | `LowerBound` · `UpperBound` · `SplitOff` · `Append` · `Retain` · `ExtractIf` | Ordered editing on `Tree` |
 
@@ -149,8 +150,8 @@ The API follows upstream's operations with Go names; results are Go multi-value 
 | `read` · `update` · `update_or_insert` · `get_or_insert` · `remove_if` | `Read` · `Update` · `UpdateOrInsert` · `LoadOrStore` · `DeleteIf` |
 | `get_mut` · `iter_mut` · `values_mut` · `range_mut` | `Update` · `UpdateAll` · `UpdateRange` |
 | `entry`: `or_insert` · `or_insert_with` · `and_modify` | `LoadOrStore` · `LoadOrStoreFunc` · `UpdateOrInsert` |
-| `iter` · `range` · `range_cloned` · `scan` · `scan_rev` | `All` / `Reverse` · `Range` / `RangeReverse` / `Ascend` / `Descend` |
-| `keys` · `values` · `first_key_value` · `last_key_value` · `first_copied` · `pop_first` · `pop_last` | `Keys` · `Values` · `First` · `Last` · `FirstInRange` · `PopFirst` · `PopLast` |
+| `iter` · `range` · `range_cloned` · `scan` · `scan_rev` | `All` / `Reverse` · `Scan` / `ScanReverse` (any `Bounds`) · `Range` / `RangeReverse` / `Ascend` / `Descend` |
+| `keys` · `values` · `first_key_value` · `last_key_value` · `first_copied` · `pop_first` · `pop_last` | `Keys` · `Values` · `First` · `Last` · `FirstIn` · `PopFirst` · `PopLast` |
 | `retain` · `extract_if` · `split_off` · `append` · `Extend` · `FromIterator` | `Retain` · `ExtractIf` · `SplitOff` · `Append` · `InsertAll` |
 | set `contains_many` · `replace` · `take` · `union` · `intersection` · `difference` · `symmetric_difference` · `is_subset` | the same names on `Set` |
 | `InlineKey` · byte-string keys | `Key` · `Bytes` |
