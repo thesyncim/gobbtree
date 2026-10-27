@@ -223,7 +223,7 @@ func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 			i = n.lower(key)
 		}
 		if i > 0 {
-			n.insertLeaf(i, ownKey[O](key), value)
+			n.insertLeaf(i, t.storedKey(key), value)
 			t.length++
 			var zero V
 			return zero, false
@@ -251,7 +251,7 @@ func (t *treeCore[K, V, O]) insertAbsent(n *node[K, V, O], search *keySearch[K, 
 		} else {
 			i = n.lower(key)
 		}
-		n.insertLeaf(i, ownKey[O](key), value)
+		n.insertLeaf(i, t.storedKey(key), value)
 		return
 	}
 	i := 0

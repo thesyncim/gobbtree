@@ -444,6 +444,24 @@ func TestTextualMapWritesDoNotAllocate(t *testing.T) {
 		}
 	}
 }
+// Word-valued textual maps are read from the live node, so a churn costs
+// only the new key's interned copy.
+func TestWordTextMapWritesAllocateOnlyKeys(t *testing.T) {
+	if !seqlockPlainStores {
+		t.Skip("textual leaves publish images on this target")
+	}
+	m := New[string, int]()
+	for i := range 1000 {
+		m.Insert(fmt.Sprintf("key-%04d", i), i)
+	}
+	key := "key-0500"
+	if n := testing.AllocsPerRun(100, func() { m.Insert(key, 1) }); n != 0 {
+		t.Errorf("replace: %v allocations", n)
+	}
+	if n := testing.AllocsPerRun(100, func() { m.Delete(key); m.Insert(key, 2) }); n != 1 {
+		t.Errorf("churn: %v allocations, want the interned key", n)
+	}
+}
 func FuzzTree(f *testing.F) {
 	f.Add([]byte{0, 0, 1, 1, 2, 0, 3, 1})
 	f.Add([]byte("a long shared prefix with embedded\x00bytes"))

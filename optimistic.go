@@ -3,6 +3,7 @@ package gobbtree
 import (
 	"math"
 	"runtime"
+	"strings"
 	"sync/atomic"
 )
 
@@ -46,7 +47,7 @@ func (n *node[K, V, O]) publishFrom(first int) {
 	if !n.shared {
 		return
 	}
-	if n.leaf != nil && n.strings && n.leaf.wordKind == 0 {
+	if n.leaf != nil && n.strings {
 		image := n.image.Load()
 		if image == nil {
 			image = &searchImage[K, V, O]{n: -1, strings: true, leaf: n.leaf, node: n}
@@ -56,6 +57,7 @@ func (n *node[K, V, O]) publishFrom(first int) {
 		if n.parentSlot != nil {
 			n.parentSlot.Store(image)
 		}
+		n.storeWords(first)
 		return
 	}
 	// No retired image may validate data in a recycled atomic block.
@@ -111,26 +113,35 @@ func (n *node[K, V, O]) publishFrom(first int) {
 				n.leaf.pairs.entries[i].key.Store(n.codes[i])
 				n.leaf.pairs.entries[i].value.Store(packWord(n.leaf.values[i]))
 			}
-		} else if n.leaf.words != nil {
-			switch n.leaf.wordKind {
-			case 1:
-				for i := first; i < n.n; i++ {
-					n.leaf.words.values[i].Store(any(n.leaf.values[i]).(uint64))
-				}
-			case 2:
-				for i := first; i < n.n; i++ {
-					n.leaf.words.values[i].Store(uint64(any(n.leaf.values[i]).(int)))
-				}
-			default:
-				for i := first; i < n.n; i++ {
-					n.leaf.words.values[i].Store(packWord(n.leaf.values[i]))
-				}
-			}
+		} else {
+			n.storeWords(first)
 		}
 	}
 	n.image.Store(image)
 	if n.parentSlot != nil {
 		n.parentSlot.Store(image)
+	}
+}
+
+// storeWords mirrors values from first on into a leaf's atomic words.
+func (n *node[K, V, O]) storeWords(first int) {
+	words := n.leaf.words
+	if words == nil {
+		return
+	}
+	switch n.leaf.wordKind {
+	case 1:
+		for i := first; i < n.n; i++ {
+			words.values[i].Store(any(n.leaf.values[i]).(uint64))
+		}
+	case 2:
+		for i := first; i < n.n; i++ {
+			words.values[i].Store(uint64(any(n.leaf.values[i]).(int)))
+		}
+	default:
+		for i := first; i < n.n; i++ {
+			words.values[i].Store(packWord(n.leaf.values[i]))
+		}
 	}
 }
 func (n *node[K, V, O]) setValue(i int, value V) {
@@ -349,6 +360,14 @@ retry:
 		var value V
 		var found bool
 		if n := image.node; n != nil {
+			if words := n.leaf.words; words != nil && seqlockPlainStores && search.direct {
+				if word, found, ok := n.optimisticWord(&search, words, &m.version, version); ok {
+					if found {
+						value = unpackWord[V](word, n.leaf.wordKind)
+					}
+					return value, found
+				}
+			}
 			value, found, ok := n.latchedGet(&search, &m.version, version)
 			if !ok {
 				continue
@@ -445,6 +464,45 @@ func (n *node[K, V, O]) latchedGet(s *keySearch[K, O], epoch *atomic.Uint64, ver
 	}
 	n.leaf.mu.RUnlock()
 	return value, found, true
+}
+
+// optimisticWord reads a direct textual leaf with word values without its
+// latch. Such leaves hold interned keys, so the reader loads only a key's
+// data word, which cannot tear, and takes the length stored before its
+// immutable bytes. The leaf sequence and structural epoch validate every
+// plain load; loadFence keeps those loads ahead of the validation.
+func (n *node[K, V, O]) optimisticWord(s *keySearch[K, O], words *atomicWords, epoch *atomic.Uint64, version uint64) (word uint64, found, ok bool) {
+	sequence := words.sequence.Load()
+	if sequence&1 != 0 {
+		return 0, false, false
+	}
+	count, prefix := min(n.n, nodeSize), n.prefix
+	key := textView(&s.key)
+	match := count > 0
+	if match && prefix > 0 {
+		first := internedText(&n.keys[0])
+		if prefix > len(first) {
+			return 0, false, false
+		}
+		match = strings.Compare(key[:min(len(key), prefix)], first[:prefix]) == 0
+	}
+	if match {
+		code := stringCode(key, prefix)
+		for i := lowerCode(&n.codes, count, code); i < count && n.codes[i] == code; i++ {
+			c := strings.Compare(internedText(&n.keys[i]), key)
+			if c == 0 {
+				word, found = words.values[i].Load(), true
+			}
+			if c >= 0 {
+				break
+			}
+		}
+	}
+	loadFence()
+	if words.sequence.Load() != sequence || epoch.Load() != version {
+		return 0, false, false
+	}
+	return word, found, true
 }
 
 func initWordValues[K any, V any, O keyOrder[K]](n *node[K, V, O]) {

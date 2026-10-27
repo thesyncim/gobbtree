@@ -306,3 +306,44 @@ func prefixHead[O keyOrder[K], K any](first K, prefix int) (head [2]uint64) {
 	}
 	return head
 }
+
+// Shared textual leaves with word values hold interned keys: their bytes,
+// preceded by their length, in a pointer-free allocation of their own.
+// Optimistic readers load only the data word of a stored key header.
+func internsText[K any, V any, O keyOrder[K]]() bool {
+	return seqlockPlainStores && directText[O, K]() && wordKind[V]() != 0
+}
+
+// storedKey is the key a container stores for a newly inserted key.
+func (t *treeCore[K, V, O]) storedKey(key K) K {
+	if t.shared && internsText[K, V, O]() {
+		return internText(key)
+	}
+	return ownKey[O](key)
+}
+
+func internText[K any](key K) K {
+	text := textView(&key)
+	// One byte past an empty key keeps the data pointer inside its block.
+	block := make([]byte, 8+max(len(text), 1))
+	*(*uint64)(unsafe.Pointer(&block[0])) = uint64(len(text))
+	copy(block[8:], text)
+	data := &block[8]
+	var out K
+	if unsafe.Sizeof(out) == unsafe.Sizeof("") {
+		*(*string)(unsafe.Pointer(&out)) = unsafe.String(data, len(text))
+	} else {
+		*(*[]byte)(unsafe.Pointer(&out)) = unsafe.Slice(data, len(text))
+	}
+	return out
+}
+
+// internedText reads a stored interned key through its data word alone. An
+// empty slot holds the zero key.
+func internedText[K any](slot *K) string {
+	data := *(*unsafe.Pointer)(unsafe.Pointer(slot))
+	if data == nil {
+		return ""
+	}
+	return unsafe.String((*byte)(data), *(*uint64)(unsafe.Add(data, -8)))
+}

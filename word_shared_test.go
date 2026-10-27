@@ -1,9 +1,11 @@
 package gobbtree
 
 import (
+	"fmt"
 	"math"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -496,6 +498,60 @@ func TestOptimisticReadsDuringLeafShifts(t *testing.T) {
 							return
 						}
 					}
+				}
+			}
+		})
+	}
+	readers.Wait()
+	close(stop)
+	writers.Wait()
+}
+
+// Textual leaves with word values are read optimistically from the live node.
+// Stable keys must keep their values while their zero-extended twins, which
+// tie their windows, are deleted and reinserted beside them.
+func TestOptimisticTextReadsDuringLeafShifts(t *testing.T) {
+	const keys = 1 << 12
+	stable := make([]string, keys)
+	var m Map[string, uint64]
+	for i := range stable {
+		stable[i] = fmt.Sprintf("key:%06d", i*7919%keys)
+		m.Insert(stable[i], uint64(i)*3+1)
+	}
+	stop := make(chan struct{})
+	var writers sync.WaitGroup
+	for w := uint64(0); w < 3; w++ {
+		writers.Go(func() {
+			x := w*0x9e3779b97f4a7c15 + 1
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				x ^= x << 13
+				x ^= x >> 7
+				x ^= x << 17
+				twin := stable[x%keys] + "\x00"
+				if _, found := m.Delete(twin); !found {
+					m.Insert(twin, 0)
+				}
+			}
+		})
+	}
+	var readers sync.WaitGroup
+	for r := uint64(0); r < 3; r++ {
+		readers.Go(func() {
+			x := r*0x2545f4914f6cdd1d + 7
+			for i := 0; i < 200000; i++ {
+				x ^= x << 13
+				x ^= x >> 7
+				x ^= x << 17
+				k := x % keys
+				key := strings.Clone(stable[k])
+				if value, found := m.Get(key); !found || value != k*3+1 {
+					t.Errorf("Get(%q) = %d, %v during leaf shifts", key, value, found)
+					return
 				}
 			}
 		})
