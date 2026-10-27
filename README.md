@@ -150,7 +150,7 @@ The API follows upstream's operations with Go names; results are Go multi-value 
 | `get_mut` · `iter_mut` · `values_mut` · `range_mut` | `Update` · `UpdateAll` · `UpdateRange` |
 | `entry`: `or_insert` · `or_insert_with` · `and_modify` | `LoadOrStore` · `LoadOrStoreFunc` · `UpdateOrInsert` |
 | `iter` · `range` · `range_cloned` · `scan` · `scan_rev` | `All` / `Reverse` · `Range` / `RangeReverse` / `Ascend` / `Descend` |
-| `keys` · `values` · `first_key_value` · `last_key_value` · `pop_first` · `pop_last` | `Keys` · `Values` · `First` · `Last` · `PopFirst` · `PopLast` |
+| `keys` · `values` · `first_key_value` · `last_key_value` · `first_copied` · `pop_first` · `pop_last` | `Keys` · `Values` · `First` · `Last` · `FirstInRange` · `PopFirst` · `PopLast` |
 | `retain` · `extract_if` · `split_off` · `append` · `Extend` · `FromIterator` | `Retain` · `ExtractIf` · `SplitOff` · `Append` · `InsertAll` |
 | set `contains_many` · `replace` · `take` · `union` · `intersection` · `difference` · `symmetric_difference` · `is_subset` | the same names on `Set` |
 | `InlineKey` · byte-string keys | `Key` · `Bytes` |
@@ -256,14 +256,17 @@ python3 internal/rss_compare.py --go ./memory-go --rust internal/oracle/target/r
   --size 50000000 --repeat 3 --kinds tree map
 ```
 
+Both scripts take `--keys mixed` (the default), `--keys sequential` or `--keys clustered`; the charts cover all three.
+
 `python3 internal/render_benchmarks.py` regenerates the charts and the tables above from the saved report.
 
 How the comparison is kept fair:
 
 - **Identical work.** Both languages get identical keys, queries and operation counts. Checksums are verified, including every bit of replaced values. Different-key churn uses disjoint key sets and checks that every delete and insert succeeds.
+- **Several key distributions.** Each workload runs on hashed keys spread across the full 64-bit range, on consecutive keys, and on clustered runs of consecutive keys, so no result rests on one distribution.
 - **Fresh processes.** Every backend runs in a fresh process, in rotated order. Serial cases are pinned to one OS thread. Parallel timings exclude starting workers and reducing checksums.
 - **Public APIs.** Batches go through each library's public batch API, and the Rust code is unmodified upstream.
-- **Unequal guarantees.** The concurrent APIs promise different things. Rust omits `len()` and reads payloads with plain loads ([design](https://github.com/XiangpengHao/bbtree/blob/8adae97a0ed97e5c98fa2790312eb0aec9719846/design/09-concurrency.md)). Go keeps an exact O(1) `Len` and reads numeric payloads atomically.
+- **Unequal guarantees.** The concurrent APIs promise different things. Rust omits `len()` and reads payloads with plain loads ([design](https://github.com/XiangpengHao/bbtree/blob/1c72bd27994ed0a38694b029618e80115e22644f/design/09-concurrency.md)). Go keeps an exact O(1) `Len` and reads numeric payloads atomically.
 - **Whole-process memory.** Memory is RSS of a process holding one container, measured after a full read pass, with Go's default GC settings.
 
 `--standard` adds Go's built-in `map` and `sync.Map`.
@@ -283,6 +286,6 @@ The tests check every container against independent references:
 - SIMD boundaries and steady-state allocations;
 - custom key orders.
 
-CI also runs a live Rust oracle for containers and file interoperability, against upstream pinned at [`8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846).
+CI also runs a live Rust oracle for containers and file interoperability, against upstream pinned at [`1c72bd2`](https://github.com/XiangpengHao/bbtree/tree/1c72bd27994ed0a38694b029618e80115e22644f).
 
 Licensed under **MIT OR Apache-2.0**, like upstream. See [LICENSE](LICENSE).

@@ -17,6 +17,20 @@ fn mix(mut x: u64) -> u64 {
     x = x.wrapping_mul(0x94d049bb133111eb);
     x ^ (x >> 31)
 }
+// The key at index x, matching keyOf in cmd/compare: indexes below size are
+// stored, and size+x is the miss or fresh key paired with x.
+fn key_of(mut x: u64, size: u64, pattern: &str) -> u64 {
+    let mut miss = 0;
+    if x >= size {
+        x -= size;
+        miss = 1;
+    }
+    match pattern {
+        "sequential" => x << 1 | miss,
+        "clustered" => mix(x >> 10) & !((1 << 20) - 1) | (x & 1023) << 1 | miss,
+        _ => mix(x + miss * size),
+    }
+}
 fn report(name: &str, start: Instant, sum: u64, rounds: usize, queries: usize) {
     let elapsed = start.elapsed().as_nanos() as f64 / (rounds * queries) as f64;
     println!("{name} {elapsed:.3} ns/op checksum={}", black_box(sum));
@@ -40,12 +54,18 @@ fn main() {
     assert!(size > 0 && rounds > 0 && query_count >= 8 && query_count.is_power_of_two());
     let kind = args.get(5).map(String::as_str).unwrap_or("all");
     assert!(matches!(kind, "all" | "tree" | "map"));
+    let pattern = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("keys="))
+        .unwrap_or("mixed");
+    assert!(matches!(pattern, "mixed" | "sequential" | "clustered"));
+    let key = |x: u64| key_of(x, size, pattern);
     let do_tree = kind == "all" || kind == "tree";
     let do_map = kind == "all" || kind == "map";
     let mut tree = unsync::BBTreeMap::<u64, u64>::new();
     let concurrent = BBTreeMap::<u64, u64>::new();
     for i in 0..size {
-        let k = mix(i);
+        let k = key(i);
         if do_tree {
             tree.insert(k, k);
         }
@@ -53,7 +73,7 @@ fn main() {
             concurrent.insert(k, k).unwrap();
         }
     }
-    println!("upstream 8adae97 allocator={ALLOCATOR_NAME} n={size} rounds={rounds} queries={query_count} kind={kind}");
+    println!("upstream 1c72bd2 allocator={ALLOCATOR_NAME} n={size} rounds={rounds} queries={query_count} kind={kind} keys={pattern}");
     let mut queries = vec![0_u64; query_count];
     for hit in [true, false] {
         let label = if hit { "hit" } else { "miss" };
@@ -62,7 +82,7 @@ fn main() {
             if !hit {
                 x += size;
             }
-            *q = mix(x);
+            *q = key(x);
         }
         if do_tree {
             let mut sum = 0_u64;
@@ -126,7 +146,7 @@ fn main() {
     let threads: usize = args.get(3).map_or(0, |v| v.parse().unwrap());
     if threads > 0 && do_map {
         for (i, q) in queries.iter_mut().enumerate() {
-            *q = mix(mix(i as u64 + 17) % size);
+            *q = key(mix(i as u64 + 17) % size);
         }
         for write_every in [0_usize, 10] {
             let ready = std::sync::Barrier::new(threads + 1);
@@ -180,7 +200,7 @@ fn main() {
     }
     if args.get(6).is_some_and(|arg| arg == "mutations") {
         for (i, q) in queries.iter_mut().enumerate() {
-            *q = mix(mix(i as u64 + 17) % size);
+            *q = key(mix(i as u64 + 17) % size);
         }
         for churn in [false, true] {
             let label = if churn { "churn_pair" } else { "replace" };
@@ -252,8 +272,8 @@ fn main() {
         }
         let mut x = 17 % size;
         for (i, q) in queries.iter_mut().enumerate() {
-            *q = mix(x);
-            other[i] = mix(x + size);
+            *q = key(x);
+            other[i] = key(x + size);
             x = (x + step) % size;
         }
         if do_tree {

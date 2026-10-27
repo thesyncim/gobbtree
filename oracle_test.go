@@ -122,7 +122,7 @@ func runUpstreamOracle(t *testing.T, tr oracleMap[uint64]) {
 		}
 		t.Fatalf("oracle output length: %d, expected %d", len(got), want.Len())
 	}
-	t.Log("matched every return value, forward/reverse range, length, reset, and deletion-to-empty against upstream 8adae97")
+	t.Log("matched every return value, forward/reverse range, length, reset, and deletion-to-empty against upstream 1c72bd2")
 }
 
 func TestUpstreamOracleStrings(t *testing.T) {

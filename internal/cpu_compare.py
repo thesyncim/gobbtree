@@ -16,12 +16,24 @@ def mix(value):
     return value ^ (value >> 31)
 
 
-def replacement_checksum(size, query_count, rounds):
+def key_of(x, size, pattern):
+    """The key at index x, matching keyOf in cmd/compare."""
+    miss = 0
+    if x >= size:
+        x, miss = x - size, 1
+    if pattern == "sequential":
+        return x << 1 | miss
+    if pattern == "clustered":
+        return mix(x >> 10) & ~((1 << 20) - 1) & MASK64 | (x & 1023) << 1 | miss
+    return mix(x + miss*size)
+
+
+def replacement_checksum(size, query_count, rounds, pattern):
     """Derive full previous-value sums, including repeated queries in a round."""
     total = delta = unique_delta = 0
     seen = set()
     for i in range(query_count):
-        key = mix(mix(i + 17) % size)
+        key = key_of(mix(i + 17) % size, size, pattern)
         total += key
         change = 1 if (key & 1) == 0 else -1  # (key ^ 1) - key
         delta += change
@@ -51,14 +63,17 @@ def main():
     parser.add_argument("--standard", action="store_true")
     parser.add_argument("--mutations", action="store_true")
     parser.add_argument("--distinct", action="store_true")
+    parser.add_argument("--keys", choices=["mixed", "sequential", "clustered"], default="mixed")
     args = parser.parse_args()
     if args.size < 1 or args.rounds < 1 or args.repeat < 1 or args.threads < 0:
         parser.error("size, rounds and repeat must be positive; threads nonnegative")
     if args.queries < 8 or args.queries & (args.queries - 1):
         parser.error("queries must be a power of two, at least eight")
+    if args.baseline and args.keys != "mixed":
+        parser.error("the baseline harness predates key patterns; use it with mixed keys")
     checksums = {}
     if args.mutations:
-        checksums["replace"] = replacement_checksum(args.size, args.queries, args.rounds)
+        checksums["replace"] = replacement_checksum(args.size, args.queries, args.rounds, args.keys)
     distinct_queries = min(args.queries, args.size)
     distinct_rounds = args.rounds * (args.queries // distinct_queries)
     if args.distinct:
@@ -66,8 +81,8 @@ def main():
         while math.gcd(step,args.size) != 1:
             step += 1
         indices = [(17 + i*step) % args.size for i in range(distinct_queries)]
-        original = sum(mix(i) for i in indices)
-        alternate = sum(mix(i + args.size) for i in indices)
+        original = sum(key_of(i, args.size, args.keys) for i in indices)
+        alternate = sum(key_of(i + args.size, args.size, args.keys) for i in indices)
         del indices
         checksums["churn_new_pair"] = (original*((distinct_rounds+1)//2) + alternate*(distinct_rounds//2)) & MASK64
     kinds = list(dict.fromkeys(args.kinds)) + (["builtin", "syncmap"] if args.standard else [])
@@ -89,6 +104,8 @@ def main():
                     command.append("mutations" if language == "rust" else "-mutations")
                 if args.distinct:
                     command.append("distinct" if language == "rust" else "-distinct")
+                if args.keys != "mixed":
+                    command.append(f"keys={args.keys}" if language == "rust" else f"-keys={args.keys}")
                 output = subprocess.check_output(command, text=True)
                 lines = output.splitlines()
                 cases = []
@@ -105,7 +122,7 @@ def main():
                     cases.append({"name": name, "ns_per_op": float(elapsed), "checksum": checksum})
                 if not cases:
                     raise RuntimeError("benchmark returned no operations")
-                print(json.dumps({"language": language, "kind": kind, "repeat": repeat, "entries": args.size, "queries": args.queries, "rounds": args.rounds, "threads": args.threads, "mutations": args.mutations, "distinct": args.distinct, "distinct_queries": distinct_queries, "distinct_rounds": distinct_rounds, "build": lines[0], "cases": cases}), flush=True)
+                print(json.dumps({"language": language, "kind": kind, "repeat": repeat, "entries": args.size, "queries": args.queries, "rounds": args.rounds, "threads": args.threads, "mutations": args.mutations, "distinct": args.distinct, "keys": args.keys, "distinct_queries": distinct_queries, "distinct_rounds": distinct_rounds, "build": lines[0], "cases": cases}), flush=True)
 
 
 if __name__ == "__main__":

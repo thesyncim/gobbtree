@@ -4,16 +4,16 @@ version = 4
 
 [[package]]
 name = "bbtree"
-version = "0.1.5"
-source = "git+https://github.com/XiangpengHao/bbtree?rev=8adae97a0ed97e5c98fa2790312eb0aec9719846#8adae97a0ed97e5c98fa2790312eb0aec9719846"
+version = "0.1.6"
+source = "git+https://github.com/XiangpengHao/bbtree?rev=1c72bd27994ed0a38694b029618e80115e22644f#1c72bd27994ed0a38694b029618e80115e22644f"
 dependencies = [
  "vstd",
 ]
 
 [[package]]
 name = "bbtree-mmap"
-version = "0.1.5"
-source = "git+https://github.com/XiangpengHao/bbtree?rev=8adae97a0ed97e5c98fa2790312eb0aec9719846#8adae97a0ed97e5c98fa2790312eb0aec9719846"
+version = "0.1.6"
+source = "git+https://github.com/XiangpengHao/bbtree?rev=1c72bd27994ed0a38694b029618e80115e22644f#1c72bd27994ed0a38694b029618e80115e22644f"
 dependencies = [
  "bbtree",
  "memmap2",

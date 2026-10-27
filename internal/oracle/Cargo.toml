@@ -8,8 +8,8 @@ publish = false
 system-allocator = []
 
 [dependencies]
-bbtree = { git = "https://github.com/XiangpengHao/bbtree", rev = "8adae97a0ed97e5c98fa2790312eb0aec9719846", features = ["file"] }
-bbtree-mmap = { git = "https://github.com/XiangpengHao/bbtree", rev = "8adae97a0ed97e5c98fa2790312eb0aec9719846" }
+bbtree = { git = "https://github.com/XiangpengHao/bbtree", rev = "1c72bd27994ed0a38694b029618e80115e22644f", features = ["file"] }
+bbtree-mmap = { git = "https://github.com/XiangpengHao/bbtree", rev = "1c72bd27994ed0a38694b029618e80115e22644f" }
 
 mimalloc = "=0.1.52"
 

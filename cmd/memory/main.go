@@ -20,11 +20,29 @@ func mix(x uint64) uint64 {
 	x *= 0x94d049bb133111eb
 	return x ^ (x >> 31)
 }
+
+// keyOf returns stored key x in a key pattern, matching cmd/compare.
+func keyOf(x uint64, pattern string) uint64 {
+	switch pattern {
+	case "sequential":
+		return x << 1
+	case "clustered":
+		return mix(x>>10)&^(1<<20-1) | (x&1023)<<1
+	}
+	return mix(x)
+}
 func main() {
 	size := flag.Int("size", 5000000, "entries")
 	kind := flag.String("kind", "tree", "tree, map, builtin, or syncmap")
 	stats := flag.Bool("stats", false, "include supplemental Go heap diagnostics")
+	pattern := flag.String("keys", "mixed", "key pattern: mixed, sequential, or clustered")
 	flag.Parse()
+	switch *pattern {
+	case "mixed", "sequential", "clustered":
+	default:
+		panic("unknown key pattern")
+	}
+	key := func(x uint64) uint64 { return keyOf(x, *pattern) }
 	if *size < 0 {
 		panic("negative size")
 	}
@@ -37,13 +55,13 @@ func main() {
 	case "tree":
 		t := gobbtree.NewTree[uint64, uint64]()
 		for i := 0; i < *size; i++ {
-			k := mix(uint64(i))
+			k := key(uint64(i))
 			t.Insert(k, k)
 		}
 		buildNS = time.Since(start).Nanoseconds()
 		readAll = func() {
 			for i := 0; i < *size; i++ {
-				v, ok := t.Get(mix(uint64(i)))
+				v, ok := t.Get(key(uint64(i)))
 				if !ok {
 					panic("missing key")
 				}
@@ -54,13 +72,13 @@ func main() {
 	case "map":
 		t := gobbtree.New[uint64, uint64]()
 		for i := 0; i < *size; i++ {
-			k := mix(uint64(i))
+			k := key(uint64(i))
 			t.Insert(k, k)
 		}
 		buildNS = time.Since(start).Nanoseconds()
 		readAll = func() {
 			for i := 0; i < *size; i++ {
-				v, ok := t.Get(mix(uint64(i)))
+				v, ok := t.Get(key(uint64(i)))
 				if !ok {
 					panic("missing key")
 				}
@@ -71,13 +89,13 @@ func main() {
 	case "builtin":
 		t := make(map[uint64]uint64, *size)
 		for i := 0; i < *size; i++ {
-			k := mix(uint64(i))
+			k := key(uint64(i))
 			t[k] = k
 		}
 		buildNS = time.Since(start).Nanoseconds()
 		readAll = func() {
 			for i := 0; i < *size; i++ {
-				v, ok := t[mix(uint64(i))]
+				v, ok := t[key(uint64(i))]
 				if !ok {
 					panic("missing key")
 				}
@@ -88,13 +106,13 @@ func main() {
 	case "syncmap":
 		t := new(sync.Map)
 		for i := 0; i < *size; i++ {
-			k := mix(uint64(i))
+			k := key(uint64(i))
 			t.Store(k, k)
 		}
 		buildNS = time.Since(start).Nanoseconds()
 		readAll = func() {
 			for i := 0; i < *size; i++ {
-				v, ok := t.Load(mix(uint64(i)))
+				v, ok := t.Load(key(uint64(i)))
 				if !ok {
 					panic("missing key")
 				}

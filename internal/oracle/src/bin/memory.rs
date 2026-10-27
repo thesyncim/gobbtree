@@ -21,6 +21,14 @@ fn mix(mut x: u64) -> u64 {
     x = x.wrapping_mul(0x94d049bb133111eb);
     x ^ (x >> 31)
 }
+// Stored key x in a key pattern, matching cmd/memory.
+fn key_of(x: u64, pattern: &str) -> u64 {
+    match pattern {
+        "sequential" => x << 1,
+        "clustered" => mix(x >> 10) & !((1 << 20) - 1) | (x & 1023) << 1,
+        _ => mix(x),
+    }
+}
 fn wait() {
     io::stdin().read_exact(&mut [0_u8]).unwrap();
 }
@@ -41,19 +49,22 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let kind = args.get(1).map(String::as_str).unwrap_or("tree");
     let size = args.get(2).map_or(5_000_000, |v| v.parse::<u64>().unwrap());
+    let pattern = args.get(3).map(String::as_str).unwrap_or("mixed");
+    assert!(matches!(pattern, "mixed" | "sequential" | "clustered"));
+    let key = |x: u64| key_of(x, pattern);
     let start = Instant::now();
     match kind {
         "tree" => {
             let mut tree = unsync::BBTreeMap::<u64, u64>::new();
             for i in 0..size {
-                let k = mix(i);
+                let k = key(i);
                 tree.insert(k, k);
             }
             let build_ns = start.elapsed().as_nanos();
             measure(tree, kind, size, build_ns, |tree| {
                 let mut sum = 0_u64;
                 for i in 0..size {
-                    sum = sum.wrapping_add(tree.get(&mix(i)).copied().unwrap());
+                    sum = sum.wrapping_add(tree.get(&key(i)).copied().unwrap());
                 }
                 sum
             });
@@ -61,14 +72,14 @@ fn main() {
         "map" => {
             let tree = BBTreeMap::<u64, u64>::new();
             for i in 0..size {
-                let k = mix(i);
+                let k = key(i);
                 tree.insert(k, k).unwrap();
             }
             let build_ns = start.elapsed().as_nanos();
             measure(tree, kind, size, build_ns, |tree| {
                 let mut sum = 0_u64;
                 for i in 0..size {
-                    sum = sum.wrapping_add(tree.get_copied(&mix(i)).unwrap());
+                    sum = sum.wrapping_add(tree.get_copied(&key(i)).unwrap());
                 }
                 sum
             });

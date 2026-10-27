@@ -262,3 +262,31 @@ func TestParityOperations(t *testing.T) {
 		t.Fatalf("set InsertAll %v", got)
 	}
 }
+
+func TestMapFirstInRange(t *testing.T) {
+	r := rand.New(rand.NewPCG(5, 5))
+	var m Map[uint64, uint64]
+	var keys []uint64
+	for range 3000 {
+		k := r.Uint64() >> r.IntN(40)
+		m.Insert(k, ^k)
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	keys = slices.Compact(keys)
+	m.Get(keys[0]) // activate optimistic reads
+	for range 2000 {
+		lo, hi := r.Uint64()>>r.IntN(40), r.Uint64()>>r.IntN(40)
+		if r.IntN(4) == 0 {
+			lo = keys[r.IntN(len(keys))]
+		}
+		k, v, ok := m.FirstInRange(lo, hi)
+		i, _ := slices.BinarySearch(keys, lo)
+		if want := i < len(keys) && keys[i] < hi; ok != want || ok && (k != keys[i] || v != ^k) {
+			t.Fatalf("FirstInRange(%d, %d) = %d, %d, %v", lo, hi, k, v, ok)
+		}
+	}
+	if _, _, ok := (&Map[uint64, uint64]{}).FirstInRange(0, math.MaxUint64); ok {
+		t.Fatal("empty map has a first entry")
+	}
+}

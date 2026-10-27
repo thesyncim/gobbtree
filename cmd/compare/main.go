@@ -19,6 +19,25 @@ func mix(x uint64) uint64 {
 	x ^= x >> 31
 	return x
 }
+
+// keyOf returns the key at index x of the dataset. Indexes below size are
+// stored; size+x is the miss or fresh key paired with x. Mixed keys spread
+// over the full key width; sequential keys are consecutive even values with
+// misses in the gaps; clustered keys are runs of 1024 such values at
+// scattered bases.
+func keyOf(x, size uint64, pattern string) uint64 {
+	miss := uint64(0)
+	if x >= size {
+		x, miss = x-size, 1
+	}
+	switch pattern {
+	case "sequential":
+		return x<<1 | miss
+	case "clustered":
+		return mix(x>>10)&^(1<<20-1) | (x&1023)<<1 | miss
+	}
+	return mix(x + miss*size)
+}
 func main() {
 	mutations := flag.Bool("mutations", false, "include replacement and delete/insert pairs")
 	distinct := flag.Bool("distinct", false, "include Tree/Map deletion followed by insertion of a different key")
@@ -28,6 +47,7 @@ func main() {
 	rounds := flag.Int("rounds", 128, "query repetitions")
 	standard := flag.Bool("standard", false, "include standard-library map lookups")
 	threads := flag.Int("threads", 0, "additional parallel lookup workers")
+	pattern := flag.String("keys", "mixed", "key pattern: mixed, sequential, or clustered")
 	flag.Parse()
 	if *size <= 0 || *rounds <= 0 {
 		panic("size and rounds must be positive")
@@ -40,6 +60,12 @@ func main() {
 	default:
 		panic("unknown kind")
 	}
+	switch *pattern {
+	case "mixed", "sequential", "clustered":
+	default:
+		panic("unknown key pattern")
+	}
+	keyAt := func(x uint64) uint64 { return keyOf(x, uint64(*size), *pattern) }
 	// Match Rust's serial main-thread execution and set the worker limit
 	// before construction and collection, rather than midway through the run.
 	runtime.LockOSThread()
@@ -50,7 +76,7 @@ func main() {
 	doBuiltin := *kind == "builtin" || (*kind == "all" && *standard)
 	doSync := *kind == "syncmap" || (*kind == "all" && *standard)
 	hardware, width := gobbtree.SIMD()
-	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d queries=%d kind=%s procs=%d serial_thread=locked\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds, *queryCount, *kind, runtime.GOMAXPROCS(0))
+	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d queries=%d kind=%s keys=%s procs=%d serial_thread=locked\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds, *queryCount, *kind, *pattern, runtime.GOMAXPROCS(0))
 	tree := gobbtree.NewTree[uint64, uint64]()
 	concurrent := gobbtree.New[uint64, uint64]()
 	var builtin map[uint64]uint64
@@ -59,7 +85,7 @@ func main() {
 	}
 	var synced sync.Map
 	for i := 0; i < *size; i++ {
-		key := mix(uint64(i))
+		key := keyAt(uint64(i))
 		if doTree {
 			tree.Insert(key, key)
 		}
@@ -89,7 +115,7 @@ func main() {
 			if !hit {
 				x += uint64(*size)
 			}
-			queries[i] = mix(x)
+			queries[i] = keyAt(x)
 		}
 		var sum uint64
 		var start time.Time
@@ -168,7 +194,7 @@ func main() {
 	}
 	if *threads > 0 && (doMap || doBuiltin || doSync) {
 		for i := range queries {
-			queries[i] = mix(mix(uint64(i+17)) % uint64(*size))
+			queries[i] = keyAt(mix(uint64(i+17)) % uint64(*size))
 		}
 		var mutex sync.RWMutex
 		for _, writeEvery := range []int{0, 10} {
@@ -248,7 +274,7 @@ func main() {
 	}
 	if *mutations {
 		for i := range queries {
-			queries[i] = mix(mix(uint64(i+17)) % uint64(*size))
+			queries[i] = keyAt(mix(uint64(i+17)) % uint64(*size))
 		}
 		for _, churn := range []bool{false, true} {
 			label := "replace"
@@ -383,7 +409,7 @@ func main() {
 		}
 		x := uint64(17) % uint64(*size)
 		for i := range queries {
-			queries[i], other[i] = mix(x), mix(x+uint64(*size))
+			queries[i], other[i] = keyAt(x), keyAt(x+uint64(*size))
 			x = (x + step) % uint64(*size)
 		}
 		reportDistinct := func(name string, start time.Time, sum uint64) {

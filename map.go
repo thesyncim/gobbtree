@@ -656,6 +656,15 @@ func (m *mapCore[K, V, O]) First() (key K, value V, ok bool) {
 	return key, value, false
 }
 
+// FirstInRange returns the smallest entry with a key in [lower, upper), read
+// like a scan, as upstream's first_copied.
+func (m *mapCore[K, V, O]) FirstInRange(lower, upper K) (key K, value V, ok bool) {
+	for key, value = range m.Range(lower, upper) {
+		return key, value, true
+	}
+	return key, value, false
+}
+
 // Last returns the largest entry, read like a scan.
 func (m *mapCore[K, V, O]) Last() (key K, value V, ok bool) {
 	if words := m.numericMap(); words != nil {

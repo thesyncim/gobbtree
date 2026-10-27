@@ -58,18 +58,21 @@ def main():
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--size", type=int, default=5_000_000)
     parser.add_argument("--repeat", type=int, default=3)
+    parser.add_argument("--keys", choices=["mixed", "sequential", "clustered"], default="mixed")
     parser.add_argument("--kinds", nargs="+", choices=["tree", "map", "builtin", "syncmap"], default=["tree", "map", "builtin", "syncmap"])
     args = parser.parse_args()
     if args.size < 0 or args.repeat < 1:
         parser.error("size must be nonnegative and repeat positive")
+    if args.baseline and args.keys != "mixed":
+        parser.error("the baseline harness predates key patterns; use it with mixed keys")
     checksums = {}
     for repeat in range(args.repeat):
         for kind in args.kinds:
-            commands = [("go", [str(args.go.resolve()), "-kind", kind, "-size", str(args.size)])]
+            commands = [("go", [str(args.go.resolve()), "-kind", kind, "-size", str(args.size), f"-keys={args.keys}"])]
             if args.baseline and kind in ("tree", "map"):
                 commands.insert(0, ("baseline", [str(args.baseline.resolve()), "-kind", kind, "-size", str(args.size)]))
             if kind in ("tree", "map"):
-                commands.append(("rust", [str(args.rust.resolve()), kind, str(args.size)]))
+                commands.append(("rust", [str(args.rust.resolve()), kind, str(args.size), args.keys]))
             rotation = repeat % len(commands)
             commands = commands[rotation:] + commands[:rotation]
             for language, command in commands:
@@ -78,7 +81,7 @@ def main():
                     phase = "built" if stage["phase"] == "built" else "read"
                     if checksums.setdefault(phase, stage["checksum"]) != stage["checksum"] or stage["entries"] != args.size:
                         raise RuntimeError("mismatched dataset/checksum")
-                print(json.dumps({"language": language, "kind": kind, "repeat": repeat, **result}), flush=True)
+                print(json.dumps({"language": language, "kind": kind, "keys": args.keys, "repeat": repeat, **result}), flush=True)
 
 
 if __name__ == "__main__":
