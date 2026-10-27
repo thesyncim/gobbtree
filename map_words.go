@@ -17,7 +17,7 @@ func (m *mapCore[K, V, O]) numericMap() *wordMap {
 	return m.initNumericMap()
 }
 func (m *mapCore[K, V, O]) initNumericMap() *wordMap {
-	keyKind, valueKind := wordKind[K](), wordKind[V]()
+	keyKind, valueKind := wordKeyKind[O, K](), wordKind[V]()
 	if keyKind == 0 || keyKind == 11 || keyKind == 12 || keyKind == 13 || valueKind == 0 {
 		m.wordDisabled.Store(true)
 		return nil

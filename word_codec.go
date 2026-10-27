@@ -4,7 +4,7 @@ func (t *treeCore[K, V, O]) initWords() bool {
 	if t.shared {
 		return false
 	}
-	keyKind, valueKind := wordKind[K](), wordKind[V]()
+	keyKind, valueKind := wordKeyKind[O, K](), wordKind[V]()
 	if keyKind == 0 || keyKind == 11 || keyKind == 12 || keyKind == 13 || valueKind == 0 {
 		return false
 	}
