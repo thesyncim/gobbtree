@@ -88,11 +88,38 @@ type wordTree struct {
 	routes                  wordRoutes
 	routesDirty             bool
 	routeNode               *wordNode
+	// routesTop is the highest route bucket filled since the last clearing.
+	routesTop int
+	// tail is the last leaf inserted into while it was the rightmost, for
+	// appends past the largest key: by Tree, or by a Map's serial writers
+	// before readers. A split that adds a leaf after it fails its next link
+	// check; release clears it.
+	tail *wordNode
 	// A deletion that leaves ancestors unchanged can be undone without
 	// another descent. Every following mutation consumes or invalidates it.
 	deletedLeaf  *wordNode
 	deletedKey   uint64
 	deletedIndex int
+	// The last key inserted. A full leaf whose insertion point follows it
+	// is in an ascending run. Shared trees' leaf writers set it concurrently;
+	// a stale key only changes how a leaf splits.
+	inserted       uint64
+	insertedShared atomic.Uint64
+}
+
+// noteInsert records key as the last key inserted.
+func (t *wordTree) noteInsert(key uint64) {
+	if !t.shared {
+		t.inserted = key
+	} else {
+		t.insertedShared.Store(key)
+	}
+}
+func (t *wordTree) lastInserted() uint64 {
+	if !t.shared {
+		return t.inserted
+	}
+	return t.insertedShared.Load()
 }
 
 func (t *wordTree) node(id uint32) *wordNode {
@@ -198,6 +225,9 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 }
 func (t *wordTree) release(id uint32) {
 	n := t.node(id)
+	if n == t.tail {
+		t.tail = nil
+	}
 	if n.directory != 0 {
 		t.freeDirectories = append(t.freeDirectories, n.directory)
 	}
@@ -368,6 +398,7 @@ func (n *wordNode) insertLeafPlain(i int, key, value uint64) {
 }
 
 func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
+	t.noteInsert(key)
 	if !t.atomicWrites {
 		n.insertLeafPlain(i, key, value)
 		if t.shared {
@@ -620,6 +651,7 @@ func (t *wordTree) delete(key uint64) (uint64, bool) {
 		t.leafCursor, t.innerCursor = 0, 0
 		t.readBlocks = nil
 		t.rootNode = nil
+		t.tail = nil
 		t.routes = wordRoutes{}
 		t.routesDirty = false
 		t.routeNode = nil
@@ -878,6 +910,12 @@ func (t *wordTree) getMany(keys []uint64, dst []Result[uint64]) {
 // Redistribute into a neighboring leaf, moving only the boundary entries.
 func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) {
 	children := &parent.inner().children
+	if leaf := t.node(children[index]); leaf.n == nodeSize {
+		if i := leaf.lowerEntry(key); i > 0 && leaf.entries()[i-1].key == t.lastInserted() {
+			t.splitRun(parent, index, i, key, value)
+			return
+		}
+	}
 	leftIndex := index
 	if index > 0 && (index+1 == int(parent.n) || t.node(children[index-1]).n <= t.node(children[index+1]).n) {
 		leftIndex--
@@ -942,6 +980,45 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	} else {
 		t.refitSeparators(parent, leftIndex, leftIndex+1)
 	}
+}
+
+// splitRun splits full leaf index where an ascending run inserts, at
+// position i: the leaf keeps its entries before i and takes the key, and a
+// new leaf after it takes the rest. The run then appends to the leaf until it
+// is full, and the next split starts a new leaf for it. Balanced splits would
+// leave every leaf of the run a third empty, and the tree a level deeper.
+// Either new leaf may hold fewer than minNodeSize entries, but the two share
+// nodeSize+1, so leaves still average at least half full whatever the order
+// of keys; deletions rebalance them as any other.
+func (t *wordTree) splitRun(parent *wordNode, index, i int, key, value uint64) {
+	leafID := parent.inner().children[index]
+	leaf := t.node(leafID)
+	extraID := t.alloc(true)
+	extra := t.node(extraID)
+	if i == nodeSize {
+		t.copyEntries(extra, 0, []wordEntry{{key, value}})
+		extra.n = 1
+	} else {
+		t.copyEntries(extra, 0, leaf.entries()[i:nodeSize])
+		extra.n = uint8(nodeSize - i)
+		t.storeEntry(leaf, i, wordEntry{key, value})
+		leaf.n = uint8(i + 1)
+	}
+	extra.prev, extra.next = leafID, leaf.next
+	if leaf.next != 0 {
+		t.node(leaf.next).prev = extraID
+	}
+	leaf.next = extraID
+	if t.atomicWrites {
+		t.refit(leaf)
+		t.refit(extra)
+	} else {
+		// The new leaf is already padded.
+		t.settleLeafPlain(leaf, nodeSize)
+		t.settleLeafPlain(extra, 0)
+	}
+	t.insertChild(parent, index+1, extraID)
+	t.noteInsert(key)
 }
 
 // Before optimistic readers start, a redistribution moves only the entries and

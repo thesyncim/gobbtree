@@ -376,6 +376,15 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	// Once readers are active, lane-free writers may share any leaf, so this
 	// writer holds its leaf too.
 	serial := guard.lane == nil && !m.laneFree()
+	// Before readers, a serial writer appends past the largest key straight
+	// to the rightmost leaf, as Tree does.
+	plain := serial && !m.tree.atomicWrites
+	if n := m.tree.tail; plain && n != nil && n.next == 0 && n.n-1 < nodeSize-1 && key > n.entries()[n.n-1].key {
+		m.tree.insertLeaf(n, int(n.n), key, value)
+		m.addCount(1, true)
+		guard.unlock()
+		return 0, false
+	}
 	id, parent, index := m.locate(key)
 	var leaf *wordNode
 	if id != 0 {
@@ -402,6 +411,8 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 				if m.tree.atomicWrites {
 					m.disableReadCache()
 					n.beginLeafWrite()
+				} else if plain && n.next == 0 {
+					m.tree.tail = n
 				}
 				m.tree.insertLeaf(n, i, key, value)
 				m.addCount(1, serial)

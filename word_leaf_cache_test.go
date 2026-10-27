@@ -158,8 +158,10 @@ func TestLargeMapUsesOnlyRouteCache(t *testing.T) {
 func TestLeafCachedReadsDuringLeafShifts(t *testing.T) {
 	const stable = 1 << 14
 	var m Map[uint64, uint64]
-	for i := uint64(0); i < stable; i++ {
-		m.Insert(4*i, 4*i*3+1)
+	// Descending inserts leave every leaf room for the writers' keys, which
+	// must not change the structure: ascending runs fill leaves.
+	for i := uint64(stable); i > 0; i-- {
+		m.Insert(4*(i-1), 4*(i-1)*3+1)
 	}
 	m.Get(0)
 	words := m.words.Load()

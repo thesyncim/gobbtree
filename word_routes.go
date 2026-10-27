@@ -53,11 +53,11 @@ func (t *wordTree) rebuildRoutes() {
 	}
 	// The domain runs to the largest key, not the last separator: keys
 	// beyond it, every append's among them, would otherwise all descend.
-	high := root.keys[root.n-1]
+	largest := root.keys[root.n-1]
 	if last := t.node(t.end(true)); last.n > 0 {
-		high = max(high, last.entries()[last.n-1].key)
+		largest = max(largest, last.entries()[last.n-1].key)
 	}
-	width := bits.Len64(root.keys[0] ^ high)
+	width := bits.Len64(root.keys[0] ^ largest)
 	radixBits := min(20, int(root.level)*4, width)
 	if radixBits < 4 {
 		t.routes = wordRoutes{}
@@ -71,6 +71,7 @@ func (t *wordTree) rebuildRoutes() {
 		ids := t.routes.ids
 		if len(ids) != count {
 			ids = make([]uint32, count)
+			t.routesTop = 0
 		}
 		// A changed domain rebuilds every cell below. Reuse equal-sized
 		// storage; shared readers validate the structural epoch around atomic
@@ -98,11 +99,25 @@ func (t *wordTree) rebuildRoutes() {
 	}
 	// Buckets that straddle the subtree's bounds belong to its unchanged
 	// ancestors; only those it wholly contains are cleared and refilled.
+	// Buckets above the largest key's stay empty: ascending inserts change
+	// the rightmost subtree constantly, and refilling every bucket up to the
+	// domain's end each time would cost as much as the inserts. Clearing
+	// reaches the highest bucket ever filled, which a smaller largest key
+	// leaves behind.
+	mask := (uint64(1) << shift) - 1
+	top := min(int((largest-base)>>shift), count-1)
 	if first, last := t.routes.within(low, high); first <= last {
+		reached := last
+		last = min(last, max(top, t.routesTop))
 		for i := first; i <= last; i++ {
 			t.storeRoute(i, 0)
 		}
-		t.fillRoutes(id, int(t.node(id).level)-1, low, high)
+		t.fillRoutes(id, int(t.node(id).level)-1, low, min(high, base|uint64(top)<<shift|mask))
+		if reached >= t.routesTop {
+			t.routesTop = top
+		} else {
+			t.routesTop = max(t.routesTop, top)
+		}
 	}
 }
 

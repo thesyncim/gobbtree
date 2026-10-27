@@ -192,7 +192,8 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 		}
 		seen[id] = true
 		n := tr.node(id)
-		if n.n < 1 || n.n > nodeSize || (level > 0 && n.n < minNodeSize) {
+		// Leaves beside an ascending run may hold fewer than minNodeSize.
+		if n.n < 1 || n.n > nodeSize || (level > 0 && !n.leaf && n.n < minNodeSize) {
 			t.Fatalf("bad numeric occupancy %d at depth %d", n.n, level)
 		}
 		for i := 0; i < int(n.n); i++ {
@@ -358,7 +359,8 @@ func checkWordRoutes(t testing.TB, tr *wordTree) {
 				want = a
 			}
 		}
-		if id != want {
+		// Buckets above the highest one filled may stay empty.
+		if id != want && (id != 0 || bucket <= tr.routesTop) {
 			t.Fatalf("radix bucket %d [%x, %x] routes to %d, want %d", bucket, low, high, id, want)
 		}
 	}
@@ -690,6 +692,41 @@ func TestFillDirectoryMatchesBucketScan(t *testing.T) {
 		}
 		if got != want {
 			t.Fatalf("trial %d n=%d: directory mismatch", trial, n)
+		}
+	}
+}
+
+// Ascending runs, whole or in clusters, fill leaves rather than leaving each
+// a third empty; random keys keep balanced splits.
+func TestAscendingRunsFillLeaves(t *testing.T) {
+	const n = 1 << 16
+	fill := func(key func(uint64) uint64) (tree, concurrent float64) {
+		var tr Tree[uint64, uint64]
+		var m Map[uint64, uint64]
+		for i := range uint64(n) {
+			tr.Insert(key(i), i)
+			m.Insert(key(i), i)
+		}
+		leaves := func(w *wordTree) (count int) {
+			for id := w.end(false); id != 0; id = w.node(id).next {
+				count++
+			}
+			return count
+		}
+		return float64(n) / float64(leaves(tr.words)*nodeSize), float64(n) / float64(leaves(&m.words.Load().tree)*nodeSize)
+	}
+	for _, c := range []struct {
+		name string
+		key  func(uint64) uint64
+		min  float64
+	}{
+		{"sequential", func(i uint64) uint64 { return i << 1 }, 0.95},
+		{"clustered", func(i uint64) uint64 { return mixedKey(i>>10)&^(1<<20-1) | (i&1023)<<1 }, 0.9},
+		{"mixed", mixedKey, 0.7},
+	} {
+		tree, concurrent := fill(c.key)
+		if tree < c.min || concurrent < c.min {
+			t.Errorf("%s keys fill leaves %.0f%% (Tree) and %.0f%% (Map), want at least %.0f%%", c.name, 100*tree, 100*concurrent, 100*c.min)
 		}
 	}
 }
