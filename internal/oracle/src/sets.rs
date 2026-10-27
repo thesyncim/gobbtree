@@ -39,6 +39,41 @@ pub fn run() {
                 writeln!(out, "{}", left.len()).unwrap();
             }
             "L" => writeln!(out, "{},{}", sets[0].len(), sets[1].len()).unwrap(),
+            "Gt" => writeln!(out, "{}", super::result(sets[number(1) as usize].get(&number(2)).copied())).unwrap(),
+            "Rp" => writeln!(out, "{}", super::result(sets[number(1) as usize].replace(number(2)))).unwrap(),
+            "Tk" => writeln!(out, "{}", super::result(sets[number(1) as usize].take(&number(2)))).unwrap(),
+            "Fi" => writeln!(out, "{}", super::result(sets[number(1) as usize].first().copied())).unwrap(),
+            "La" => writeln!(out, "{}", super::result(sets[number(1) as usize].last().copied())).unwrap(),
+            "Rel" => writeln!(
+                out,
+                "{},{},{},{},{}",
+                sets[0].is_subset(&sets[1]),
+                sets[0].is_superset(&sets[1]),
+                sets[0].is_disjoint(&sets[1]),
+                sets[0] == sets[1],
+                sets[0].cmp(&sets[1]) as i8
+            )
+            .unwrap(),
+            "CM" => {
+                let got = sets[number(1) as usize].contains_many([&number(2), &number(3), &number(4), &number(5)]);
+                writeln!(out, "{got:?}").unwrap();
+            }
+            "IM" => {
+                let got = sets[number(1) as usize].insert_many([number(2), number(3), number(4), number(5)]);
+                writeln!(out, "{got:?}").unwrap();
+            }
+            "Rg" => {
+                for key in sets[number(1) as usize].range(number(2)..number(3)) {
+                    write!(out, "{key},").unwrap();
+                }
+                writeln!(out).unwrap();
+            }
+            "Cl" => {
+                let copy = sets[number(1) as usize].clone();
+                let same = copy == sets[number(1) as usize];
+                let taken: String = copy.into_iter().take(number(2) as usize).map(|k| format!("{k},")).collect();
+                writeln!(out, "{same},{taken}").unwrap();
+            }
             op => {
                 let values: Box<dyn Iterator<Item=&u64>> = match op {
                     "U" => Box::new(sets[0].union(&sets[1])),

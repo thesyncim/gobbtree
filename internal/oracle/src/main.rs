@@ -3,6 +3,7 @@ use std::io::{self, BufRead, Write};
 use std::ops::Bound;
 use std::panic::{self, AssertUnwindSafe};
 mod concurrent;
+mod full;
 mod sets;
 
 fn result(v: Option<u64>) -> String {
@@ -94,6 +95,8 @@ fn main() {
     panic::set_hook(Box::new(|_| {}));
     if std::env::args().nth(1).as_deref() == Some("concurrent") {
         concurrent::run();
+    } else if std::env::args().nth(1).as_deref() == Some("full") {
+        full::run();
     } else if std::env::args().nth(1).as_deref() == Some("sets") {
         sets::run();
     } else if std::env::args().nth(1).as_deref() == Some("strings") {
