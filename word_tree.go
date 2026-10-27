@@ -469,6 +469,9 @@ func (t *wordTree) insertSharedAtRoute(key, value uint64) bool {
 		return false
 	}
 	parent := t.node(id)
+	for parent.level > 1 {
+		parent = t.node(parent.inner().children[t.route(parent, key)])
+	}
 	if parent.n == nodeSize {
 		return false
 	}
@@ -849,10 +852,14 @@ func (t *wordTree) getMany(keys []uint64, dst []Result[uint64]) {
 				}
 			}
 		}
-		for !t.node(ids[0]).leaf {
+		// Routed lanes may start at different levels.
+		for descending := true; descending; {
+			descending = false
 			for j := 0; j < count; j++ {
-				n := t.node(ids[j])
-				ids[j] = n.inner().children[t.route(n, keys[start+j])]
+				if n := t.node(ids[j]); !n.leaf {
+					ids[j] = n.inner().children[t.route(n, keys[start+j])]
+					descending = true
+				}
 			}
 		}
 		for j := 0; j < count; j++ {

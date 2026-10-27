@@ -5,8 +5,11 @@ import (
 	"sync/atomic"
 )
 
-// Only buckets wholly contained in a subtree get an entry. Boundary buckets
-// use the ordinary descent, so the table never predicts or approximates a key.
+// Each bucket names the deepest node, a leaf parent or above, below the root
+// whose key range wholly contains it: a leaf parent where keys spread evenly,
+// a higher node where they cluster, so that a run of keys narrower than a
+// bucket still skips the upper levels. Buckets no such node contains use the
+// ordinary descent, so the table never predicts or approximates a key.
 type wordRoutes struct {
 	base  uint64
 	shift uint8
@@ -93,40 +96,61 @@ func (t *wordTree) rebuildRoutes() {
 			low, high = 0, ^uint64(0)
 		}
 	}
-	mask := (uint64(1) << shift) - 1
-	limit := base | uint64(count-1)<<shift | mask
-	start, end := max(low, base), min(high, limit)
-	if start <= end {
-		first, last := int((start-base)>>shift), int((end-base)>>shift)
+	// Buckets that straddle the subtree's bounds belong to its unchanged
+	// ancestors; only those it wholly contains are cleared and refilled.
+	if first, last := t.routes.within(low, high); first <= last {
 		for i := first; i <= last; i++ {
 			t.storeRoute(i, 0)
 		}
 		t.fillRoutes(id, int(t.node(id).level)-1, low, high)
 	}
 }
+
+// within returns the buckets wholly inside [low, high]; first > last if none.
+func (r *wordRoutes) within(low, high uint64) (first, last int) {
+	mask := (uint64(1) << r.shift) - 1
+	limit := r.base | uint64(len(r.ids)-1)<<r.shift | mask
+	low, high = max(low, r.base), min(high, limit)
+	if low > high {
+		return 1, 0
+	}
+	first, last = int((low-r.base)>>r.shift), int((high-r.base)>>r.shift)
+	if (low-r.base)&mask != 0 {
+		first++
+	}
+	if (high-r.base)&mask != mask {
+		last--
+	}
+	return first, last
+}
 func (t *wordTree) fillRoutes(id uint32, depth int, low, high uint64) {
+	r := &t.routes
+	first, last := r.within(low, high)
+	if first > last {
+		return
+	}
 	if depth == 0 {
-		r := &t.routes
-		mask := (uint64(1) << r.shift) - 1
-		limit := r.base | uint64(len(r.ids)-1)<<r.shift | mask
-		low = max(low, r.base)
-		high = min(high, limit)
-		if low > high {
-			return
-		}
-		first, last := int((low-r.base)>>r.shift), int((high-r.base)>>r.shift)
-		if (low-r.base)&mask != 0 {
-			first++
-		}
-		if (high-r.base)&mask != mask {
-			last--
-		}
 		for i := first; i <= last; i++ {
 			t.storeRoute(i, id)
 		}
 		return
 	}
 	n := t.node(id)
+	if id != t.root {
+		// A bucket holding one of the node's separators straddles two of its
+		// children, so no deeper node contains it; this node does if the
+		// bucket lies within its range.
+		mask := (uint64(1) << r.shift) - 1
+		for i := 1; i < int(n.n); i++ {
+			separator := n.keys[i]
+			if separator < r.base || (separator-r.base)&mask == 0 {
+				continue
+			}
+			if bucket := int((separator - r.base) >> r.shift); bucket >= first && bucket <= last {
+				t.storeRoute(bucket, id)
+			}
+		}
+	}
 	for i := 0; i < int(n.n); i++ {
 		begin, end := low, high
 		if i > 0 {

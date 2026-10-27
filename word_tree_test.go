@@ -344,27 +344,33 @@ func checkWordRoutes(t testing.TB, tr *wordTree) {
 	if len(tr.routes.ids) == 0 {
 		return
 	}
+	// Each bucket names the deepest node below the root, down to the leaf
+	// parents, that both its endpoints route through, or nothing.
 	for bucket, id := range tr.routes.ids {
-		if id == 0 {
-			continue
-		}
 		low := tr.routes.base | uint64(bucket)<<tr.routes.shift
 		high := low | ((uint64(1) << tr.routes.shift) - 1)
-		for _, key := range []uint64{low, high} {
-			want := tr.root
-			for step := 0; step < int(tr.routes.depth); step++ {
-				n := tr.node(want)
-				i := 0
-				for i+1 < int(n.n) && n.keys[i+1] <= key {
-					i++
-				}
-				want = n.inner().children[i]
-			}
-			if id != want {
-				t.Fatalf("radix bucket %d endpoint %x routes to %d, want %d", bucket, key, id, want)
+		var want uint32
+		a, b := tr.root, tr.root
+		for step := 0; step < int(tr.routes.depth) && a == b; step++ {
+			n := tr.node(a)
+			a, b = n.inner().children[routeScan(n, low)], n.inner().children[routeScan(n, high)]
+			if a == b {
+				want = a
 			}
 		}
+		if id != want {
+			t.Fatalf("radix bucket %d [%x, %x] routes to %d, want %d", bucket, low, high, id, want)
+		}
 	}
+}
+
+// routeScan routes key through internal node n by a linear scan.
+func routeScan(n *wordNode, key uint64) int {
+	i := 0
+	for i+1 < int(n.n) && n.keys[i+1] <= key {
+		i++
+	}
+	return i
 }
 
 func TestConcurrentNumericLayout(t *testing.T) {
