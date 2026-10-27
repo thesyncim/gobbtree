@@ -124,7 +124,7 @@ func TestRetiredNumericImagesRemainInvalidAfterArenaReuse(t *testing.T) {
 	readers.Go(func() {
 		for !stop.Load() {
 			for _, old := range images {
-				value, found, valid := old.image.readValue(old.key, uint64(old.key))
+				value, found, valid := old.image.readValue(old.key, uint64(old.key), &m.version, m.version.Load())
 				if valid && found && value != uint64(old.key)^mask {
 					t.Error("retired image validated reused key/value storage")
 					return

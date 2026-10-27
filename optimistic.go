@@ -40,6 +40,18 @@ func (n *node[K, V, O]) publishFrom(first int) {
 	if !n.shared {
 		return
 	}
+	if n.leaf != nil && n.strings && n.leaf.wordKind == 0 {
+		image := n.image.Load()
+		if image == nil {
+			image = &searchImage[K, V, O]{n: -1, strings: true, leaf: n.leaf, node: n}
+			image.valid.Store(true)
+			n.image.Store(image)
+		}
+		if n.parentSlot != nil {
+			n.parentSlot.Store(image)
+		}
+		return
+	}
 	// No retired image may validate data in a recycled atomic block.
 	if old := n.image.Load(); old != nil && old.valid.Load() {
 		old.valid.Store(false)
@@ -324,6 +336,13 @@ retry:
 		}
 		var value V
 		var found bool
+		if n := image.node; n != nil {
+			value, found, ok := n.latchedGet(&search, &m.version, version)
+			if !ok {
+				continue
+			}
+			return value, found
+		}
 		if state := image.pairs; state != nil {
 			i := firstTag(&image.tags, image.n, code)
 			var word, candidate uint64
@@ -397,6 +416,23 @@ retry:
 			return value, found
 		}
 	}
+}
+
+// latchedGet reads a textual leaf under its read latch. The epoch check
+// comes first: a leaf released by a split or merge may share recycled
+// columns, and every such change holds the leaf latch and moves the epoch.
+func (n *node[K, V, O]) latchedGet(s *keySearch[K, O], epoch *atomic.Uint64, version uint64) (value V, found, valid bool) {
+	n.leaf.mu.RLock()
+	if epoch.Load() != version {
+		n.leaf.mu.RUnlock()
+		return value, false, false
+	}
+	i, found := n.lowerSearch(s)
+	if found {
+		value = n.leaf.values[i]
+	}
+	n.leaf.mu.RUnlock()
+	return value, found, true
 }
 
 func initWordValues[K any, V any, O keyOrder[K]](n *node[K, V, O]) {

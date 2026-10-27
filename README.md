@@ -8,7 +8,7 @@
 A Go port of [XiangpengHao/bbtree](https://github.com/XiangpengHao/bbtree). Nodes keep compact inline summaries of their keys and search them with vector instructions, so most lookups never touch a full key.
 
 - **Fast.** It beats the Rust original on most read, batch and churn workloads. [Benchmarks](#benchmarks) cover every workload, including the ones where Rust still wins.
-- **Concurrent.** `Map` lookups are optimistic and never block; writers lock single leaves.
+- **Concurrent.** `Map` has lock-free lookups for numeric values and per-leaf locking everywhere else.
 - **Any ordered key.** It supports every `cmp.Ordered` type, plus your own types through a two-method `Key` interface.
 - **On disk.** Write a snapshot, then query it in place with `mmap`.
 - **Pure Go.** No assembly, cgo or dependencies. SIMD comes from Go's `simd` package (Go 1.27).
@@ -97,7 +97,7 @@ A composite key encodes its fields one after another. For example, a `uint32` te
 
 ## Concurrency
 
-`Map` lookups never block writers. They read numeric slabs or immutable search images optimistically and retry if a writer interfered. Writers lock single leaves; splits, merges and scans take a structural lock.
+`Map` lookups of word values (integers, floats, bools) are lock-free: they read numeric slabs or immutable search images and retry if a writer interfered. Other values are read under a leaf read latch, so their writes publish no snapshots and allocate nothing. Writers lock single leaves; splits, merges and scans take a structural lock.
 
 - Scans are ordered but only weakly consistent under concurrent writes. Use `Snapshot()` when you need a consistent copy.
 - Each batch entry is consistent on its own; a batch is not a transaction.

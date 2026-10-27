@@ -17,7 +17,7 @@ func TestRetiredImageStaysInvalid(t *testing.T) {
 	beforeDelete := m.root.Load()
 	m.Delete(15)
 	for _, old := range []*searchImage[float64, uint64, natural[float64]]{beforeInsert, beforeDelete} {
-		if _, _, valid := old.readValue(16, numericCode(float64(16))); valid {
+		if _, _, valid := old.readValue(16, numericCode(float64(16)), &m.version, m.version.Load()); valid {
 			t.Fatal("retired image accepted a reused value slot")
 		}
 	}

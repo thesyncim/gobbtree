@@ -7,7 +7,8 @@ import (
 )
 
 // Map is a concurrent ordered map. Its zero value is ready to use.
-// Get validates optimistic reads of numeric arenas or immutable search images.
+// Get validates optimistic reads of numeric arenas or immutable search images;
+// textual leaves with other values are read under their latch.
 // Built-in word values use atomic loads; other values use a leaf latch. Writers
 // latch leaves independently; splits, merges and routing changes take a structural
 // latch exclusively. Scans and callbacks also hold the structural read latch.
@@ -440,7 +441,7 @@ func (m *mapCore[K, V, O]) GetMany(keys []K, dst []Result[V]) {
 			var result Result[V]
 			current := valid
 			if current && images[j] != nil {
-				result.Value, result.OK, current = images[j].readValue(key, codes[j])
+				result.Value, result.OK, current = images[j].readValue(key, codes[j], &m.version, version)
 			}
 			if !current || m.version.Load() != version {
 				result.Value, result.OK = m.Get(key)

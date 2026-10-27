@@ -24,6 +24,10 @@ type searchImage[K any, V any, O keyOrder[K]] struct {
 	prefix           int
 	prefixHead       [2]uint64
 	imageVersion     uint64
+	// node is set on a textual leaf's only image. Its keys stay in the node:
+	// readers latch the leaf and validate the structural epoch instead of
+	// searching a copy, so leaf writes publish nothing.
+	node *node[K, V, O]
 }
 
 func (n *searchImage[K, V, O]) lower(key K) int {
@@ -58,9 +62,14 @@ func (n *searchImage[K, V, O]) routeSearch(s *keySearch[K, O]) int {
 
 // readValue validates one published leaf. Its caller also validates the
 // structural epoch covering the route to this image.
-func (n *searchImage[K, V, O]) readValue(key K, code uint64) (value V, found, valid bool) {
+func (n *searchImage[K, V, O]) readValue(key K, code uint64, epoch *atomic.Uint64, version uint64) (value V, found, valid bool) {
 	if n.readEdges != nil {
 		return value, false, false
+	}
+	if n.node != nil {
+		s := keySearch[K, O]{key: key}
+		value, found, valid = n.node.latchedGet(&s, epoch, version)
+		return value, found, valid
 	}
 	if n.pairs != nil {
 		word, ok := n.pairs.get(&n.tags, n.n, code)

@@ -420,6 +420,30 @@ func TestSteadyStateAllocations(t *testing.T) {
 		}
 	}
 }
+
+// Textual maps with non-word values read leaves under their latch, so leaf
+// writes publish no search image.
+func TestTextualMapWritesDoNotAllocate(t *testing.T) {
+	m := New[string, [2]int]()
+	c := NewMapOf[textKey, [2]int]()
+	for i := range 1000 {
+		key := fmt.Sprintf("key-%04d", i)
+		m.Insert(key, [2]int{i})
+		c.Insert(textKey{key}, [2]int{i})
+	}
+	key, custom := "key-0500", textKey{"key-0500"}
+	for name, call := range map[string]func(){
+		"map replace":  func() { m.Insert(key, [2]int{1}) },
+		"map churn":    func() { m.Delete(key); m.Insert(key, [2]int{2}) },
+		"map get":      func() { m.Get(key) },
+		"custom churn": func() { c.Delete(custom); c.Insert(custom, [2]int{2}) },
+		"custom get":   func() { c.Get(custom) },
+	} {
+		if n := testing.AllocsPerRun(100, call); n != 0 {
+			t.Errorf("%s: %v allocations", name, n)
+		}
+	}
+}
 func FuzzTree(f *testing.F) {
 	f.Add([]byte{0, 0, 1, 1, 2, 0, 3, 1})
 	f.Add([]byte("a long shared prefix with embedded\x00bytes"))
