@@ -239,7 +239,7 @@ func TestFileMapBatchAndWriterErrors(t *testing.T) {
 	if err = os.WriteFile(path, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, keys := range [][]uint64{{1, 1}, {2, 1}} {
+	for _, keys := range [][]uint64{{1, 1}, {2, 1}, {0, 5, 9, 9}} {
 		err = CreateFile(path, func(yield func(uint64, uint64) bool) {
 			for _, k := range keys {
 				if !yield(k, k) {
@@ -247,7 +247,8 @@ func TestFileMapBatchAndWriterErrors(t *testing.T) {
 				}
 			}
 		})
-		if !errors.Is(err, ErrNotAscending) {
+		var notAscending *NotAscendingError
+		if !errors.Is(err, ErrNotAscending) || !errors.As(err, &notAscending) || notAscending.Index() != len(keys)-1 {
 			t.Fatalf("ascending: %v", err)
 		}
 		b, _ := os.ReadFile(path)

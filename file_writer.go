@@ -91,7 +91,7 @@ func NewFileWriter[K cmp.Ordered, V any](entries iter.Seq2[K, V]) (*FileWriter[K
 	var previous K
 	for key, value := range entries {
 		if w.length > 0 && cmp.Compare(previous, key) >= 0 {
-			return nil, ErrNotAscending
+			return nil, &NotAscendingError{index: w.length}
 		}
 		previous = key
 		if current == nil || current.count == l.leaf.capacity+int(current.data[2]) {

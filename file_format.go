@@ -16,6 +16,21 @@ var (
 	ErrMmapUnavailable = errors.New("gobbtree: mmap unavailable on this platform")
 )
 
+// NotAscendingError reports entries given to NewFileWriter whose keys don't
+// ascend strictly, as upstream's NotAscending does. It matches
+// ErrNotAscending under errors.Is.
+type NotAscendingError struct{ index int }
+
+// Index is the index of the first entry whose key is not greater than the
+// key before it, as upstream's NotAscending::index.
+func (e *NotAscendingError) Index() int { return e.index }
+
+func (e *NotAscendingError) Error() string {
+	return fmt.Sprintf("gobbtree: entry %d has a key not greater than the key before it", e.index)
+}
+
+func (e *NotAscendingError) Is(target error) bool { return target == ErrNotAscending }
+
 const fileHeaderSize = 64
 const fileMaxDepth = 23
 
