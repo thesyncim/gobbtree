@@ -58,8 +58,9 @@ All zero values are ready to use. Don't copy a container after first use.
 | `Ascend(from)` · `Descend(from)` | Iterates keys `>= from` ascending, or `<= from` descending |
 | `All()` · `Reverse()`, plus `Keys()` · `Values()` on Tree | Iterates everything |
 | `First()` · `Last()` · `PopFirst()` · `PopLast()` | The end entries |
-| `Update` · `LoadOrStore` · `UpdateOrInsert` | Read-modify-write; atomic on `Map` |
-| `Read` · `DeleteIf` | Callback read and conditional delete on `Map` |
+| `Update` · `LoadOrStore` · `LoadOrStoreFunc` · `UpdateOrInsert` | Read-modify-write; atomic on `Map` |
+| `UpdateRange(lo, hi, f)` · `UpdateAll(f)` · `InsertAll(seq)` | Bulk changes |
+| `Read` · `ReadMany` · `UpdateOrInsertMany` · `DeleteIf` | Callback reads, batched upserts and conditional delete on `Map` |
 | `LowerBound` · `UpperBound` · `SplitOff` · `Append` · `Retain` · `ExtractIf` | Ordered editing on `Tree` |
 
 Iterators are Go range-over-func sequences: `break` stops them. `Set` offers the same iterators over keys, plus union, intersection, difference and subset tests; `FileMap` offers the read-only ones.
@@ -142,17 +143,20 @@ The API follows upstream's operations with Go names; results are Go multi-value 
 
 | Upstream | gobbtree |
 |---|---|
-| `get` · `get_copied` · `get_cloned` · `contains_key` · `get_key_value` | `Get` · `Contains` · `GetKeyValue` (Tree) |
+| `get` · `get_copied` · `get_cloned` · `contains_key` · `get_key_value` | `Get` · `Contains` · `GetKeyValue` |
 | `insert` · `remove` · `remove_entry` | `Insert` · `Delete` · `Take` |
-| `get_many_*` · `insert_many` | `GetMany` · `InsertMany` |
+| `get_many_*` · `insert_many` · `read_many` · `update_or_insert_many` | `GetMany` · `InsertMany` · `ReadMany` · `UpdateOrInsertMany` |
 | `read` · `update` · `update_or_insert` · `get_or_insert` · `remove_if` | `Read` · `Update` · `UpdateOrInsert` · `LoadOrStore` · `DeleteIf` |
+| `get_mut` · `iter_mut` · `values_mut` · `range_mut` | `Update` · `UpdateAll` · `UpdateRange` |
+| `entry`: `or_insert` · `or_insert_with` · `and_modify` | `LoadOrStore` · `LoadOrStoreFunc` · `UpdateOrInsert` |
 | `iter` · `range` · `range_cloned` · `scan` · `scan_rev` | `All` / `Reverse` · `Range` / `RangeReverse` / `Ascend` / `Descend` |
 | `keys` · `values` · `first_key_value` · `last_key_value` · `pop_first` · `pop_last` | `Keys` · `Values` · `First` · `Last` · `PopFirst` · `PopLast` |
-| `retain` · `extract_if` · `split_off` · `append` · `entry` | `Retain` · `ExtractIf` · `SplitOff` · `Append` · `LoadOrStore` / `UpdateOrInsert` |
+| `retain` · `extract_if` · `split_off` · `append` · `Extend` · `FromIterator` | `Retain` · `ExtractIf` · `SplitOff` · `Append` · `InsertAll` |
+| set `contains_many` · `replace` · `take` · `union` · `intersection` · `difference` · `symmetric_difference` · `is_subset` | the same names on `Set` |
 | `InlineKey` · byte-string keys | `Key` · `Bytes` |
 | `FileMap` · `FileWriter::from_ascending` | `FileMap` · `NewFileWriter` / `CreateFile` |
 
-Not carried over: mutable references (`get_mut`, `iter_mut`, `values_mut`, `range_mut`), which Go expresses with `Update`; allocator and node-layout parameters; and the `Debug`/`check_invariants` helpers. `Len` on `Map` and `LowerBound`/`UpperBound` are additions.
+Not carried over: references into the map (Go takes values out and puts them back with the `Update` family); consuming iterators (`into_iter`, `into_keys`, `into_values`); leaf annexes and their `*_with_leaf` methods, which let `bbtree-store` manage manually allocated pages that Go's garbage collector manages here; allocator, strategy and node-layout parameters; and the `inspect`/`check_invariants` debugging helpers. `Len` on `Map` and `LowerBound`/`UpperBound` are additions.
 
 ## SIMD
 

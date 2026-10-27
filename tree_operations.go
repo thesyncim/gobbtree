@@ -185,3 +185,34 @@ func (t *treeCore[K, V, O]) UpdateOrInsert(key K, value V, merge func(old, value
 	t.Insert(key, value)
 	return old, ok
 }
+
+// LoadOrStoreFunc returns key's value if present, and otherwise stores and
+// returns make(), as upstream's entry or_insert_with does.
+func (t *treeCore[K, V, O]) LoadOrStoreFunc(key K, make func() V) (V, bool) {
+	if v, ok := t.Get(key); ok {
+		return v, true
+	}
+	v := make()
+	t.Insert(key, v)
+	return v, false
+}
+
+// UpdateRange replaces each value with keys in [lower, upper) by
+// change(key, value), in key order, as upstream's range_mut allows.
+func (t *treeCore[K, V, O]) UpdateRange(lower, upper K, change func(K, V) V) {
+	// Replacing a value never moves an entry, so the walk stays valid.
+	t.scan(&lower, &upper, false, func(k K, v V) bool { t.Insert(k, change(k, v)); return true })
+}
+
+// UpdateAll replaces every value by change(key, value), in key order, as
+// upstream's iter_mut and values_mut allow.
+func (t *treeCore[K, V, O]) UpdateAll(change func(K, V) V) {
+	t.scan(nil, nil, false, func(k K, v V) bool { t.Insert(k, change(k, v)); return true })
+}
+
+// InsertAll inserts every entry of seq, as upstream's Extend does.
+func (t *treeCore[K, V, O]) InsertAll(seq iter.Seq2[K, V]) {
+	for k, v := range seq {
+		t.Insert(k, v)
+	}
+}

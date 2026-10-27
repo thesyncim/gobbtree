@@ -170,3 +170,10 @@ func (s *setCore[K, O]) isDisjoint(other *setCore[K, O]) bool {
 	}
 	return true
 }
+
+// InsertAll inserts every key of seq, as upstream's Extend does.
+func (s *setCore[K, O]) InsertAll(seq iter.Seq[K]) {
+	for k := range seq {
+		s.Insert(k)
+	}
+}

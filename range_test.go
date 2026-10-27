@@ -1,7 +1,9 @@
 package gobbtree
 
 import (
+	"fmt"
 	"iter"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"path/filepath"
@@ -189,5 +191,74 @@ func TestTreeUpdateOrInsert(t *testing.T) {
 	}
 	if v, _ := tr.Get("a"); v != 3 {
 		t.Fatalf("merged %d", v)
+	}
+}
+
+// parityOps is the common surface of Tree and Map for the parity helpers.
+type parityOps[K comparable] interface {
+	Get(K) (int, bool)
+	Len() int
+	InsertAll(iter.Seq2[K, int])
+	UpdateRange(lower, upper K, change func(K, int) int)
+	UpdateAll(change func(K, int) int)
+	LoadOrStoreFunc(K, func() int) (int, bool)
+}
+
+func checkParityOps[K comparable](t *testing.T, c parityOps[K], key func(int) K) {
+	t.Helper()
+	c.InsertAll(func(yield func(K, int) bool) {
+		for i := range 1000 {
+			if !yield(key(i), i) {
+				return
+			}
+		}
+	})
+	if c.Len() != 1000 {
+		t.Fatalf("InsertAll len %d", c.Len())
+	}
+	c.UpdateRange(key(100), key(200), func(_ K, v int) int { return v + 1000 })
+	c.UpdateAll(func(_ K, v int) int { return v * 2 })
+	for i := range 1000 {
+		want := 2 * i
+		if i >= 100 && i < 200 {
+			want = 2 * (i + 1000)
+		}
+		if v, _ := c.Get(key(i)); v != want {
+			t.Fatalf("key %d = %d, want %d", i, v, want)
+		}
+	}
+	calls := 0
+	make := func() int { calls++; return -1 }
+	if v, loaded := c.LoadOrStoreFunc(key(5), make); !loaded || v != 10 || calls != 0 {
+		t.Fatalf("present LoadOrStoreFunc %d %v calls %d", v, loaded, calls)
+	}
+	if v, loaded := c.LoadOrStoreFunc(key(5000), make); loaded || v != -1 || calls != 1 {
+		t.Fatalf("absent LoadOrStoreFunc %d %v", v, loaded)
+	}
+}
+
+func TestParityOperations(t *testing.T) {
+	str := func(i int) string { return fmt.Sprintf("k%06d", i) }
+	checkParityOps[uint64](t, NewTree[uint64, int](), func(i int) uint64 { return uint64(i) })
+	checkParityOps[uint64](t, New[uint64, int](), func(i int) uint64 { return uint64(i) })
+	checkParityOps[string](t, NewTree[string, int](), str)
+	checkParityOps[string](t, New[string, int](), str)
+
+	m := New[string, int]()
+	m.InsertAll(maps.All(map[string]int{"a": 1, "b": 2}))
+	found := map[int]int{}
+	m.ReadMany([]string{"b", "z", "a"}, func(i int, _ string, v int) { found[i] = v })
+	if len(found) != 2 || found[0] != 2 || found[2] != 1 {
+		t.Fatalf("ReadMany %v", found)
+	}
+	dst := make([]Result[int], 3)
+	m.UpdateOrInsertMany([]Entry[string, int]{{"a", 1}, {"c", 1}, {"a", 1}}, func(old, v int) int { return old + v }, dst)
+	if dst[0] != (Result[int]{1, true}) || dst[1].OK || dst[2] != (Result[int]{2, true}) {
+		t.Fatalf("UpdateOrInsertMany %v", dst)
+	}
+	s := NewSet[int]()
+	s.InsertAll(slices.Values([]int{3, 1, 2, 1}))
+	if got := slices.Collect(s.All()); !slices.Equal(got, []int{1, 2, 3}) {
+		t.Fatalf("set InsertAll %v", got)
 	}
 }

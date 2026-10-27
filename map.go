@@ -713,3 +713,57 @@ func (m *mapCore[K, V, O]) PopLast() (K, V, bool) {
 	}
 	return k, v, ok
 }
+
+// ReadMany calls read with each present key's index, stored key and value,
+// under that entry's latch, as upstream's read_many does. read must not use
+// the map. Each read is consistent on its own; the batch is not a snapshot.
+func (m *mapCore[K, V, O]) ReadMany(keys []K, read func(i int, key K, value V)) {
+	for i, key := range keys {
+		m.Read(key, func(k K, v V) { read(i, k, v) })
+	}
+}
+
+// UpdateOrInsertMany applies UpdateOrInsert to each entry in order, as
+// upstream's update_or_insert_many does, storing each previous value in dst.
+// The batch is not a transaction.
+func (m *mapCore[K, V, O]) UpdateOrInsertMany(entries []Entry[K, V], merge func(old, value V) V, dst []Result[V]) {
+	if len(dst) < len(entries) {
+		panic("gobbtree: UpdateOrInsertMany destination too short")
+	}
+	for i, e := range entries {
+		dst[i].Value, dst[i].OK = m.UpdateOrInsert(e.Key, e.Value, merge)
+	}
+}
+
+// LoadOrStoreFunc returns key's value if present, and otherwise stores and
+// returns make(). make may run although another writer stores key first;
+// its value is then discarded and the stored one returned.
+func (m *mapCore[K, V, O]) LoadOrStoreFunc(key K, make func() V) (V, bool) {
+	if v, ok := m.Get(key); ok {
+		return v, true
+	}
+	return m.LoadOrStore(key, make())
+}
+
+// UpdateRange replaces each value with keys in [lower, upper) by
+// change(key, value), in key order. Each replacement is atomic, as Update is;
+// the walk is not a snapshot, like Range.
+func (m *mapCore[K, V, O]) UpdateRange(lower, upper K, change func(K, V) V) {
+	for k := range m.Range(lower, upper) {
+		m.Update(k, func(v V) V { return change(k, v) })
+	}
+}
+
+// UpdateAll replaces every value by change(key, value), as UpdateRange does.
+func (m *mapCore[K, V, O]) UpdateAll(change func(K, V) V) {
+	for k := range m.All() {
+		m.Update(k, func(v V) V { return change(k, v) })
+	}
+}
+
+// InsertAll inserts every entry of seq, as upstream's Extend does.
+func (m *mapCore[K, V, O]) InsertAll(seq iter.Seq2[K, V]) {
+	for k, v := range seq {
+		m.Insert(k, v)
+	}
+}
