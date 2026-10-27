@@ -101,3 +101,20 @@ func TestSharedWordRouteDomainRebuildReaders(t *testing.T) {
 	default:
 	}
 }
+
+// Ascending keys put the root's last separator far below the largest key;
+// the route domain must still reach it, or every key above it descends.
+func TestRouteDomainCoversLargestKey(t *testing.T) {
+	var tr Tree[uint64, uint64]
+	const n = 300000
+	for i := range uint64(n) {
+		tr.Insert(i<<1, i)
+	}
+	r := &tr.words.routes
+	if len(r.ids) == 0 {
+		t.Fatal("no route table")
+	}
+	if last := uint64(n-1) << 1; (last-r.base)>>r.shift >= uint64(len(r.ids)) {
+		t.Fatalf("largest key %d is outside the route domain [%d, +%d<<%d)", last, r.base, len(r.ids), r.shift)
+	}
+}

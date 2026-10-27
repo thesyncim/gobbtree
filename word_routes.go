@@ -48,7 +48,13 @@ func (t *wordTree) rebuildRoutes() {
 		t.routes = wordRoutes{}
 		return
 	}
-	width := bits.Len64(root.keys[0] ^ root.keys[root.n-1])
+	// The domain runs to the largest key, not the last separator: keys
+	// beyond it, every append's among them, would otherwise all descend.
+	high := root.keys[root.n-1]
+	if last := t.node(t.end(true)); last.n > 0 {
+		high = max(high, last.entries()[last.n-1].key)
+	}
+	width := bits.Len64(root.keys[0] ^ high)
 	radixBits := min(20, int(root.level)*4, width)
 	if radixBits < 4 {
 		t.routes = wordRoutes{}
