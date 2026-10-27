@@ -1,5 +1,8 @@
 use bbtree::unsync::BBTreeMap;
 use std::io::{self, BufRead, Write};
+use std::ops::Bound;
+use std::panic::{self, AssertUnwindSafe};
+mod concurrent;
 mod sets;
 
 fn result(v: Option<u64>) -> String {
@@ -19,6 +22,22 @@ fn encode_hex(k: &[u8]) -> String {
         return "_".to_owned();
     }
     k.iter().map(|b| format!("{b:02x}")).collect()
+}
+/// A bound from its kind (u, i or e) and key.
+fn bound<K>(kind: &str, key: K) -> Bound<K> {
+    match kind {
+        "u" => Bound::Unbounded,
+        "i" => Bound::Included(key),
+        "e" => Bound::Excluded(key),
+        _ => panic!("unknown bound"),
+    }
+}
+/// Runs f, printing "panic" if it panics, as the Go side records it.
+fn or_panic(out: &mut impl Write, f: impl FnOnce() -> String) {
+    match panic::catch_unwind(AssertUnwindSafe(f)) {
+        Ok(line) => writeln!(out, "{line}").unwrap(),
+        Err(_) => writeln!(out, "panic").unwrap(),
+    }
 }
 fn run<K: Ord + 'static>(decode: impl Fn(&str) -> K, encode: impl Fn(&K) -> String) {
     let mut tree = BBTreeMap::<K, u64>::new();
@@ -48,6 +67,20 @@ fn run<K: Ord + 'static>(decode: impl Fn(&str) -> K, encode: impl Fn(&K) -> Stri
                 }
                 writeln!(out).unwrap();
             }
+            "B" | "W" => {
+                let range = (bound(args[1], decode(args[2])), bound(args[3], decode(args[4])));
+                let reverse = args[0] == "W";
+                or_panic(&mut out, || {
+                    let mut line = String::new();
+                    let mut visit = |(k, v): (&K, &u64)| line.push_str(&format!("{}:{v},", encode(k)));
+                    if reverse {
+                        tree.range(range).rev().for_each(&mut visit);
+                    } else {
+                        tree.range(range).for_each(&mut visit);
+                    }
+                    line
+                });
+            }
             "L" => writeln!(out, "{}", tree.len()).unwrap(),
             "C" => {
                 tree.clear();
@@ -58,7 +91,10 @@ fn run<K: Ord + 'static>(decode: impl Fn(&str) -> K, encode: impl Fn(&K) -> Stri
     }
 }
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("sets") {
+    panic::set_hook(Box::new(|_| {}));
+    if std::env::args().nth(1).as_deref() == Some("concurrent") {
+        concurrent::run();
+    } else if std::env::args().nth(1).as_deref() == Some("sets") {
         sets::run();
     } else if std::env::args().nth(1).as_deref() == Some("strings") {
         run(decode_hex, |k: &Vec<u8>| encode_hex(k));

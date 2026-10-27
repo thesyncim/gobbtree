@@ -516,10 +516,13 @@ func (t *treeCore[K, V, O]) Descend(from K) iter.Seq2[K, V] { return t.ScanRever
 
 // Scan iterates the entries with keys in b, ascending, as upstream's range
 // does. Neither the loop body nor another goroutine may mutate the tree
-// meanwhile. Iterating it panics on bounds upstream rejects (see Bounds).
+// meanwhile. Iterating a non-empty tree panics on bounds upstream rejects
+// (see Bounds), as upstream's range does.
 func (t *treeCore[K, V, O]) Scan(b Bounds[K]) iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
-		checkBounds[K, O](&b)
+		if t.length != 0 {
+			checkBounds[K, O](&b)
+		}
 		t.scan(&b, false, yield)
 	}
 }
@@ -527,7 +530,9 @@ func (t *treeCore[K, V, O]) Scan(b Bounds[K]) iter.Seq2[K, V] {
 // ScanReverse is Scan in descending order.
 func (t *treeCore[K, V, O]) ScanReverse(b Bounds[K]) iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
-		checkBounds[K, O](&b)
+		if t.length != 0 {
+			checkBounds[K, O](&b)
+		}
 		t.scan(&b, true, yield)
 	}
 }

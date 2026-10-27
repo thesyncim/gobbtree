@@ -129,9 +129,9 @@ func (t *treeCore[K, V, O]) Retain(keep func(K, V) bool) {
 
 // ExtractIf removes and yields the entries in b that predicate accepts, as
 // upstream's extract_if does. Stopping iteration leaves the remaining entries
-// unvisited and unchanged.
+// unvisited and unchanged. Like upstream's, it never panics on its bounds: a
+// lower end above the upper one extracts nothing.
 func (t *treeCore[K, V, O]) ExtractIf(b Bounds[K], predicate func(K, V) bool) iter.Seq2[K, V] {
-	checkBounds[K, O](&b)
 	return func(yield func(K, V) bool) {
 		var k K
 		var v V
@@ -210,9 +210,12 @@ func (t *treeCore[K, V, O]) LoadOrStoreFunc(key K, make func() V) (V, bool) {
 }
 
 // UpdateRange replaces each value with keys in b by change(key, value), in
-// key order, as upstream's range_mut allows.
+// key order, as upstream's range_mut allows; like range_mut, it panics on
+// bounds upstream rejects unless the tree is empty.
 func (t *treeCore[K, V, O]) UpdateRange(b Bounds[K], change func(K, V) V) {
-	checkBounds[K, O](&b)
+	if t.length != 0 {
+		checkBounds[K, O](&b)
+	}
 	// Replacing a value never moves an entry, so the walk stays valid.
 	t.scan(&b, false, func(k K, v V) bool { t.Insert(k, change(k, v)); return true })
 }

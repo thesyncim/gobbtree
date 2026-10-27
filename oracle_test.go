@@ -23,7 +23,43 @@ type oracleMap[K any] interface {
 	Clear()
 	Range(K, K) iter.Seq2[K, uint64]
 	RangeReverse(K, K) iter.Seq2[K, uint64]
+	Scan(Bounds[K]) iter.Seq2[K, uint64]
+	ScanReverse(Bounds[K]) iter.Seq2[K, uint64]
 	All() iter.Seq2[K, uint64]
+}
+
+// randomBounds draws bounds around key, inverted or equal-excluded at times
+// so that both sides panic, and writes them in the oracle's notation.
+func randomBounds(rng *rand.Rand, key uint64, input *bytes.Buffer, op string) Bounds[uint64] {
+	kinds := []boundKind{unbounded, included, excluded}
+	names := map[boundKind]string{unbounded: "u", included: "i", excluded: "e"}
+	lo, hi := key, key+rng.Uint64N(80)
+	if hi < lo {
+		hi = math.MaxUint64
+	}
+	switch rng.IntN(8) {
+	case 0:
+		lo, hi = hi, lo
+	case 1:
+		hi = lo
+	}
+	b := Bounds[uint64]{lower: lo, upper: hi, lowerKind: kinds[rng.IntN(3)], upperKind: kinds[rng.IntN(3)]}
+	fmt.Fprintf(input, "%s %s %d %s %d\n", op, names[b.lowerKind], lo, names[b.upperKind], hi)
+	return b
+}
+
+// recordPanic writes what f writes, or "panic" if it panics.
+func recordPanic(want *bytes.Buffer, f func(w *bytes.Buffer)) {
+	var line bytes.Buffer
+	defer func() {
+		if recover() != nil {
+			want.WriteString("panic\n")
+			return
+		}
+		want.Write(line.Bytes())
+		want.WriteString("\n")
+	}()
+	f(&line)
 }
 
 func TestUpstreamOracle(t *testing.T) {
@@ -53,7 +89,7 @@ func runUpstreamOracle(t *testing.T, tr oracleMap[uint64]) {
 		if i%199 == 0 {
 			key = 0
 		}
-		op := rng.IntN(10)
+		op := rng.IntN(12)
 		if i < 6000 {
 			op = 0
 		}
@@ -83,6 +119,18 @@ func runUpstreamOracle(t *testing.T, tr oracleMap[uint64]) {
 			fmt.Fprintf(&input, "V %d %d\n", key, end)
 			visitRange(tr.RangeReverse(key, end), func(k, v uint64) bool { fmt.Fprintf(&want, "%d:%d,", k, v); return true })
 			fmt.Fprintln(&want)
+		case 10, 11:
+			op := map[bool]string{false: "B", true: "W"}[op == 11]
+			b := randomBounds(rng, key, &input, op)
+			recordPanic(&want, func(w *bytes.Buffer) {
+				seq := tr.Scan(b)
+				if op == "W" {
+					seq = tr.ScanReverse(b)
+				}
+				for k, v := range seq {
+					fmt.Fprintf(w, "%d:%d,", k, v)
+				}
+			})
 		}
 		if i%3000 == 2999 {
 			fmt.Fprintln(&input, "L")
@@ -212,4 +260,100 @@ func runUpstreamOracleStrings(t *testing.T, tr oracleMap[string]) {
 		t.Fatal("string oracle output length mismatch")
 	}
 	t.Log("matched byte-string keys, embedded NULs, long prefixes, ranges, and deletion-to-empty")
+}
+
+// TestUpstreamOracleConcurrent checks Map's read-modify-write operations,
+// bounded scans and FirstIn against upstream's concurrent BBTreeMap.
+func TestUpstreamOracleConcurrent(t *testing.T) {
+	binary := os.Getenv("GOBBTREE_ORACLE")
+	if binary == "" {
+		t.Skip("set GOBBTREE_ORACLE to the pinned Rust oracle binary")
+	}
+	m := New[uint64, uint64]()
+	var input, want bytes.Buffer
+	result := func(v uint64, ok bool) {
+		if ok {
+			fmt.Fprintln(&want, v)
+		} else {
+			fmt.Fprintln(&want, "-")
+		}
+	}
+	rng := rand.New(rand.NewPCG(5, 6))
+	for i := 0; i < 20000; i++ {
+		key, value := rng.Uint64N(3000), rng.Uint64()
+		if i%211 == 0 {
+			key = math.MaxUint64
+		}
+		op := rng.IntN(11)
+		if i < 3000 {
+			op = 0
+		}
+		switch op {
+		case 0, 1:
+			fmt.Fprintf(&input, "I %d %d\n", key, value)
+			result(m.Insert(key, value))
+		case 2:
+			fmt.Fprintf(&input, "D %d\n", key)
+			result(m.Delete(key))
+		case 3:
+			fmt.Fprintf(&input, "G %d\n", key)
+			result(m.Get(key))
+		case 4:
+			fmt.Fprintf(&input, "U %d %d\n", key, value)
+			result(m.UpdateOrInsert(key, value, func(_, old, value uint64) uint64 { return old + value }))
+		case 5:
+			fmt.Fprintf(&input, "X %d\n", key)
+			result(m.Update(key, func(_, v uint64) uint64 { return v ^ 1 }))
+		case 6:
+			fmt.Fprintf(&input, "O %d %d\n", key, value)
+			v, _ := m.LoadOrStore(key, value)
+			fmt.Fprintln(&want, v)
+		case 7:
+			fmt.Fprintf(&input, "F %d\n", key)
+			if k, v, ok := m.DeleteIf(key, func(k, v uint64) bool { return (k^v)%2 == 0 }); ok {
+				fmt.Fprintf(&want, "%d:%d\n", k, v)
+			} else {
+				fmt.Fprintln(&want, "-")
+			}
+		case 8, 9:
+			op := map[bool]string{false: "B", true: "W"}[op == 9]
+			b := randomBounds(rng, key, &input, op)
+			recordPanic(&want, func(w *bytes.Buffer) {
+				seq := m.Scan(b)
+				if op == "W" {
+					seq = m.ScanReverse(b)
+				}
+				for k, v := range seq {
+					fmt.Fprintf(w, "%d:%d,", k, v)
+				}
+			})
+		case 10:
+			b := randomBounds(rng, key, &input, "M")
+			recordPanic(&want, func(w *bytes.Buffer) {
+				if k, v, ok := m.FirstIn(b); ok {
+					fmt.Fprintf(w, "%d:%d", k, v)
+				} else {
+					w.WriteString("-")
+				}
+			})
+		}
+	}
+	command := exec.Command(binary, "concurrent")
+	command.Stdin = &input
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	got, err := command.Output()
+	if err != nil {
+		t.Fatalf("oracle failed: %v: %s", err, stderr.String())
+	}
+	if !bytes.Equal(got, want.Bytes()) {
+		g, w := strings.Split(string(got), "\n"), strings.Split(want.String(), "\n")
+		for i := 0; i < min(len(g), len(w)); i++ {
+			if g[i] != w[i] {
+				t.Fatalf("concurrent oracle mismatch line %d: got %q want %q", i+1, g[i], w[i])
+			}
+		}
+		t.Fatal("concurrent oracle output length mismatch")
+	}
+	t.Log("matched Map's upserts, conditional deletes, bounded scans and FirstIn against upstream's BBTreeMap")
 }

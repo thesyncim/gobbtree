@@ -443,10 +443,13 @@ func (m *FileMap[K, V]) Ascend(from K) iter.Seq2[K, V] { return m.Scan(AtLeast(f
 func (m *FileMap[K, V]) Descend(from K) iter.Seq2[K, V] { return m.ScanReverse(AtMost(from)) }
 
 // Scan iterates the entries with keys in b, ascending, as upstream's range
-// does. Iterating it panics on bounds upstream rejects (see Bounds).
+// does. Iterating a non-empty file map panics on bounds upstream rejects
+// (see Bounds), as upstream's range does.
 func (m *FileMap[K, V]) Scan(b Bounds[K]) iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
-		checkBounds[K, natural[K]](&b)
+		if m.Len() != 0 {
+			checkBounds[K, natural[K]](&b)
+		}
 		m.scan(&b, false, yield)
 	}
 }
@@ -454,7 +457,9 @@ func (m *FileMap[K, V]) Scan(b Bounds[K]) iter.Seq2[K, V] {
 // ScanReverse is Scan in descending order.
 func (m *FileMap[K, V]) ScanReverse(b Bounds[K]) iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
-		checkBounds[K, natural[K]](&b)
+		if m.Len() != 0 {
+			checkBounds[K, natural[K]](&b)
+		}
 		m.scan(&b, true, yield)
 	}
 }

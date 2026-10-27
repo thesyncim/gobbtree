@@ -132,26 +132,44 @@ func TestScanBoundsPanicsAsUpstream(t *testing.T) {
 	}
 	tree, mp, set := NewTree[int, int](), New[int, int](), NewSet[int]()
 	inverted, equal := AtLeast(5).Below(4), Above(5).Below(5)
-	for name, f := range map[string]func(Bounds[int]){
-		"tree scan":         func(b Bounds[int]) { drain(tree.Scan(b)) },
-		"tree scan reverse": func(b Bounds[int]) { drain(tree.ScanReverse(b)) },
-		"tree extract":      func(b Bounds[int]) { tree.ExtractIf(b, func(int, int) bool { return true }) },
-		"tree update":       func(b Bounds[int]) { tree.UpdateRange(b, func(_, v int) int { return v }) },
-		"map scan":          func(b Bounds[int]) { drain(mp.Scan(b)) },
-		"map scan reverse":  func(b Bounds[int]) { drain(mp.ScanReverse(b)) },
-		"map first":         func(b Bounds[int]) { mp.FirstIn(b) },
-		"map update":        func(b Bounds[int]) { mp.UpdateRange(b, func(_, v int) int { return v }) },
+	// Upstream's single-owner map checks bounds only once it holds a key, and
+	// its extract_if never does; the concurrent map always checks.
+	unchecked := map[string]func(Bounds[int]){
+		"tree scan":   func(b Bounds[int]) { drain(tree.Scan(b)) },
+		"tree update": func(b Bounds[int]) { tree.UpdateRange(b, func(_, v int) int { return v }) },
 		"set scan": func(b Bounds[int]) {
 			for range set.Scan(b) {
 			}
 		},
-		"set extract": func(b Bounds[int]) { set.ExtractIf(b, func(int) bool { return true }) },
+	}
+	for _, b := range []Bounds[int]{inverted, equal} {
+		for _, f := range unchecked {
+			f(b)
+		}
+	}
+	tree.Insert(1, 1)
+	set.Insert(1)
+	for _, b := range []Bounds[int]{inverted, equal} {
+		drain(tree.ExtractIf(b, func(int, int) bool { return true }))
+		for range set.ExtractIf(b, func(int) bool { return true }) {
+		}
+	}
+	for name, f := range map[string]func(Bounds[int]){
+		"tree scan":         unchecked["tree scan"],
+		"tree scan reverse": func(b Bounds[int]) { drain(tree.ScanReverse(b)) },
+		"tree update":       unchecked["tree update"],
+		"map scan":          func(b Bounds[int]) { drain(mp.Scan(b)) },
+		"map scan reverse":  func(b Bounds[int]) { drain(mp.ScanReverse(b)) },
+		"map first":         func(b Bounds[int]) { mp.FirstIn(b) },
+		"map update":        func(b Bounds[int]) { mp.UpdateRange(b, func(_, v int) int { return v }) },
+		"set scan":          unchecked["set scan"],
 	} {
 		expectPanic(name, "greater than range end", func() { f(inverted) })
 		expectPanic(name, "equal and excluded", func() { f(equal) })
 	}
 	expectPanic("range", "greater than range end", func() { drain(tree.Range(5, 4)) })
 	// Equal ends with one included hold nothing or one key, without panicking.
+	tree.Delete(1)
 	tree.Insert(5, 50)
 	for _, b := range []Bounds[int]{Between(5, 5), Above(5).AtMost(5)} {
 		if n := len(slices.Collect(keysOf(tree.Scan(b)))); n != 0 {
