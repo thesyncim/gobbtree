@@ -339,11 +339,6 @@ func TestRangesBatchesAndOwnership(t *testing.T) {
 	if previous[0].OK || previous[1] != (Result[int]{1, true}) || previous[2] != (Result[int]{2, true}) {
 		t.Fatal(previous)
 	}
-	clone := tr.Clone()
-	clone.Delete(0)
-	if !tr.Contains(0) {
-		t.Fatal("clone aliases nodes")
-	}
 	k, _, ok := tr.PopFirst()
 	if !ok || k != 0 {
 		t.Fatal("pop first")

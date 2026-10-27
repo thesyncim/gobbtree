@@ -576,60 +576,108 @@ func (m *wordMap) deleteIf(key uint64, predicate func(uint64) bool) (uint64, boo
 	m.count.Add(-1)
 	return old, true
 }
+
+// walk visits entries in key order, a leaf at a time. Each leaf is copied
+// under its latches, which are released before visit runs: as in upstream's
+// scan, visit holds no latch, writers wait at most for one leaf's copy, and
+// the walk is not a snapshot. An entry present throughout is visited once;
+// a walk resumes just past the last key it visited.
 func (m *wordMap) walk(lower, upper uint64, reverse, bounded bool, visit func(uint64, uint64) bool) {
-	m.structure.RLock()
-	defer m.structure.RUnlock()
-	if m.tree.root == 0 || (bounded && lower >= upper) {
+	if bounded && lower >= upper {
 		return
 	}
-	id := m.tree.end(reverse)
-	if bounded {
-		key := lower
-		if reverse {
-			key = upper
+	var buf [scanLeaves * nodeSize]wordEntry
+	// The open end of the range still to visit: inclusive below, exclusive
+	// above. started reports that an unbounded reverse walk has an end. next
+	// is the following leaf, valid while the structural epoch stays epoch.
+	low, high, started := lower, upper, bounded
+	var next uint32
+	var epoch uint64
+	for {
+		count, done := m.copyLeaf(low, high, started, reverse, bounded, &buf, &next, &epoch)
+		for i := 0; i < count; i++ {
+			if !visit(buf[i].key, buf[i].value) {
+				return
+			}
 		}
-		id = m.leafFor(key)
+		if done || count == 0 {
+			return
+		}
+		last := buf[count-1].key
+		if reverse {
+			high, started = last, true
+		} else {
+			if last == ^uint64(0) {
+				return
+			}
+			low = last + 1
+		}
+	}
+}
+
+// scanLeaves bounds the leaves a scan copies per latch acquisition, and so
+// how long it can hold back a structural writer.
+const scanLeaves = 4
+
+// copyLeaf copies, in visiting order, the entries of up to scanLeaves leaves
+// from the first that holds any in range: at least low ascending, below high descending (when
+// limited), and inside [lower, upper) when bounded. done reports that no
+// later leaf can hold more.
+func (m *wordMap) copyLeaf(low, high uint64, limited, reverse, bounded bool, buf *[scanLeaves * nodeSize]wordEntry, next *uint32, epoch *uint64) (count int, done bool) {
+	m.structure.RLock()
+	defer m.structure.RUnlock()
+	if m.tree.root == 0 {
+		return 0, true
+	}
+	version := m.version.Load()
+	id := m.tree.end(reverse)
+	if *next != 0 && *epoch == version {
+		// No split or merge since the last leaf: continue along the chain.
+		id = *next
+	} else if !reverse {
+		id = m.leafFor(low)
+	} else if limited {
+		id = m.leafFor(high)
 	}
 	for id != 0 {
 		n := m.tree.node(id)
-		if !n.visitNumeric(lower, upper, reverse, bounded, visit) {
-			return
-		}
+		n.mu.Lock()
 		if reverse {
+			end := int(n.n)
+			if limited {
+				end = n.lowerEntry(high)
+			}
+			for i := end - 1; i >= 0; i-- {
+				entry := n.entries()[i]
+				if bounded && entry.key < low {
+					done = true
+					break
+				}
+				buf[count] = entry
+				count++
+			}
 			id = n.prev
 		} else {
+			for i := n.lowerEntry(low); i < int(n.n); i++ {
+				entry := n.entries()[i]
+				if bounded && entry.key >= high {
+					done = true
+					break
+				}
+				buf[count] = entry
+				count++
+			}
 			id = n.next
 		}
-	}
-}
-func (n *wordNode) visitNumeric(lower, upper uint64, reverse, bounded bool, visit func(uint64, uint64) bool) bool {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if reverse {
-		start := int(n.n) - 1
-		if bounded {
-			start = n.lowerEntry(upper) - 1
-		}
-		for i := start; i >= 0; i-- {
-			entry := n.entries()[i]
-			if bounded && entry.key < lower || !visit(entry.key, entry.value) {
-				return false
-			}
-		}
-	} else {
-		start := 0
-		if bounded {
-			start = n.lowerEntry(lower)
-		}
-		for i := start; i < int(n.n); i++ {
-			entry := n.entries()[i]
-			if bounded && entry.key >= upper || !visit(entry.key, entry.value) {
-				return false
-			}
+		n.mu.Unlock()
+		if done || count > len(buf)-nodeSize {
+			break
 		}
 	}
-	return true
+	*next, *epoch = id, version
+	return count, done || id == 0
 }
+
 func (m *wordMap) edge(last, pop bool) (uint64, uint64, bool) {
 	m.structure.Lock()
 	defer m.structure.Unlock()

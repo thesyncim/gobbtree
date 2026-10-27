@@ -624,14 +624,3 @@ func (t *treeCore[K, V, O]) InsertMany(entries []Entry[K, V], dst []Result[V]) {
 		dst[i].Value, dst[i].OK = t.Insert(e.Key, e.Value)
 	}
 }
-
-// Clone makes an independent tree; values and keys are shallow copies.
-func (t *Tree[K, V]) Clone() *Tree[K, V] { return &Tree[K, V]{*t.clone()} }
-
-func (t *treeCore[K, V, O]) clone() *treeCore[K, V, O] {
-	out := new(treeCore[K, V, O])
-	for k, v := range t.All() {
-		out.Insert(k, v)
-	}
-	return out
-}

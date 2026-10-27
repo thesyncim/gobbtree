@@ -30,7 +30,10 @@ func TestConcurrentMutation(t *testing.T) {
 	if m.Len() != workers*perWorker*2/3 {
 		t.Fatal(m.Len())
 	}
-	snap := m.Snapshot()
+	var snap []Entry[int, int]
+	for k, v := range m.All() {
+		snap = append(snap, Entry[int, int]{k, v})
+	}
 	if len(snap) != m.Len() {
 		t.Fatal("snapshot length")
 	}

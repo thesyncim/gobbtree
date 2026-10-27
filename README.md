@@ -57,8 +57,7 @@ All zero values are ready to use. Don't copy a container after first use.
 | `All()`, plus `Keys()` · `Values()` · `Reverse()` on Tree | Range-over-func iterators |
 | `First()` · `Last()` · `PopFirst()` · `PopLast()` | The end entries |
 | `Update` · `LoadOrStore` · `UpdateOrInsert` · `DeleteIf` | Atomic read-modify-write on `Map` |
-| `LowerBound` · `UpperBound` · `SplitOff` · `Append` · `Retain` · `ExtractIf` · `Clone` | Ordered editing on `Tree` |
-| `Snapshot()` | A consistent copy of a `Map`'s entries |
+| `LowerBound` · `UpperBound` · `SplitOff` · `Append` · `Retain` · `ExtractIf` | Ordered editing on `Tree` |
 
 Keys follow `cmp.Compare`: NaN sorts first and `-0 == +0`. An equal key keeps the originally stored key. Keys and values are copied shallowly.
 
@@ -108,11 +107,11 @@ A composite key encodes its fields one after another. For example, a `uint32` te
 
 ## Concurrency
 
-`Map` lookups of word values (integers, floats, bools) are lock-free: they read numeric slabs or immutable search images and retry if a writer interfered. Other values are read under a leaf read latch, so their writes publish no snapshots and allocate nothing. Writers lock single leaves; splits, merges and scans take a structural lock.
+`Map` lookups of word values (integers, floats, bools) are lock-free: they read numeric slabs or immutable search images and retry if a writer interfered. Other values are read under a leaf read latch, so their writes publish no snapshots and allocate nothing. Writers lock single leaves; splits and merges take a structural lock.
 
-- Scans are ordered but only weakly consistent under concurrent writes. Use `Snapshot()` when you need a consistent copy.
+- Scans (`Scan`, `ScanReverse`, `All`, `First`, `Last`) work like upstream's: they copy a leaf at a time and release its latches before visiting, so a scan never holds writers back for longer than one leaf copy, and its callback may use the map. A scan is not a snapshot: an entry present throughout is visited exactly once; entries inserted or removed meanwhile may or may not be.
 - Each batch entry is consistent on its own; a batch is not a transaction.
-- Callbacks run under locks and must not call back into the same map. A panicking callback releases its locks and stores nothing.
+- `Read`, `Update`, `UpdateOrInsert` and `DeleteIf` run their callbacks under the entry's lock; those must not call back into the same map. A panicking callback releases its locks and stores nothing.
 
 ## File maps
 

@@ -11,8 +11,9 @@ import (
 // textual leaves with other values are read under their latch.
 // Built-in word values use atomic loads; other values use a leaf latch. Writers
 // latch leaves independently; splits, merges and routing changes take a structural
-// latch exclusively. Scans and callbacks also hold the structural read latch.
-// Do not copy a Map after first use. Callbacks must not reenter the same Map.
+// latch exclusively. Scans copy a leaf at a time and visit without latches.
+// Do not copy a Map after first use. Read, Update, UpdateOrInsert and DeleteIf
+// callbacks run under the entry's latch and must not reenter the same Map.
 type Map[K cmp.Ordered, V any] struct{ mapCore[K, V, natural[K]] }
 
 // mapCore implements Map and MapOf for one key ordering.
@@ -461,9 +462,11 @@ func (m *mapCore[K, V, O]) InsertMany(entries []Entry[K, V], dst []Result[V]) {
 	}
 }
 
-// Scan visits [lower,upper) in ascending order, one leaf at a time. It is
-// weakly consistent under concurrent writes, not a snapshot. Callbacks run
-// under latches and must not reenter this map. Returning false stops early.
+// Scan visits [lower,upper) in ascending order, a leaf at a time, as
+// upstream's scan does. Each leaf is copied under its latches, released before
+// visit runs, so visit holds no latch and may use the map. It is not a
+// snapshot: an entry present throughout is visited exactly once; entries
+// inserted or removed meanwhile may or may not be. Returning false stops.
 func (m *mapCore[K, V, O]) Scan(lower, upper K, visit func(K, V) bool) {
 	if words := m.numericMap(); words != nil {
 		words.walk(numericKey[O](lower), numericKey[O](upper), false, true, func(k, v uint64) bool {
@@ -471,17 +474,12 @@ func (m *mapCore[K, V, O]) Scan(lower, upper K, visit func(K, V) bool) {
 		})
 		return
 	}
-	m.structure.RLock()
-	defer m.structure.RUnlock()
-	if m.tree.root == nil || compareKeys[O](lower, upper) >= 0 {
-		return
-	}
-	for n := m.tree.root.findLeaf(lower); n != nil; n = n.leaf.next {
-		if !n.scanLeaf(lower, upper, false, visit) {
-			return
-		}
+	if compareKeys[O](lower, upper) < 0 {
+		m.walk(&lower, &upper, false, visit)
 	}
 }
+
+// ScanReverse is Scan in descending order.
 func (m *mapCore[K, V, O]) ScanReverse(lower, upper K, visit func(K, V) bool) {
 	if words := m.numericMap(); words != nil {
 		words.walk(numericKey[O](lower), numericKey[O](upper), true, true, func(k, v uint64) bool {
@@ -489,105 +487,146 @@ func (m *mapCore[K, V, O]) ScanReverse(lower, upper K, visit func(K, V) bool) {
 		})
 		return
 	}
-	m.structure.RLock()
-	defer m.structure.RUnlock()
-	if m.tree.root == nil || compareKeys[O](lower, upper) >= 0 {
-		return
+	if compareKeys[O](lower, upper) < 0 {
+		m.walk(&lower, &upper, true, visit)
 	}
-	for n := m.tree.root.findLeaf(upper); n != nil; n = n.leaf.prev {
-		if !n.scanLeaf(lower, upper, true, visit) {
-			return
-		}
-	}
-}
-func (n *node[K, V, O]) scanLeaf(lower, upper K, reverse bool, visit func(K, V) bool) bool {
-	n.leaf.mu.RLock()
-	defer n.leaf.mu.RUnlock()
-	if reverse {
-		for i := n.lower(upper) - 1; i >= 0; i-- {
-			if compareKeys[O](n.keys[i], lower) < 0 || !visit(n.keys[i], n.leaf.values[i]) {
-				return false
-			}
-		}
-	} else {
-		for i := n.lower(lower); i < n.n; i++ {
-			if compareKeys[O](n.keys[i], upper) >= 0 || !visit(n.keys[i], n.leaf.values[i]) {
-				return false
-			}
-		}
-	}
-	return true
 }
 
-// All visits every entry in key order, with the same callback and consistency
-// rules as Scan. Use Snapshot to iterate without holding map latches.
+// All visits every entry in key order, as Scan does.
 func (m *mapCore[K, V, O]) All() iter.Seq2[K, V] {
-	if words := m.numericMap(); words != nil {
-		return func(yield func(K, V) bool) {
+	return func(yield func(K, V) bool) {
+		if words := m.numericMap(); words != nil {
 			words.walk(0, 0, false, false, func(k, v uint64) bool {
 				return yield(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
 			})
+			return
 		}
+		m.walk(nil, nil, false, yield)
 	}
-	return func(yield func(K, V) bool) {
-		m.structure.RLock()
-		defer m.structure.RUnlock()
-		for n := m.tree.firstLeaf(); n != nil; n = n.leaf.next {
-			if !n.visitLeaf(yield) {
+}
+
+// walk visits leaf copies from lower (inclusive) to upper (exclusive); a nil
+// bound is open. It resumes past the last key it visited.
+func (m *mapCore[K, V, O]) walk(lower, upper *K, reverse bool, visit func(K, V) bool) {
+	var keys [scanLeaves * nodeSize]K
+	var values [scanLeaves * nodeSize]V
+	var last K
+	resumed := false
+	// next is the following leaf, valid while the structural epoch stays epoch.
+	var next *node[K, V, O]
+	var epoch uint64
+	for {
+		count, done := m.copyLeaf(lower, upper, &last, resumed, reverse, &keys, &values, &next, &epoch)
+		for i := 0; i < count; i++ {
+			if !visit(keys[i], values[i]) {
 				return
 			}
 		}
-	}
-}
-func (n *node[K, V, O]) visitLeaf(yield func(K, V) bool) bool {
-	n.leaf.mu.RLock()
-	defer n.leaf.mu.RUnlock()
-	for i := 0; i < n.n; i++ {
-		if !yield(n.keys[i], n.leaf.values[i]) {
-			return false
+		if done || count == 0 {
+			return
 		}
+		last, resumed = keys[count-1], true
 	}
-	return true
 }
 
-// Snapshot returns a consistent ascending copy of the entries, allocating
-// one slice. Writers are excluded while the slice is copied.
-func (m *mapCore[K, V, O]) Snapshot() []Entry[K, V] {
+// copyLeaf copies, in visiting order, the entries of up to scanLeaves leaves
+// from the first that holds any in range and past last when resumed. done reports that no later
+// leaf can hold more.
+func (m *mapCore[K, V, O]) copyLeaf(lower, upper, last *K, resumed, reverse bool, keys *[scanLeaves * nodeSize]K, values *[scanLeaves * nodeSize]V, chain **node[K, V, O], epoch *uint64) (count int, done bool) {
+	m.structure.RLock()
+	defer m.structure.RUnlock()
+	if m.tree.root == nil {
+		return 0, true
+	}
+	version := m.version.Load()
+	var n *node[K, V, O]
+	switch {
+	case resumed && *chain != nil && *epoch == version:
+		// No split or merge since the last leaf: continue along the chain.
+		n = *chain
+	case resumed:
+		n = m.tree.root.findLeaf(*last)
+	case reverse && upper != nil:
+		n = m.tree.root.findLeaf(*upper)
+	case reverse:
+		n = m.tree.lastLeaf()
+	case lower != nil:
+		n = m.tree.root.findLeaf(*lower)
+	default:
+		n = m.tree.firstLeaf()
+	}
+	for n != nil {
+		n.leaf.mu.RLock()
+		if reverse {
+			end := n.n
+			if resumed {
+				end = n.lower(*last)
+			} else if upper != nil {
+				end = n.lower(*upper)
+			}
+			for i := end - 1; i >= 0; i-- {
+				if lower != nil && compareKeys[O](n.keys[i], *lower) < 0 {
+					done = true
+					break
+				}
+				keys[count], values[count] = n.keys[i], n.leaf.values[i]
+				count++
+			}
+		} else {
+			start := 0
+			if resumed {
+				start, _ = n.lowerExact(*last)
+				if start < n.n && compareKeys[O](n.keys[start], *last) == 0 {
+					start++
+				}
+			} else if lower != nil {
+				start = n.lower(*lower)
+			}
+			for i := start; i < n.n; i++ {
+				if upper != nil && compareKeys[O](n.keys[i], *upper) >= 0 {
+					done = true
+					break
+				}
+				keys[count], values[count] = n.keys[i], n.leaf.values[i]
+				count++
+			}
+		}
+		next := n.leaf.next
+		if reverse {
+			next = n.leaf.prev
+		}
+		n.leaf.mu.RUnlock()
+		if done || next == nil || count > len(keys)-nodeSize {
+			*chain, *epoch = next, version
+			return count, done || next == nil
+		}
+		n = next
+	}
+	return 0, true
+}
+
+// First returns the smallest entry, read like a scan.
+func (m *mapCore[K, V, O]) First() (key K, value V, ok bool) {
+	for key, value = range m.All() {
+		return key, value, true
+	}
+	return key, value, false
+}
+
+// Last returns the largest entry, read like a scan.
+func (m *mapCore[K, V, O]) Last() (key K, value V, ok bool) {
 	if words := m.numericMap(); words != nil {
-		m.structure.Lock()
-		defer m.structure.Unlock()
-		out := make([]Entry[K, V], 0, m.Len())
-		words.tree.all(false, func(k, v uint64) bool {
-			out = append(out, Entry[K, V]{decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind)})
-			return true
+		words.walk(0, 0, true, false, func(k, v uint64) bool {
+			key, value, ok = decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind), true
+			return false
 		})
-		return out
+		return key, value, ok
 	}
-	m.structure.Lock()
-	defer m.structure.Unlock()
-	out := make([]Entry[K, V], 0, m.Len())
-	for k, v := range m.tree.All() {
-		out = append(out, Entry[K, V]{k, v})
-	}
-	return out
-}
-func (m *mapCore[K, V, O]) First() (K, V, bool) {
-	if words := m.numericMap(); words != nil {
-		k, v, found := words.edge(false, false)
-		return mapWordEntry[K, V](k, v, found, words)
-	}
-	m.structure.Lock()
-	defer m.structure.Unlock()
-	return m.tree.First()
-}
-func (m *mapCore[K, V, O]) Last() (K, V, bool) {
-	if words := m.numericMap(); words != nil {
-		k, v, found := words.edge(true, false)
-		return mapWordEntry[K, V](k, v, found, words)
-	}
-	m.structure.Lock()
-	defer m.structure.Unlock()
-	return m.tree.Last()
+	m.walk(nil, nil, true, func(k K, v V) bool {
+		key, value, ok = k, v, true
+		return false
+	})
+	return key, value, ok
 }
 func (m *mapCore[K, V, O]) PopFirst() (K, V, bool) {
 	if words := m.numericMap(); words != nil {

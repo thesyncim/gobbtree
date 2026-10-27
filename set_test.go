@@ -168,7 +168,10 @@ func TestSetOperations(t *testing.T) {
 	if !upper.IsEmpty() || !slices.Equal(slices.Collect(s.All()), want) {
 		t.Fatal("append")
 	}
-	clone := s.Clone()
+	clone := NewSet[int]()
+	for k := range s.All() {
+		clone.Insert(k)
+	}
 	s.Retain(func(k int) bool { return k%2 == 0 })
 	for k := range s.All() {
 		if k%2 != 0 {
@@ -280,7 +283,10 @@ func TestTreeBoundsAndMoves(t *testing.T) {
 		}
 	}
 	for _, cut := range []uint64{5001, 0, math.MaxUint64, 9998, 1500} {
-		copy := tr.Clone()
+		copy := NewTree[uint64, uint64]()
+		for k, v := range tr.All() {
+			copy.Insert(k, v)
+		}
 		upper := copy.SplitOff(cut)
 		checkTree(t, copy)
 		checkTree(t, upper)

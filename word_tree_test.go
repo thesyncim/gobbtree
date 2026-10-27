@@ -323,10 +323,9 @@ func TestWordValues(t *testing.T) {
 				t.Fatal("lookup changed value bits")
 			}
 		}
-		clone := tr.Clone()
 		tr.Clear()
-		if tr.words != nil || tr.Len() != 0 || clone.Len() != 5 {
-			t.Fatal("numeric clear or clone")
+		if tr.words != nil || tr.Len() != 0 {
+			t.Fatal("numeric clear")
 		}
 	}
 	var tr Tree[uint64, *int]

@@ -331,13 +331,7 @@ func CreateFile[K cmp.Ordered, V any](path string, entries iter.Seq2[K, V]) erro
 }
 
 func (t *Tree[K, V]) WriteFile(path string) error { return CreateFile(path, t.All()) }
-func (m *Map[K, V]) WriteFile(path string) error {
-	snapshot := m.Snapshot()
-	return CreateFile(path, func(yield func(K, V) bool) {
-		for _, entry := range snapshot {
-			if !yield(entry.Key, entry.Value) {
-				return
-			}
-		}
-	})
-}
+
+// WriteFile writes the entries a scan visits; under concurrent writes the
+// file is not a snapshot.
+func (m *Map[K, V]) WriteFile(path string) error { return CreateFile(path, m.All()) }

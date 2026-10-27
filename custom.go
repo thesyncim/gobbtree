@@ -47,9 +47,6 @@ func NewTreeOf[K Key[K], V any]() *TreeOf[K, V] { return new(TreeOf[K, V]) }
 func NewMapOf[K Key[K], V any]() *MapOf[K, V]   { return new(MapOf[K, V]) }
 func NewSetOf[K Key[K]]() *SetOf[K]             { return new(SetOf[K]) }
 
-// Clone makes an independent tree; values and keys are shallow copies.
-func (t *TreeOf[K, V]) Clone() *TreeOf[K, V] { return &TreeOf[K, V]{*t.clone()} }
-
 // Append moves other's entries into t. Duplicate keys keep t's stored key
 // and take other's value. Afterwards other is empty.
 func (t *TreeOf[K, V]) Append(other *TreeOf[K, V]) { t.appendTree(&other.treeCore) }
@@ -57,7 +54,6 @@ func (t *TreeOf[K, V]) Append(other *TreeOf[K, V]) { t.appendTree(&other.treeCor
 // SplitOff moves entries at or above key into a new tree.
 func (t *TreeOf[K, V]) SplitOff(key K) *TreeOf[K, V] { return &TreeOf[K, V]{*t.splitOff(key)} }
 
-func (s *SetOf[K]) Clone() *SetOf[K]                         { return &SetOf[K]{*s.clone()} }
 func (s *SetOf[K]) Append(other *SetOf[K])                   { s.tree.appendTree(&other.tree) }
 func (s *SetOf[K]) SplitOff(key K) *SetOf[K]                 { return &SetOf[K]{*s.splitOff(key)} }
 func (s *SetOf[K]) Union(other *SetOf[K]) iter.Seq[K]        { return s.merge(&other.setCore, 7) }

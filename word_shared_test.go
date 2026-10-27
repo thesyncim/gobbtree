@@ -317,8 +317,8 @@ func TestSmallNumericReadCache(t *testing.T) {
 			if words.view.Load().cache != nil {
 				t.Fatal("key mutation kept stale cache")
 			}
-			for _, entry := range m.Snapshot() {
-				if v, ok := m.Get(entry.Key); !ok || v != entry.Value {
+			for key, value := range m.All() {
+				if v, ok := m.Get(key); !ok || v != value {
 					t.Fatal("lookup after cache retirement")
 				}
 			}

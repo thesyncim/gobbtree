@@ -14,7 +14,6 @@ type setCore[K any, O keyOrder[K]] struct{ tree treeCore[K, struct{}, O] }
 
 func NewSet[K cmp.Ordered]() *Set[K] { return new(Set[K]) }
 
-func (s *Set[K]) Clone() *Set[K]                                { return &Set[K]{*s.clone()} }
 func (s *Set[K]) Append(other *Set[K])                          { s.tree.appendTree(&other.tree) }
 func (s *Set[K]) SplitOff(key K) *Set[K]                        { return &Set[K]{*s.splitOff(key)} }
 func (s *Set[K]) Union(other *Set[K]) iter.Seq[K]               { return s.merge(&other.setCore, 7) }
@@ -88,7 +87,6 @@ func (s *setCore[K, O]) InsertMany(keys []K, dst []bool) {
 	}
 }
 
-func (s *setCore[K, O]) clone() *setCore[K, O] { return &setCore[K, O]{tree: *s.tree.clone()} }
 func (s *setCore[K, O]) splitOff(key K) *setCore[K, O] {
 	return &setCore[K, O]{tree: *s.tree.splitOff(key)}
 }
