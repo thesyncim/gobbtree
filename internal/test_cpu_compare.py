@@ -1,10 +1,12 @@
 import unittest
 
-from cpu_compare import MASK64, mix, replacement_checksum
+from cpu_compare import MASK64, key_of, mix, replacement_checksum
+
+PATTERNS = ("mixed", "sequential", "clustered")
 
 
-def simulate_replacements(size, query_count, rounds, skip_writes=False):
-    queries = [mix(mix(i + 17) % size) for i in range(query_count)]
+def simulate_replacements(size, query_count, rounds, skip_writes=False, pattern="mixed"):
+    queries = [key_of(mix(i + 17) % size, size, pattern) for i in range(query_count)]
     values = {key: key for key in queries}
     full_sum = masked_sum = 0
     for round_index in range(rounds):
@@ -20,21 +22,22 @@ def simulate_replacements(size, query_count, rounds, skip_writes=False):
 
 class ReplacementChecksumTests(unittest.TestCase):
     def test_formula_matches_stateful_operations(self):
-        for size in (1, 2, 3, 7, 8, 17, 32, 257):
-            for query_count in (8, 16, 32, 64):
-                for rounds in range(1, 8):
-                    with self.subTest(size=size, queries=query_count, rounds=rounds):
-                        expected, _, final_ok = simulate_replacements(size, query_count, rounds)
-                        self.assertEqual(replacement_checksum(size, query_count, rounds), expected)
-                        self.assertTrue(final_ok)
+        for pattern in PATTERNS:
+            for size in (1, 2, 3, 7, 8, 17, 32, 257):
+                for query_count in (8, 16, 32, 64):
+                    for rounds in range(1, 8):
+                        with self.subTest(pattern=pattern, size=size, queries=query_count, rounds=rounds):
+                            expected, _, final_ok = simulate_replacements(size, query_count, rounds, pattern=pattern)
+                            self.assertEqual(replacement_checksum(size, query_count, rounds, pattern), expected)
+                            self.assertTrue(final_ok)
 
     def test_duplicates_use_new_value_after_first_occurrence(self):
         # The sole key is zero. In round one only the first old value is zero;
         # the other seven replacements observe the value written earlier.
-        self.assertEqual(replacement_checksum(1, 8, 1), 0)
-        self.assertEqual(replacement_checksum(1, 8, 2), 7)
-        self.assertEqual(replacement_checksum(1, 8, 3), 8)
-        self.assertEqual(replacement_checksum(1, 8, 4), 15)
+        self.assertEqual(replacement_checksum(1, 8, 1, "mixed"), 0)
+        self.assertEqual(replacement_checksum(1, 8, 2, "mixed"), 7)
+        self.assertEqual(replacement_checksum(1, 8, 3, "mixed"), 8)
+        self.assertEqual(replacement_checksum(1, 8, 4, "mixed"), 15)
 
     def test_old_mask_cannot_detect_skipped_writes(self):
         for rounds in (2, 3, 4):
