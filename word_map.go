@@ -354,7 +354,9 @@ func (m *wordMap) locate(key uint64) (uint32, *wordNode, int) {
 	}
 }
 func (m *wordMap) insert(key, value uint64) (uint64, bool) {
-	if n, id, view, ok := m.lockLeafIfLaneFree(key); ok {
+	if !m.laneFree() {
+		// Before readers are active, writers take lanes.
+	} else if n, id, view, ok := m.lockLeafIfLaneFree(key); ok {
 		old, replaced, done := m.insertInLeaf(n, id, view, key, value)
 		n.mu.Unlock()
 		if done {
@@ -420,7 +422,10 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	guard = m.lockStructure(guard)
 	m.disableReadCache()
 	m.version.Add(1)
-	m.lockWindow(key)
+	if m.laneFree() {
+		// Only lane-free writers can hold leaves beside the structure lock.
+		m.lockWindow(key)
+	}
 	defer m.endStructure(guard)
 	var old uint64
 	var replaced bool
@@ -459,7 +464,9 @@ func (m *wordMap) endStructure(guard structuralGuard) {
 	}
 }
 func (m *wordMap) delete(key uint64) (uint64, bool) {
-	if n, _, _, ok := m.lockLeafIfLaneFree(key); ok {
+	if !m.laneFree() {
+		// Before readers are active, writers take lanes.
+	} else if n, _, _, ok := m.lockLeafIfLaneFree(key); ok {
 		value, found, done := m.deleteInLeaf(n, key)
 		n.mu.Unlock()
 		if done {
@@ -515,7 +522,10 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 	guard = m.lockStructure(guard)
 	m.disableReadCache()
 	m.version.Add(1)
-	m.lockWindow(key)
+	if m.laneFree() {
+		// Only lane-free writers can hold leaves beside the structure lock.
+		m.lockWindow(key)
+	}
 	defer m.endStructure(guard)
 	value, found := m.tree.delete(key)
 	if found {
