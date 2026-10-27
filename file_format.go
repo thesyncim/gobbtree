@@ -253,7 +253,9 @@ func newDiskLayout[K, V any]() (diskLayout, error) {
 	return l, nil
 }
 
-func (l diskLayout) validate(data []byte) (root, count int, err error) {
+// header checks data's header alone, as upstream's FileHeader::read does:
+// the layout, the lengths, and that the root page lies in the map.
+func (l diskLayout) header(data []byte) (root, count int, err error) {
 	bad := func(reason string) (int, int, error) { return 0, 0, fmt.Errorf("%w: %s", ErrFileFormat, reason) }
 	if len(data) < 64 || string(data[:8]) != "bbtreeIM" {
 		return bad("header")
@@ -280,6 +282,17 @@ func (l diskLayout) validate(data []byte) (root, count int, err error) {
 	if ro < 64 || ro%l.rootAlign != 0 || ro > len(data)-l.rootSize || data[ro+l.area] > 64 {
 		return bad("root page")
 	}
+	return root, count, nil
+}
+
+// validate checks the header and every page the tree reaches, as upstream's
+// FileMap::open does.
+func (l diskLayout) validate(data []byte) (root, count int, err error) {
+	if root, count, err = l.header(data); err != nil || root == 0 {
+		return root, count, err
+	}
+	bad := func(reason string) (int, int, error) { return 0, 0, fmt.Errorf("%w: %s", ErrFileFormat, reason) }
+	data = data[:int(binary.LittleEndian.Uint64(data[40:]))]
 	var first, end [fileMaxDepth + 1]int
 	leafDepth, entries, leafCount := -1, 0, 0
 	checkSpan := func(slot int, d diskType) bool {

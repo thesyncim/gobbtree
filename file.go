@@ -23,21 +23,36 @@ type FileMap[K cmp.Ordered, V any] struct {
 	cleanup      runtime.Cleanup
 }
 
-// OpenFileMap validates and takes an owned copy of a serialized snapshot.
+// OpenFileMap checks every page of a serialized snapshot and takes an owned
+// copy of it, as upstream's FileMap::open does.
 func OpenFileMap[K cmp.Ordered, V any](data []byte) (*FileMap[K, V], error) {
-	return openFileMap[K, V](append([]byte(nil), data...), nil)
+	return openFileMap[K, V](append([]byte(nil), data...), true, nil)
 }
 
-func openFileMap[K cmp.Ordered, V any](data []byte, unmap func() error) (*FileMap[K, V], error) {
+// OpenFileMapUnchecked takes an owned copy of a serialized snapshot after
+// checking its header alone, as upstream's open_unchecked does. The bytes
+// should be what a FileWriter wrote, or what OpenFileMap accepted. A corrupt
+// snapshot is never read out of bounds, but lookups and iteration on it may
+// give wrong answers or panic.
+func OpenFileMapUnchecked[K cmp.Ordered, V any](data []byte) (*FileMap[K, V], error) {
+	return openFileMap[K, V](append([]byte(nil), data...), false, nil)
+}
+
+func openFileMap[K cmp.Ordered, V any](data []byte, checked bool, unmap func() error) (*FileMap[K, V], error) {
 	l, err := newDiskLayout[K, V]()
 	if err != nil {
 		return nil, err
 	}
-	root, count, err := l.validate(data)
+	check := l.header
+	if checked {
+		check = l.validate
+	}
+	root, count, err := check(data)
 	if err != nil {
 		return nil, err
 	}
-	m := &FileMap[K, V]{data: data[:int(binary.LittleEndian.Uint64(data[40:]))], layout: l, root: root, length: count, unmap: unmap}
+	n := int(binary.LittleEndian.Uint64(data[40:]))
+	m := &FileMap[K, V]{data: data[:n:n], layout: l, root: root, length: count, unmap: unmap}
 	if unmap != nil {
 		// The cleanup argument holds the mapping, never m. Explicit Close
 		// releases it promptly; unreachable maps also release OS resources.
@@ -46,64 +61,111 @@ func openFileMap[K cmp.Ordered, V any](data []byte, unmap func() error) (*FileMa
 	return m, nil
 }
 
-// ReadFile loads and validates a snapshot without rebuilding its tree.
+// ReadFile reads a snapshot into memory and checks every page, as upstream's
+// read does.
 func ReadFile[K cmp.Ordered, V any](path string) (*FileMap[K, V], error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return openFileMap[K, V](data, nil)
+	return openFileMap[K, V](data, true, nil)
 }
 
-// ReadFileRange loads a snapshot embedded at offset in a larger file.
-func ReadFileRange[K cmp.Ordered, V any](file *os.File, offset, length int64) (*FileMap[K, V], error) {
-	if err := checkFileRange(file, offset, length); err != nil {
+// ReadFileRange reads a snapshot embedded in a larger file, as WriteAt
+// placed it, and checks every page, as upstream's read_range does.
+func ReadFileRange[K cmp.Ordered, V any](file *os.File, r FileRange) (*FileMap[K, V], error) {
+	if err := checkFileRange(file, r); err != nil {
 		return nil, err
 	}
-	data := make([]byte, int(length))
-	if _, err := file.ReadAt(data, offset); err != nil {
+	data := make([]byte, int(r.Length))
+	if _, err := file.ReadAt(data, r.Offset); err != nil {
 		return nil, err
 	}
-	return openFileMap[K, V](data, nil)
+	return openFileMap[K, V](data, true, nil)
 }
 
-func checkFileRange(file *os.File, offset, length int64) error {
+func checkFileRange(file *os.File, r FileRange) error {
 	info, err := file.Stat()
 	if err != nil {
 		return err
 	}
+	offset, length := r.Offset, r.Length
 	if offset < 0 || length < fileHeaderSize || uint64(length) > uint64(^uint(0)>>1) || offset > info.Size() || length > info.Size()-offset {
 		return fmt.Errorf("%w: file range", ErrFileFormat)
 	}
 	return nil
 }
 
-// MmapFile validates a read-only mapping. The file must not be modified or
-// truncated while mapped; CreateFile publishes a replacement by renaming.
-func MmapFile[K cmp.Ordered, V any](path string) (*FileMap[K, V], error) {
-	f, err := os.Open(path)
+// OsPages is the size of OS pages a snapshot is mapped in, as upstream's
+// OsPages.
+type OsPages uint8
+
+const (
+	// OsPagesSmall maps in the system's own pages: a lookup that reaches a
+	// page not in memory reads a few KiB of the file.
+	OsPagesSmall OsPages = iota
+	// OsPagesHuge advises 2 MiB pages on Linux (MADV_HUGEPAGE): once in
+	// memory, lookups miss the TLB less, but a lookup that reaches a page not
+	// in memory reads 2 MiB of the file. Elsewhere, as OsPagesSmall.
+	OsPagesHuge
+)
+
+// MmapOptions says how Mmap maps a snapshot: the whole file or the range
+// WriteAt returned, in small or huge OS pages, as upstream's MmapOptions.
+type MmapOptions[K cmp.Ordered, V any] struct {
+	path     string
+	r        FileRange
+	hasRange bool
+	pages    OsPages
+}
+
+// Mmap maps the whole file at path, in small OS pages, unless set otherwise;
+// Open maps it, as upstream's mmap does.
+func Mmap[K cmp.Ordered, V any](path string) MmapOptions[K, V] {
+	return MmapOptions[K, V]{path: path}
+}
+
+// Pages sets the OS pages to map the file in.
+func (o MmapOptions[K, V]) Pages(pages OsPages) MmapOptions[K, V] {
+	o.pages = pages
+	return o
+}
+
+// Range sets the range of the file the snapshot lies in, as WriteAt
+// returned it.
+func (o MmapOptions[K, V]) Range(r FileRange) MmapOptions[K, V] {
+	o.r, o.hasRange = r, true
+	return o
+}
+
+// Open maps the snapshot read-only and checks its header alone, as upstream's
+// mmap does: opening reads the first page, lookups read the rest as they
+// reach it. The file should hold what a FileWriter wrote and must not be
+// modified or truncated while mapped; WriteFile publishes a replacement by
+// renaming. A corrupt snapshot is never read out of bounds, but lookups and
+// iteration on it may give wrong answers or panic. ReadFile checks every page.
+func (o MmapOptions[K, V]) Open() (*FileMap[K, V], error) {
+	f, err := os.Open(o.path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	info, err := f.Stat()
+	r := o.r
+	if !o.hasRange {
+		info, err := f.Stat()
+		if err != nil {
+			return nil, err
+		}
+		r = FileRange{0, info.Size()}
+	}
+	if err := checkFileRange(f, r); err != nil {
+		return nil, err
+	}
+	data, unmap, err := mapFileReadOnly(f, r.Offset, int(r.Length), o.pages)
 	if err != nil {
 		return nil, err
 	}
-	return MmapFileRange[K, V](f, 0, info.Size())
-}
-
-// MmapFileRange maps an embedded snapshot. The caller may close file after
-// this returns; FileMap.Close releases the independent mapping.
-func MmapFileRange[K cmp.Ordered, V any](file *os.File, offset, length int64) (*FileMap[K, V], error) {
-	if err := checkFileRange(file, offset, length); err != nil {
-		return nil, err
-	}
-	data, unmap, err := mapFileReadOnly(file, offset, int(length))
-	if err != nil {
-		return nil, err
-	}
-	m, err := openFileMap[K, V](data, unmap)
+	m, err := openFileMap[K, V](data, false, unmap)
 	if err != nil {
 		_ = unmap()
 		return nil, err
@@ -131,6 +193,10 @@ func (m *FileMap[K, V]) Len() int      { m.mu.RLock(); defer m.mu.RUnlock(); ret
 func (m *FileMap[K, V]) IsEmpty() bool { return m.Len() == 0 }
 func (m *FileMap[K, V]) ByteLen() int  { m.mu.RLock(); defer m.mu.RUnlock(); return len(m.data) }
 
+// Alignment is what the snapshot's offset in a file must be a multiple of,
+// as upstream's FileMap::alignment: what WriteAt rounds up to.
+func (m *FileMap[K, V]) Alignment() int { return m.layout.rootAlign }
+
 func (m *FileMap[K, V]) child(node, index int) int {
 	l := m.layout.internal
 	return node + int(binary.NativeEndian.Uint64(m.data[node+l.trailing+index*l.stride:]))
@@ -142,7 +208,10 @@ func (m *FileMap[K, V]) separatorSlot(node, index int) int {
 		return node + l.keys + index*l.keyStride
 	}
 	tagged := m.child(node, index+1)
-	for tagged&1 == 0 {
+	for depth := 0; tagged&1 == 0; depth++ {
+		if depth == fileMaxDepth {
+			panic("gobbtree: corrupt file map: tree too deep")
+		}
 		tagged = m.child(tagged, 0)
 	}
 	return (tagged &^ 1) + m.layout.leaf.headKey

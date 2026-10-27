@@ -117,7 +117,7 @@ func TestFileMapMmapAndReplacement(t *testing.T) {
 	if err := CreateFile(path, fileEntries(3001)); err != nil {
 		t.Fatal(err)
 	}
-	m, err := MmapFile[uint64, uint64](path)
+	m, err := Mmap[uint64, uint64](path).Open()
 	if errors.Is(err, ErrMmapUnavailable) {
 		t.Skip(err)
 	}
@@ -200,12 +200,12 @@ func TestFileMapRangesAndCloseInIterator(t *testing.T) {
 	for _, mmap := range []bool{false, true} {
 		var m *FileMap[uint64, uint64]
 		if mmap {
-			m, err = MmapFileRange[uint64, uint64](f, r.Offset, r.Length)
+			m, err = Mmap[uint64, uint64](f.Name()).Range(r).Pages(OsPagesHuge).Open()
 			if errors.Is(err, ErrMmapUnavailable) {
 				continue
 			}
 		} else {
-			m, err = ReadFileRange[uint64, uint64](f, r.Offset, r.Length)
+			m, err = ReadFileRange[uint64, uint64](f, r)
 		}
 		if err != nil {
 			t.Fatal(err)
@@ -222,7 +222,7 @@ func TestFileMapRangesAndCloseInIterator(t *testing.T) {
 			t.Fatalf("close in iterator: %d", count)
 		}
 	}
-	if _, err = ReadFileRange[uint64, uint64](f, math.MaxInt64, 100); err == nil {
+	if _, err = ReadFileRange[uint64, uint64](f, FileRange{math.MaxInt64, 100}); err == nil {
 		t.Fatal("invalid range")
 	}
 }
@@ -361,7 +361,7 @@ func TestUpstreamFileOracle(t *testing.T) {
 			t.Run(fmt.Sprintf("%d/%s", n, mode), func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "rust.bbt")
 				run(t, "write", path, fmt.Sprint(n), mode)
-				m, err := MmapFile[uint64, uint64](path)
+				m, err := Mmap[uint64, uint64](path).Open()
 				if errors.Is(err, ErrMmapUnavailable) {
 					m, err = ReadFile[uint64, uint64](path)
 				}
@@ -394,7 +394,7 @@ func TestUpstreamFileOracle(t *testing.T) {
 		t.Run(fmt.Sprintf("text/%d", n), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "rust.bbt")
 			run(t, "write-text", path, fmt.Sprint(n))
-			m, err := MmapFile[string, []byte](path)
+			m, err := Mmap[string, []byte](path).Open()
 			if errors.Is(err, ErrMmapUnavailable) {
 				m, err = ReadFile[string, []byte](path)
 			}
@@ -540,7 +540,7 @@ func TestFileMapOwnedResultsAndCleanup(t *testing.T) {
 	if err := CreateFile(path, func(yield func(string, []byte) bool) { yield("key", []byte("value")) }); err != nil {
 		t.Fatal(err)
 	}
-	m, err := MmapFile[string, []byte](path)
+	m, err := Mmap[string, []byte](path).Open()
 	if errors.Is(err, ErrMmapUnavailable) {
 		m, err = ReadFile[string, []byte](path)
 	}
@@ -564,7 +564,7 @@ func TestFileMapOwnedResultsAndCleanup(t *testing.T) {
 	}
 	w, _ := NewFileWriter(fileEntries(1))
 	var releases atomic.Int32
-	mock, err := openFileMap[uint64, uint64](w.Bytes(), func() error { releases.Add(1); return nil })
+	mock, err := openFileMap[uint64, uint64](w.Bytes(), false, func() error { releases.Add(1); return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

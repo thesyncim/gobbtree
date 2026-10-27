@@ -4,6 +4,6 @@ package gobbtree
 
 import "os"
 
-func mapFileReadOnly(_ *os.File, _ int64, _ int) ([]byte, func() error, error) {
+func mapFileReadOnly(*os.File, int64, int, OsPages) ([]byte, func() error, error) {
 	return nil, nil, ErrMmapUnavailable
 }

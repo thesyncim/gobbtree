@@ -127,17 +127,17 @@ A composite key encodes its fields one after another. For example, a `uint32` te
 ```go
 if err := tree.WriteFile("index.bbt"); err != nil { ... }
 
-disk, err := gobbtree.MmapFile[string, int]("index.bbt") // or ReadFile
+disk, err := gobbtree.Mmap[string, int]("index.bbt").Open() // or ReadFile
 if err != nil { ... }
 defer disk.Close()
 value, found := disk.Get("alpha")
 ```
 
-A file map validates the image and searches it in place, with no rebuild. It supports `Get`, `GetMany`, iteration in both directions and bounded scans. Files use upstream's version 1 format, which the Rust oracle tests in both directions.
+A file map searches the image in place, with no rebuild. As upstream, `ReadFile`, `ReadFileRange` and `OpenFileMap` check every page; `Mmap(...).Open()` and `OpenFileMapUnchecked` check the header alone, so a corrupt file may give wrong answers or panic, but is never read out of bounds. It supports `Get`, `GetMany`, iteration in both directions and bounded scans. Files use upstream's version 1 format, which the Rust oracle tests in both directions.
 
 - **Keys:** integer and string keys.
 - **Values:** numbers, plain arrays, empty structs, strings and byte slices.
-- **Writing:** `CreateFile` builds a file from an ascending `iter.Seq2`. `NewFileWriter`, `WriteAt`, `ReadFileRange` and `MmapFileRange` handle snapshots embedded in larger files.
+- **Writing:** `CreateFile` builds a file from an ascending `iter.Seq2`. `NewFileWriter`, `WriteAt`, `ReadFileRange` and `Mmap(...).Range` handle snapshots embedded in larger files; `Mmap(...).Pages(OsPagesHuge)` advises huge pages on Linux.
 - **Immutability:** to change a file map, write a new snapshot; `WriteFile` replaces the file atomically.
 
 ## Coming from bbtree
@@ -160,6 +160,8 @@ The API follows upstream's operations with Go names; results are Go multi-value 
 | `Clone` · `PartialEq`/`Eq` · `PartialOrd`/`Ord` · `Debug` · `into_iter`/`into_keys`/`into_values` | `Clone` · `EqualFunc`/`Equal` · `CompareFunc`/`Compare` · `String` · `Drain` |
 | `InlineKey` (`inline_key_at`) · byte-string keys, which compare from where they differ (`cmp_from`) | `Key` (`Window`) · `Bytes`; string and `Bytes` keys compare from where they differ |
 | `FileMap` · `FileWriter::from_ascending` | `FileMap` · `NewFileWriter` / `CreateFile` |
+| `FileMap::open` · `open_unchecked` · `NotAscending::index` | `OpenFileMap` · `OpenFileMapUnchecked` · `NotAscendingError.Index` |
+| bbtree-mmap `create` · `write_at` · `read` · `read_range` · `mmap().range().pages().open()` | `CreateFile` · `WriteAt` · `ReadFile` · `ReadFileRange` · `Mmap().Range().Pages().Open()` |
 
 Not carried over, because Go has no counterpart:
 - **References into the map.** Go takes values out and puts them back (the `Update` family and `Entry`), so `get_mut`, `iter_mut` and `range_mut` become `Update`, `UpdateAll` and `UpdateRange`.
