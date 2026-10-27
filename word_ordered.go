@@ -25,41 +25,10 @@ func (m *wordMap) getOrdered(view *wordReadView, key, version uint64) (value uin
 	var id uint32
 	var acc uint64
 	if c := view.leaves; c != nil {
-		index := (key - c.base) >> c.shift
-		if index >= uint64(len(c.cells)) {
+		var fill bool
+		id, fill, acc = c.lookupOrdered(key)
+		if fill {
 			return 0, false, false
-		}
-		cell := &c.cells[index]
-		head := *(*uint64)(unsafe.Pointer(&cell.head))
-		acc ^= head
-		if head <= 2 {
-			if head == 0 {
-				return 0, false, false
-			}
-		} else if first, second := head&leafCacheIDMask, head>>24&leafCacheIDMask; first == second {
-			id = uint32(first) | wordLeafID
-		} else {
-			tail := *after((*uint64)(unsafe.Pointer(&cell.tail)), head)
-			acc ^= tail
-			cut0 := head >> 48 & 1023
-			cut1 := head>>58 | ((tail >> 48 & 15) << 6)
-			cut2 := tail >> 52 & 1023
-			q := c.fraction(key)
-			if c.shift > 10 && (q == cut0 || q == cut1 || q == cut2) {
-				id = 0
-			} else {
-				leaf := first
-				if q >= cut0 {
-					leaf = second
-				}
-				if q >= cut1 {
-					leaf = tail & leafCacheIDMask
-				}
-				if q >= cut2 {
-					leaf = tail >> 24 & leafCacheIDMask
-				}
-				id = uint32(leaf) | wordLeafID
-			}
 		}
 	}
 	if id == 0 {
@@ -150,4 +119,114 @@ func (m *wordMap) getOrdered(view *wordReadView, key, version uint64) (value uin
 		id = n.inner().children[i]
 	}
 	return 0, false, false
+}
+
+// lookupOrdered is lookup with plain loads; acc carries the words it read.
+// A published cell is immutable, and its tail loads after its head.
+func (c *wordLeafCache) lookupOrdered(key uint64) (id uint32, fill bool, acc uint64) {
+	index := (key - c.base) >> c.shift
+	if index >= uint64(len(c.cells)) {
+		return 0, false, 0
+	}
+	cell := &c.cells[index]
+	head := *(*uint64)(unsafe.Pointer(&cell.head))
+	if head <= 2 {
+		return 0, head == 0, head
+	}
+	first, second := head&leafCacheIDMask, head>>24&leafCacheIDMask
+	if first == second {
+		return uint32(first) | wordLeafID, false, head
+	}
+	tail := *after((*uint64)(unsafe.Pointer(&cell.tail)), head)
+	acc = head ^ tail
+	cut0 := head >> 48 & 1023
+	cut1 := head>>58 | ((tail >> 48 & 15) << 6)
+	cut2 := tail >> 52 & 1023
+	q := c.fraction(key)
+	if c.shift > 10 && (q == cut0 || q == cut1 || q == cut2) {
+		return 0, false, acc
+	}
+	leaf := first
+	if q >= cut0 {
+		leaf = second
+	}
+	if q >= cut1 {
+		leaf = tail & leafCacheIDMask
+	}
+	if q >= cut2 {
+		leaf = tail >> 24 & leafCacheIDMask
+	}
+	return uint32(leaf) | wordLeafID, false, acc
+}
+
+// getMany8Ordered is getMany8 with plain loads, ordered as in getOrdered:
+// each lane's guarded words load after its opening sequence, and its closing
+// sequence and the closing epoch load after everything the lanes read.
+// Lanes it cannot validate report false in ok.
+func (m *wordMap) getMany8Ordered(view *wordReadView, keys *[batchLanes]uint64, dst *[batchLanes]Result[uint64], ok *[batchLanes]bool) (acc uint64) {
+	var nodes [batchLanes]*wordNode
+	var lanes [batchLanes]uint64
+	for j := 0; j < batchLanes; j++ {
+		id, _, read := view.leaves.lookupOrdered(keys[j])
+		lanes[j] = read ^ uint64(id)
+		if id == 0 {
+			continue
+		}
+		index := (id &^ wordLeafID) - 1
+		blockIndex := int(index >> 8)
+		if blockIndex >= len(view.blocks) {
+			continue
+		}
+		block := *(**wordNode)(unsafe.Pointer(&view.blocks[blockIndex]))
+		if block == nil || blockIndex < 8 && int(index&255) >= wordSlabSize(blockIndex) {
+			continue
+		}
+		nodes[j] = wordSlabNode(block, index)
+	}
+	var sequences [batchLanes]uint64
+	for j := 0; j < batchLanes; j++ {
+		if n := nodes[j]; n != nil {
+			sequences[j] = *(*uint64)(unsafe.Pointer(&n.sequence))
+			if sequences[j]&1 != 0 {
+				nodes[j] = nil
+			} else {
+				// The guarded words load after the opening sequence.
+				nodes[j] = after(n, sequences[j])
+			}
+		}
+	}
+	var positions [batchLanes]int
+	for j := 0; j < batchLanes; j++ {
+		if n := nodes[j]; n != nil {
+			positions[j] = firstTag(&n.tags, int(sequences[j]>>1&63), keys[j])
+		}
+	}
+	for j := 0; j < batchLanes; j++ {
+		dst[j] = Result[uint64]{}
+		n := nodes[j]
+		if n == nil {
+			continue
+		}
+		i, size := positions[j], int(sequences[j]>>1&63)
+		entries := n.entries()
+		var key, value uint64
+		if i < size {
+			key = entries[i].key
+			if key < keys[j] {
+				i = n.lowerEntry(keys[j])
+				if i < size {
+					key = entries[i].key
+				}
+			}
+			if i < size && key == keys[j] {
+				value = entries[i].value
+				dst[j] = Result[uint64]{value, true}
+			}
+		}
+		read := lanes[j] ^ sequences[j] ^ key ^ value ^ uint64(i)
+		closing := *after((*uint64)(unsafe.Pointer(&n.sequence)), read)
+		ok[j] = closing == sequences[j]
+		acc ^= read
+	}
+	return acc
 }

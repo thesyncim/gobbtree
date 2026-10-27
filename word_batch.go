@@ -1,6 +1,9 @@
 package gobbtree
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"unsafe"
+)
 
 // Stage independent leaf loads before consuming their results. Cached routes
 // provide exact leaf IDs; cold routes and invalidated lanes use the ordinary
@@ -11,6 +14,17 @@ func (m *wordMap) getMany8(keys *[batchLanes]uint64, dst *[batchLanes]Result[uin
 	if version&1 != 0 || view == nil || !view.ready || view.leaves == nil {
 		for j := 0; j < batchLanes; j++ {
 			dst[j].Value, dst[j].OK = m.get(keys[j])
+		}
+		return
+	}
+	if seqlockPlainStores {
+		var ok [batchLanes]bool
+		acc := m.getMany8Ordered(view, keys, dst, &ok)
+		valid := *after((*uint64)(unsafe.Pointer(&m.version)), acc) == version
+		for j := 0; j < batchLanes; j++ {
+			if !valid || !ok[j] {
+				dst[j].Value, dst[j].OK = m.get(keys[j])
+			}
 		}
 		return
 	}

@@ -149,3 +149,188 @@ func TestLargeMapUsesOnlyRouteCache(t *testing.T) {
 		t.Fatal("large map duplicated entry storage")
 	}
 }
+
+// Leaf-cached batch and single reads validate plain loads against leaf
+// shifts. Writers retire the cache on every write, so a helper reinstalls a
+// fresh one under the structural lock, as reader activation does. Writers
+// toggle sparse keys between stable ones: no split, merge or index-0 change,
+// so cached leaf routes stay correct while their contents move.
+func TestLeafCachedReadsDuringLeafShifts(t *testing.T) {
+	const stable = 1 << 14
+	var m Map[uint64, uint64]
+	for i := uint64(0); i < stable; i++ {
+		m.Insert(4*i, 4*i*3+1)
+	}
+	m.Get(0)
+	words := m.words.Load()
+	var leaves *wordLeafCache
+	install := func() {
+		words.structure.Lock()
+		defer words.structure.Unlock()
+		current := words.view.Load()
+		if current.leaves != nil {
+			return
+		}
+		if leaves == nil {
+			leaves = newWordLeafCache(current.routes, int64(m.Len()))
+		}
+		// Without structural changes, filled cells keep routing correctly.
+		view := *current
+		view.uncached = current
+		view.cache = nil
+		view.leaves = leaves
+		words.view.Store(&view)
+	}
+	install()
+	if words.view.Load().leaves == nil {
+		t.Fatal("no leaf cache")
+	}
+	stop := make(chan struct{})
+	var background sync.WaitGroup
+	background.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				install()
+			}
+		}
+	})
+	for w := uint64(0); w < 2; w++ {
+		background.Go(func() {
+			x := w*0x9e3779b97f4a7c15 + 1
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				x ^= x << 13
+				x ^= x >> 7
+				x ^= x << 17
+				k := 4*(x%stable) + 2
+				if k%64 != 2 {
+					continue
+				}
+				if _, found := m.Delete(k); !found {
+					m.Insert(k, 0)
+				}
+			}
+		})
+	}
+	var readers sync.WaitGroup
+	for r := uint64(0); r < 3; r++ {
+		readers.Go(func() {
+			x := r*0x2545f4914f6cdd1d + 7
+			var batch [8]uint64
+			var results [8]Result[uint64]
+			for i := 0; i < 100000; i++ {
+				x ^= x << 13
+				x ^= x >> 7
+				x ^= x << 17
+				for j := range batch {
+					batch[j] = 4 * ((x + uint64(j)*977) % stable)
+				}
+				m.GetMany(batch[:], results[:])
+				for j, k := range batch {
+					if !results[j].OK || results[j].Value != k*3+1 {
+						t.Errorf("GetMany(%d) = %d, %v during leaf shifts", k, results[j].Value, results[j].OK)
+						return
+					}
+				}
+				if v, ok := m.Get(batch[0]); !ok || v != batch[0]*3+1 {
+					t.Errorf("Get(%d) = %d, %v during leaf shifts", batch[0], v, ok)
+					return
+				}
+			}
+		})
+	}
+	readers.Wait()
+	close(stop)
+	background.Wait()
+}
+
+// Splits and merges retire the leaf cache before moving entries; reads that
+// already hold it must fail their epoch validation instead of trusting a
+// leaf mid-move. Writers insert and remove dense runs between stable keys.
+func TestLeafCachedReadsDuringSplits(t *testing.T) {
+	const stable = 1 << 13
+	var m Map[uint64, uint64]
+	for i := uint64(0); i < stable; i++ {
+		m.Insert(64*i, 64*i*3+1)
+	}
+	m.Get(0)
+	words := m.words.Load()
+	install := func() {
+		words.structure.Lock()
+		defer words.structure.Unlock()
+		current := words.view.Load()
+		if current == nil || current.leaves != nil {
+			return
+		}
+		view := *current
+		view.uncached = current
+		view.cache = nil
+		view.leaves = newWordLeafCache(view.routes, int64(m.Len()))
+		words.view.Store(&view)
+	}
+	stop := make(chan struct{})
+	var background sync.WaitGroup
+	background.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				install()
+			}
+		}
+	})
+	background.Go(func() {
+		x := uint64(1)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			x ^= x << 13
+			x ^= x >> 7
+			x ^= x << 17
+			base := 64 * (x % stable)
+			for k := base + 1; k < base+64; k++ {
+				m.Insert(k, 0)
+			}
+			for k := base + 1; k < base+64; k++ {
+				m.Delete(k)
+			}
+		}
+	})
+	var readers sync.WaitGroup
+	for r := uint64(0); r < 3; r++ {
+		readers.Go(func() {
+			x := r*0x2545f4914f6cdd1d + 7
+			var batch [8]uint64
+			var results [8]Result[uint64]
+			for i := 0; i < 50000; i++ {
+				x ^= x << 13
+				x ^= x >> 7
+				x ^= x << 17
+				for j := range batch {
+					batch[j] = 64 * ((x + uint64(j)) % stable)
+				}
+				m.GetMany(batch[:], results[:])
+				for j, k := range batch {
+					if !results[j].OK || results[j].Value != k*3+1 {
+						t.Errorf("GetMany(%d) = %d, %v during splits", k, results[j].Value, results[j].OK)
+						return
+					}
+				}
+			}
+		})
+	}
+	readers.Wait()
+	close(stop)
+	background.Wait()
+}
