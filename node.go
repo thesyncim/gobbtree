@@ -175,6 +175,7 @@ func (n *node[K, V, O]) findLeaf(key K) *node[K, V, O] {
 	s := keySearch[K, O]{key: key}
 	return n.findLeafSearch(&s)
 }
+
 // findLeafSearchForInsert also reports a full node on the path, which
 // rules out inserting without the splitting descent.
 func (n *node[K, V, O]) findLeafSearchForInsert(s *keySearch[K, O]) (*node[K, V, O], bool) {
