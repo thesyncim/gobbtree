@@ -31,9 +31,9 @@ func TestConcurrentMutation(t *testing.T) {
 	if m.Len() != workers*perWorker*2/3 {
 		t.Fatal(m.Len())
 	}
-	var snap []Entry[int, int]
+	var snap []Pair[int, int]
 	for k, v := range m.All() {
-		snap = append(snap, Entry[int, int]{k, v})
+		snap = append(snap, Pair[int, int]{k, v})
 	}
 	if len(snap) != m.Len() {
 		t.Fatal("snapshot length")
@@ -210,7 +210,7 @@ func TestMapCallbacksAndBatch(t *testing.T) {
 		}
 	}
 	dst := make([]Result[int], 3)
-	m.InsertMany([]Entry[string, int]{{"x", 1}, {"x", 2}, {"z", 9}}, dst)
+	m.InsertMany([]Pair[string, int]{{"x", 1}, {"x", 2}, {"z", 9}}, dst)
 	if dst[1] != (Result[int]{1, true}) {
 		t.Fatal(dst)
 	}

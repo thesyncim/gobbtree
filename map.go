@@ -561,7 +561,7 @@ func (m *mapCore[K, V, O]) GetMany(keys []K, dst []Result[V]) {
 }
 
 // InsertMany applies entries in order. The batch is not a transaction.
-func (m *mapCore[K, V, O]) InsertMany(entries []Entry[K, V], dst []Result[V]) {
+func (m *mapCore[K, V, O]) InsertMany(entries []Pair[K, V], dst []Result[V]) {
 	if len(dst) < len(entries) {
 		panic("gobbtree: InsertMany destination too short")
 	}
@@ -832,7 +832,7 @@ func (m *mapCore[K, V, O]) ReadMany(keys []K, read func(i int, key K, value V)) 
 // UpdateOrInsertMany applies UpdateOrInsert to each entry in order, as
 // upstream's update_or_insert_many does, storing each previous value in dst.
 // The batch is not a transaction.
-func (m *mapCore[K, V, O]) UpdateOrInsertMany(entries []Entry[K, V], merge func(key K, old, value V) V, dst []Result[V]) {
+func (m *mapCore[K, V, O]) UpdateOrInsertMany(entries []Pair[K, V], merge func(key K, old, value V) V, dst []Result[V]) {
 	if len(dst) < len(entries) {
 		panic("gobbtree: UpdateOrInsertMany destination too short")
 	}

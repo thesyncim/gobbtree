@@ -335,7 +335,7 @@ func TestRangesBatchesAndOwnership(t *testing.T) {
 		}
 	}
 	previous := make([]Result[int], 3)
-	tr.InsertMany([]Entry[int, int]{{5001, 1}, {5001, 2}, {5001, 3}}, previous)
+	tr.InsertMany([]Pair[int, int]{{5001, 1}, {5001, 2}, {5001, 3}}, previous)
 	if previous[0].OK || previous[1] != (Result[int]{1, true}) || previous[2] != (Result[int]{2, true}) {
 		t.Fatal(previous)
 	}
@@ -356,7 +356,7 @@ func TestRangesBatchesAndOwnership(t *testing.T) {
 func TestShortDestinations(t *testing.T) {
 	var tr Tree[int, int]
 	tr.Insert(1, 2)
-	for _, call := range []func(){func() { tr.GetMany([]int{1}, nil) }, func() { tr.InsertMany([]Entry[int, int]{{2, 3}}, nil) }} {
+	for _, call := range []func(){func() { tr.GetMany([]int{1}, nil) }, func() { tr.InsertMany([]Pair[int, int]{{2, 3}}, nil) }} {
 		func() {
 			defer func() {
 				if recover() == nil {

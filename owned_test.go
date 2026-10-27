@@ -96,3 +96,47 @@ func TestDrain(t *testing.T) {
 		t.Fatal("set drain")
 	}
 }
+
+func TestEntryAPI(t *testing.T) {
+	tr := NewTree[string, int]()
+	if v := tr.Entry("a").OrInsert(1); v != 1 {
+		t.Fatal("or insert vacant")
+	}
+	if v := tr.Entry("a").OrInsert(9); v != 1 {
+		t.Fatal("or insert occupied")
+	}
+	if v := tr.Entry("a").AndModify(func(v int) int { return v + 10 }).OrInsert(0); v != 11 {
+		t.Fatalf("and modify %d", v)
+	}
+	if v := tr.Entry("b").AndModify(func(v int) int { return v + 10 }).OrInsertWithKey(func(k string) int { return len(k) }); v != 1 {
+		t.Fatal("or insert with key")
+	}
+	if v := tr.Entry("c").OrDefault(); v != 0 || !tr.Contains("c") {
+		t.Fatal("or default")
+	}
+	e := tr.Entry("d")
+	if e.Occupied() || e.Key() != "d" {
+		t.Fatal("vacant")
+	}
+	if e = e.InsertEntry(4); !e.Occupied() {
+		t.Fatal("insert entry")
+	}
+	if old, ok := tr.Entry("d").Insert(5); !ok || old != 4 {
+		t.Fatal("occupied insert")
+	}
+	first, ok := tr.FirstEntry()
+	if !ok || first.Key() != "a" {
+		t.Fatal("first entry")
+	}
+	if k, v, ok := first.Remove(); !ok || k != "a" || v != 11 || tr.Contains("a") {
+		t.Fatal("remove")
+	}
+	if last, ok := tr.LastEntry(); !ok || last.Key() != "d" {
+		t.Fatal("last entry")
+	}
+	ft := NewTreeOf[foldKey, int]()
+	ft.Insert("Bob", 1)
+	if k := ft.Entry("BOB").Key(); k != "Bob" {
+		t.Fatalf("stored key %q", k)
+	}
+}

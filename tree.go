@@ -5,8 +5,8 @@ import (
 	"iter"
 )
 
-// Entry is a key/value pair used by batch operations and snapshots.
-type Entry[K any, V any] struct {
+// Pair is a key and value, as batch operations take them.
+type Pair[K any, V any] struct {
 	Key   K
 	Value V
 }
@@ -677,7 +677,7 @@ func (t *treeCore[K, V, O]) GetMany(keys []K, dst []Result[V]) {
 }
 
 // InsertMany inserts in input order and fills dst with previous values.
-func (t *treeCore[K, V, O]) InsertMany(entries []Entry[K, V], dst []Result[V]) {
+func (t *treeCore[K, V, O]) InsertMany(entries []Pair[K, V], dst []Result[V]) {
 	if len(dst) < len(entries) {
 		panic("gobbtree: InsertMany destination too short")
 	}

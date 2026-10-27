@@ -255,7 +255,7 @@ func TestParityOperations(t *testing.T) {
 		t.Fatalf("ReadMany %v", found)
 	}
 	dst := make([]Result[int], 3)
-	m.UpdateOrInsertMany([]Entry[string, int]{{"a", 1}, {"c", 1}, {"a", 1}}, func(_ string, old, v int) int { return old + v }, dst)
+	m.UpdateOrInsertMany([]Pair[string, int]{{"a", 1}, {"c", 1}, {"a", 1}}, func(_ string, old, v int) int { return old + v }, dst)
 	if dst[0] != (Result[int]{1, true}) || dst[1].OK || dst[2] != (Result[int]{2, true}) {
 		t.Fatalf("UpdateOrInsertMany %v", dst)
 	}
