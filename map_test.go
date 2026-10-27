@@ -1,6 +1,7 @@
 package gobbtree
 
 import (
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -53,7 +54,7 @@ func TestConcurrentMutation(t *testing.T) {
 	for worker := 0; worker < workers; worker++ {
 		wg.Go(func() {
 			for i := 0; i < 1000; i++ {
-				m.Update(-1, func(v int) int { return v + 1 })
+				m.Update(-1, func(_, v int) int { return v + 1 })
 			}
 		})
 	}
@@ -164,8 +165,13 @@ func TestMapCallbacksAndBatch(t *testing.T) {
 	if actual != 1 || !loaded {
 		t.Fatal("load store existing")
 	}
-	m.UpdateOrInsert("a", 4, func(a, b int) int { return a + b })
-	m.UpdateOrInsert("b", 7, func(a, b int) int { t.Fatal("merge on absent"); return 0 })
+	m.UpdateOrInsert("a", 4, func(k string, a, b int) int {
+		if k != "a" {
+			t.Fatal("merge key")
+		}
+		return a + b
+	})
+	m.UpdateOrInsert("b", 7, func(_ string, a, b int) int { t.Fatal("merge on absent"); return 0 })
 	if !m.Read("a", func(k string, v int) {
 		if k != "a" || v != 5 {
 			t.Fatal("read callback")
@@ -173,17 +179,17 @@ func TestMapCallbacksAndBatch(t *testing.T) {
 	}) {
 		t.Fatal("read")
 	}
-	if _, ok := m.DeleteIf("a", func(v int) bool { return v == 9 }); ok {
+	if _, _, ok := m.DeleteIf("a", func(_ string, v int) bool { return v == 9 }); ok {
 		t.Fatal("delete predicate")
 	}
-	if v, ok := m.DeleteIf("a", func(v int) bool { return v == 5 }); !ok || v != 5 {
+	if k, v, ok := m.DeleteIf("a", func(k string, v int) bool { return k == "a" && v == 5 }); !ok || k != "a" || v != 5 {
 		t.Fatal("delete if")
 	}
 	for _, call := range []func(){
 		func() { m.Read("b", func(string, int) { panic("test") }) },
-		func() { m.Update("b", func(int) int { panic("test") }) },
-		func() { m.UpdateOrInsert("b", 1, func(int, int) int { panic("test") }) },
-		func() { m.DeleteIf("b", func(int) bool { panic("test") }) },
+		func() { m.Update("b", func(string, int) int { panic("test") }) },
+		func() { m.UpdateOrInsert("b", 1, func(string, int, int) int { panic("test") }) },
+		func() { m.DeleteIf("b", func(string, int) bool { panic("test") }) },
 		func() { visitRange(m.Range("a", "z"), func(string, int) bool { panic("test") }) },
 		func() {
 			for range m.All() {
@@ -230,5 +236,49 @@ func TestMapCallbacksAndBatch(t *testing.T) {
 	m.Clear()
 	if !m.IsEmpty() {
 		t.Fatal("clear")
+	}
+}
+
+// Upserts, conditional deletes and LoadOrStore on non-numeric keys run under
+// leaf latches beside structural writers; no increment or removal may be
+// lost.
+func TestMapLeafReadModifyWriteConcurrent(t *testing.T) {
+	var m Map[string, int]
+	const keys, workers, rounds = 300, 6, 40
+	key := func(i int) string { return fmt.Sprintf("k%05d", i*7) }
+	add := func(_ string, old, value int) int { return old + value }
+	var wg sync.WaitGroup
+	var stored, removed atomic.Int64
+	for w := range workers {
+		wg.Go(func() {
+			for r := range rounds {
+				for i := range keys {
+					m.UpdateOrInsert(key((i+w*31+r)%keys), 1, add)
+				}
+			}
+		})
+	}
+	// Splits and merges around the counters.
+	wg.Go(func() {
+		for r := range rounds * 4 {
+			for i := range keys {
+				churn := fmt.Sprintf("k%05d", i*7+1+r%5)
+				if _, loaded := m.LoadOrStore(churn, -1); !loaded {
+					stored.Add(1)
+				}
+				if _, _, ok := m.DeleteIf(churn, func(k string, v int) bool { return k == churn && v == -1 }); ok {
+					removed.Add(1)
+				}
+			}
+		}
+	})
+	wg.Wait()
+	for i := range keys {
+		if v, _ := m.Get(key(i)); v != workers*rounds {
+			t.Fatalf("%s = %d, want %d", key(i), v, workers*rounds)
+		}
+	}
+	if stored.Load() != removed.Load() || m.Len() != keys {
+		t.Fatalf("stored %d removed %d len %d", stored.Load(), removed.Load(), m.Len())
 	}
 }

@@ -241,11 +241,14 @@ func (m *mapCore[K, V, O]) Read(key K, visit func(K, V)) bool {
 	return true
 }
 
-// Update atomically replaces an existing value with change(old), returning
-// the new value. A panic in change leaves the stored value unchanged.
-func (m *mapCore[K, V, O]) Update(key K, change func(V) V) (V, bool) {
+// Update atomically replaces key's value with change(stored key, value), as
+// upstream's update does, and returns the new value. A panic in change leaves
+// the stored value unchanged.
+func (m *mapCore[K, V, O]) Update(key K, change func(K, V) V) (V, bool) {
 	if words := m.numericMap(); words != nil {
-		value, found := words.update(numericKey[O](key), func(v uint64) uint64 { return packWord(change(unpackWord[V](v, words.valueKind))) })
+		value, found := words.update(numericKey[O](key), func(k, v uint64) uint64 {
+			return packWord(change(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind)))
+		})
 		return mapWordValue[V](value, found, words.valueKind)
 	}
 	lane := m.structure.lane(structuralLaneCode[O](key))
@@ -257,7 +260,7 @@ func (m *mapCore[K, V, O]) Update(key K, change func(V) V) (V, bool) {
 		defer n.leaf.mu.Unlock()
 		i, equal := n.exact(key)
 		if equal {
-			value := change(n.leaf.values[i])
+			value := change(n.keys[i], n.leaf.values[i])
 			n.setValue(i, value)
 			return value, true
 		}
@@ -266,20 +269,25 @@ func (m *mapCore[K, V, O]) Update(key K, change func(V) V) (V, bool) {
 	return v, false
 }
 
-// UpdateOrInsert inserts value if absent, otherwise stores merge(old,value).
-// It returns the old value and whether an existing entry was updated.
-func (m *mapCore[K, V, O]) UpdateOrInsert(key K, value V, merge func(V, V) V) (V, bool) {
+// UpdateOrInsert inserts value if key is absent, and otherwise stores
+// merge(stored key, old, value), as upstream's update_or_insert does. It
+// returns the old value and whether key was present. A panic in merge leaves
+// the stored value unchanged.
+func (m *mapCore[K, V, O]) UpdateOrInsert(key K, value V, merge func(key K, old, value V) V) (V, bool) {
 	if words := m.numericMap(); words != nil {
-		old, found := words.updateOrInsert(numericKey[O](key), packWord(value), func(a, b uint64) uint64 {
-			return packWord(merge(unpackWord[V](a, words.valueKind), unpackWord[V](b, words.valueKind)))
+		old, found := words.updateOrInsert(numericKey[O](key), packWord(value), func(k, a, b uint64) uint64 {
+			return packWord(merge(decodeWordKey[K](k, words.keyKind), unpackWord[V](a, words.valueKind), unpackWord[V](b, words.valueKind)))
 		})
 		return mapWordValue[V](old, found, words.valueKind)
 	}
+	if old, found, done := m.upsertLeaf(key, value, merge); done {
+		return old, found
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
-	old, ok := m.tree.Get(key)
+	stored, old, ok := m.tree.GetKeyValue(key)
 	if ok {
-		value = merge(old, value)
+		value = merge(stored, old, value)
 	}
 	held := m.structuralStart(key)
 	defer m.structuralEnd(held)
@@ -291,12 +299,19 @@ func (m *mapCore[K, V, O]) UpdateOrInsert(key K, value V, merge func(V, V) V) (V
 	return old, ok
 }
 
-// LoadOrStore returns the existing value if present, or stores and returns value.
-// loaded is true exactly when the value was already present.
+// LoadOrStore returns key's value if present, and otherwise stores and
+// returns value, as upstream's get_or_insert does. loaded reports that key
+// was present.
 func (m *mapCore[K, V, O]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	if words := m.numericMap(); words != nil {
 		actual, loaded := words.loadOrStore(numericKey[O](key), packWord(value))
 		return unpackWord[V](actual, words.valueKind), loaded
+	}
+	if old, found, done := m.upsertLeaf(key, value, nil); done {
+		if found {
+			return old, true
+		}
+		return value, false
 	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
@@ -311,24 +326,97 @@ func (m *mapCore[K, V, O]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	return value, false
 }
 
-// DeleteIf removes key only if predicate accepts its current value.
-func (m *mapCore[K, V, O]) DeleteIf(key K, predicate func(V) bool) (V, bool) {
+// upsertLeaf finishes an UpdateOrInsert, or with a nil merge a LoadOrStore,
+// under key's leaf latch when that needs no structural change. done reports
+// that it did; otherwise nothing changed.
+func (m *mapCore[K, V, O]) upsertLeaf(key K, value V, merge func(K, V, V) V) (old V, found, done bool) {
+	lane := m.structure.lane(structuralLaneCode[O](key))
+	lane.RLock()
+	defer lane.RUnlock()
+	if m.tree.root == nil {
+		return old, false, false
+	}
+	n := m.tree.root.findLeaf(key)
+	n.leaf.mu.Lock()
+	defer n.leaf.mu.Unlock()
+	i, equal := n.exact(key)
+	if equal {
+		old = n.leaf.values[i]
+		if merge != nil {
+			n.setValue(i, merge(n.keys[i], old, value))
+		}
+		return old, true, true
+	}
+	if n.n == nodeSize {
+		return old, false, false
+	}
+	if i == n.n && n.n > 0 && compareKeys[O](key, n.keys[n.n-1]) < 0 {
+		i = n.lower(key)
+	}
+	// A new first key would change the separators above the leaf.
+	if i == 0 {
+		return old, false, false
+	}
+	n.advanceSequence()
+	n.insertLeaf(i, m.tree.storedKey(key), value)
+	m.count.Add(1)
+	n.advanceSequence()
+	return old, false, true
+}
+
+// DeleteIf removes key if condition accepts its stored key and value, as
+// upstream's remove_if does, and returns them. condition may run more than
+// once.
+func (m *mapCore[K, V, O]) DeleteIf(key K, condition func(K, V) bool) (K, V, bool) {
 	if words := m.numericMap(); words != nil {
-		old, found := words.deleteIf(numericKey[O](key), func(v uint64) bool { return predicate(unpackWord[V](v, words.valueKind)) })
-		return mapWordValue[V](old, found, words.valueKind)
+		old, found := words.deleteIf(numericKey[O](key), func(k, v uint64) bool {
+			return condition(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
+		})
+		return mapWordEntry[K, V](numericKey[O](key), old, found, words)
+	}
+	if k, v, removed, done := m.deleteLeafIf(key, condition); done {
+		return k, v, removed
 	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
-	if v, ok := m.tree.Get(key); ok && predicate(v) {
+	if k, v, ok := m.tree.GetKeyValue(key); ok && condition(k, v) {
 		held := m.structuralStart(key)
 		defer m.structuralEnd(held)
 		m.tree.length = int(m.count.Load())
 		m.tree.Delete(key)
 		m.count.Add(-1)
-		return v, true
+		return k, v, true
 	}
+	var k K
 	var v V
-	return v, false
+	return k, v, false
+}
+
+// deleteLeafIf finishes a DeleteIf under key's leaf latch when that needs no
+// structural change. done reports that it did; otherwise nothing changed.
+func (m *mapCore[K, V, O]) deleteLeafIf(key K, condition func(K, V) bool) (k K, v V, removed, done bool) {
+	lane := m.structure.lane(structuralLaneCode[O](key))
+	lane.RLock()
+	defer lane.RUnlock()
+	if m.tree.root == nil {
+		return k, v, false, true
+	}
+	n := m.tree.root.findLeaf(key)
+	n.leaf.mu.Lock()
+	defer n.leaf.mu.Unlock()
+	i, equal := n.exact(key)
+	if !equal || !condition(n.keys[i], n.leaf.values[i]) {
+		return k, v, false, true
+	}
+	if n.n <= minNodeSize || i == 0 {
+		return k, v, false, false
+	}
+	k = n.keys[i]
+	n.advanceSequence()
+	v = n.deleteLeaf(i)
+	m.count.Add(-1)
+	n.advanceSequence()
+	return k, v, true, true
 }
 
 // Take removes key, returning the stored key and its value, as upstream's
@@ -744,7 +832,7 @@ func (m *mapCore[K, V, O]) ReadMany(keys []K, read func(i int, key K, value V)) 
 // UpdateOrInsertMany applies UpdateOrInsert to each entry in order, as
 // upstream's update_or_insert_many does, storing each previous value in dst.
 // The batch is not a transaction.
-func (m *mapCore[K, V, O]) UpdateOrInsertMany(entries []Entry[K, V], merge func(old, value V) V, dst []Result[V]) {
+func (m *mapCore[K, V, O]) UpdateOrInsertMany(entries []Entry[K, V], merge func(key K, old, value V) V, dst []Result[V]) {
 	if len(dst) < len(entries) {
 		panic("gobbtree: UpdateOrInsertMany destination too short")
 	}
@@ -768,14 +856,14 @@ func (m *mapCore[K, V, O]) LoadOrStoreFunc(key K, make func() V) (V, bool) {
 // snapshot, like Scan.
 func (m *mapCore[K, V, O]) UpdateRange(b Bounds[K], change func(K, V) V) {
 	for k := range m.Scan(b) {
-		m.Update(k, func(v V) V { return change(k, v) })
+		m.Update(k, change)
 	}
 }
 
 // UpdateAll replaces every value by change(key, value), as UpdateRange does.
 func (m *mapCore[K, V, O]) UpdateAll(change func(K, V) V) {
 	for k := range m.All() {
-		m.Update(k, func(v V) V { return change(k, v) })
+		m.Update(k, change)
 	}
 }
 

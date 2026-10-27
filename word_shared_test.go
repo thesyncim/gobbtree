@@ -282,8 +282,8 @@ func TestSmallNumericReadCache(t *testing.T) {
 		{"insert", func(m *Map[uint64, uint64]) { m.Insert(1000, 1000) }},
 		{"delete", func(m *Map[uint64, uint64]) { m.Delete(75) }},
 		{"load", func(m *Map[uint64, uint64]) { m.LoadOrStore(1000, 1000) }},
-		{"merge", func(m *Map[uint64, uint64]) { m.UpdateOrInsert(1000, 1000, func(a, b uint64) uint64 { return b }) }},
-		{"predicate", func(m *Map[uint64, uint64]) { m.DeleteIf(75, func(v uint64) bool { return true }) }},
+		{"merge", func(m *Map[uint64, uint64]) { m.UpdateOrInsert(1000, 1000, func(_, a, b uint64) uint64 { return b }) }},
+		{"predicate", func(m *Map[uint64, uint64]) { m.DeleteIf(75, func(_, v uint64) bool { return true }) }},
 		{"first", func(m *Map[uint64, uint64]) { m.PopFirst() }},
 		{"last", func(m *Map[uint64, uint64]) { m.PopLast() }},
 	} {
@@ -303,8 +303,8 @@ func TestSmallNumericReadCache(t *testing.T) {
 				t.Fatal("small read cache missing")
 			}
 			m.Insert(50, 500)
-			m.Update(51, func(v uint64) uint64 { return 510 })
-			m.UpdateOrInsert(52, 520, func(a, b uint64) uint64 { return b })
+			m.Update(51, func(_, v uint64) uint64 { return 510 })
+			m.UpdateOrInsert(52, 520, func(_, a, b uint64) uint64 { return b })
 			for key := uint64(50); key <= 52; key++ {
 				if v, ok := m.Get(key); !ok || v != key*10 {
 					t.Fatal("stale cached value")

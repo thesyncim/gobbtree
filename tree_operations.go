@@ -155,14 +155,15 @@ func (t *treeCore[K, V, O]) ExtractIf(b Bounds[K], predicate func(K, V) bool) it
 	}
 }
 
-// Update changes an existing value and returns the value that was stored.
-// If change panics, the stored value is unchanged.
-func (t *treeCore[K, V, O]) Update(key K, change func(V) V) (value V, ok bool) {
-	value, ok = t.Get(key)
+// Update replaces key's value with change(stored key, value), as upstream's
+// get_mut allows, and returns the new value. If change panics, the stored
+// value is unchanged.
+func (t *treeCore[K, V, O]) Update(key K, change func(K, V) V) (value V, ok bool) {
+	stored, value, ok := t.GetKeyValue(key)
 	if !ok {
 		return
 	}
-	value = change(value)
+	value = change(stored, value)
 	t.Insert(key, value)
 	return
 }
@@ -186,11 +187,12 @@ func (t *treeCore[K, V, O]) Take(key K) (K, V, bool) {
 }
 
 // UpdateOrInsert inserts value if key is absent, and otherwise stores
-// merge(old, value). It returns the old value and whether key was present.
-func (t *treeCore[K, V, O]) UpdateOrInsert(key K, value V, merge func(old, value V) V) (V, bool) {
-	old, ok := t.Get(key)
+// merge(stored key, old, value), as upstream's entry and_modify/or_insert
+// does. It returns the old value and whether key was present.
+func (t *treeCore[K, V, O]) UpdateOrInsert(key K, value V, merge func(key K, old, value V) V) (V, bool) {
+	stored, old, ok := t.GetKeyValue(key)
 	if ok {
-		value = merge(old, value)
+		value = merge(stored, old, value)
 	}
 	t.Insert(key, value)
 	return old, ok

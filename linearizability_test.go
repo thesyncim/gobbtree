@@ -100,7 +100,7 @@ func TestConcurrentLinearizability(t *testing.T) {
 					case 4:
 						op.result = Result[int]{m.Len(), true}
 					case 5:
-						op.result.Value, op.result.OK = m.Update(op.key, func(v int) int { return v + 1 })
+						op.result.Value, op.result.OK = m.Update(op.key, func(_, v int) int { return v + 1 })
 					case 6:
 						op.result.Value, op.result.OK = m.LoadOrStore(op.key, op.value)
 					case 7:

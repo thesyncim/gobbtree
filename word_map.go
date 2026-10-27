@@ -585,7 +585,7 @@ func (m *wordMap) read(key uint64, visit func(uint64, uint64)) bool {
 	visit(n.entries()[i].key, n.entries()[i].value)
 	return true
 }
-func (m *wordMap) update(key uint64, change func(uint64) uint64) (uint64, bool) {
+func (m *wordMap) update(key uint64, change func(key, value uint64) uint64) (uint64, bool) {
 	n, id, _, ok := m.lockLeafIfLaneFree(key)
 	if !ok {
 		guard := m.structure.acquire(key)
@@ -602,7 +602,7 @@ func (m *wordMap) update(key uint64, change func(uint64) uint64) (uint64, bool) 
 	if i == int(n.n) || n.entries()[i].key != key {
 		return 0, false
 	}
-	value := change(n.entries()[i].value)
+	value := change(key, n.entries()[i].value)
 	m.storeValue(id, n, i, value)
 	return value, true
 }
@@ -618,7 +618,7 @@ func (m *wordMap) lookupLocked(key uint64) (uint64, bool) {
 	}
 	return n.entries()[i].value, true
 }
-func (m *wordMap) updateOrInsert(key, value uint64, merge func(uint64, uint64) uint64) (uint64, bool) {
+func (m *wordMap) updateOrInsert(key, value uint64, merge func(key, old, value uint64) uint64) (uint64, bool) {
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	// Lane-free writers stay out of the leaves this may read or change.
@@ -629,7 +629,7 @@ func (m *wordMap) updateOrInsert(key, value uint64, merge func(uint64, uint64) u
 		i := n.exactEntry(key)
 		if i < int(n.n) && n.entries()[i].key == key {
 			old := n.entries()[i].value
-			value = merge(old, value)
+			value = merge(key, old, value)
 			m.storeValue(id, n, i, value)
 			return old, true
 		}
@@ -657,14 +657,14 @@ func (m *wordMap) loadOrStore(key, value uint64) (uint64, bool) {
 	m.addCount(1, true)
 	return value, false
 }
-func (m *wordMap) deleteIf(key uint64, predicate func(uint64) bool) (uint64, bool) {
+func (m *wordMap) deleteIf(key uint64, predicate func(key, value uint64) bool) (uint64, bool) {
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	// Lane-free writers stay out of the leaves this may read or change.
 	m.lockWindow(key)
 	defer m.unlockWindow()
 	old, found := m.lookupLocked(key)
-	if !found || !predicate(old) {
+	if !found || !predicate(key, old) {
 		return 0, false
 	}
 	m.disableReadCache()
