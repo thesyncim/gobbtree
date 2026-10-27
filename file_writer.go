@@ -1,6 +1,7 @@
 package gobbtree
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"encoding/binary"
@@ -287,7 +288,9 @@ func (w *FileWriter[K, V]) Bytes() []byte {
 // FileRange identifies an embedded snapshot by its offset and byte length.
 type FileRange struct{ Offset, Length int64 }
 
-// WriteAt aligns offset, writes the snapshot, and truncates the file after it.
+// WriteAt writes the snapshot into file at offset rounded up to its
+// alignment, after zeros, in place of what lay there, and ends the file
+// after it, as upstream's write_at does.
 func (w *FileWriter[K, V]) WriteAt(file *os.File, offset int64) (FileRange, error) {
 	align := int64(w.Alignment())
 	if offset < 0 || offset > int64(^uint64(0)>>1)-align-int64(w.byteLen) {
@@ -295,10 +298,17 @@ func (w *FileWriter[K, V]) WriteAt(file *os.File, offset int64) (FileRange, erro
 	}
 	start := (offset + align - 1) & -align
 	r := FileRange{start, int64(w.byteLen)}
-	if _, err := w.WriteTo(io.NewOffsetWriter(file, start)); err != nil {
+	if err := file.Truncate(offset); err != nil {
 		return r, err
 	}
-	return r, file.Truncate(start + int64(w.byteLen))
+	out := bufio.NewWriterSize(io.NewOffsetWriter(file, offset), 1<<20)
+	if _, err := out.Write(make([]byte, start-offset)); err != nil {
+		return r, err
+	}
+	if _, err := w.WriteTo(out); err != nil {
+		return r, err
+	}
+	return r, out.Flush()
 }
 
 // WriteFile publishes a complete snapshot atomically in the destination

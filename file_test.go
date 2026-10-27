@@ -175,9 +175,20 @@ func TestFileMapRangesAndCloseInIterator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Stale bytes past the offset must not survive as alignment padding.
+	if _, err = f.Write(bytes.Repeat([]byte{0xbb}, 3000)); err != nil {
+		t.Fatal(err)
+	}
 	r, err := w.WriteAt(f, 127)
 	if err != nil {
 		t.Fatal(err)
+	}
+	padding := make([]byte, r.Offset-127)
+	if _, err = f.ReadAt(padding, 127); err != nil || bytes.Count(padding, []byte{0}) != len(padding) {
+		t.Fatal("alignment padding not zeroed", err)
+	}
+	if info, err := f.Stat(); err != nil || info.Size() != r.Offset+r.Length {
+		t.Fatal("file not ended after the map", err)
 	}
 	if r.Offset%int64(w.Alignment()) != 0 {
 		t.Fatal("alignment")
