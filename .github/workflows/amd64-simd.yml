@@ -31,6 +31,11 @@ jobs:
           go version
           go test -run TestSIMDAMD64Dispatch -v > perf/backend.txt
           cat perf/backend.txt
+      - name: Map lookup profile
+        run: |
+          go test -run '^$' -bench 'Lookup/Map' -benchtime 2s -cpuprofile perf/map-lookup.prof -o perf/gobbtree.test . > perf/map-lookup.txt
+          GODEBUG=cpu.avx512f=off go test -run '^$' -bench 'Lookup/Map' -benchtime 2s . > perf/map-lookup-avx2.txt
+          cat perf/map-lookup.txt perf/map-lookup-avx2.txt
       - name: Native selected ISA
         run: go test -race ./...
       - name: AVX2 dispatch
