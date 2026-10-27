@@ -619,6 +619,9 @@ func (m *wordMap) lookupLocked(key uint64) (uint64, bool) {
 	return n.entries()[i].value, true
 }
 func (m *wordMap) updateOrInsert(key, value uint64, merge func(key, old, value uint64) uint64) (uint64, bool) {
+	if old, found, done := m.upsertLeaf(key, value, merge); done {
+		return old, found
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	// Lane-free writers stay out of the leaves this may read or change.
@@ -642,6 +645,12 @@ func (m *wordMap) updateOrInsert(key, value uint64, merge func(key, old, value u
 	return 0, false
 }
 func (m *wordMap) loadOrStore(key, value uint64) (uint64, bool) {
+	if old, found, done := m.upsertLeaf(key, value, nil); done {
+		if found {
+			return old, true
+		}
+		return value, false
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	// Lane-free writers stay out of the leaves this may read or change.
@@ -658,6 +667,9 @@ func (m *wordMap) loadOrStore(key, value uint64) (uint64, bool) {
 	return value, false
 }
 func (m *wordMap) deleteIf(key uint64, predicate func(key, value uint64) bool) (uint64, bool) {
+	if old, removed, done := m.deleteLeafIf(key, predicate); done {
+		return old, removed
+	}
 	m.structure.Lock()
 	defer m.structure.Unlock()
 	// Lane-free writers stay out of the leaves this may read or change.
@@ -673,6 +685,115 @@ func (m *wordMap) deleteIf(key uint64, predicate func(key, value uint64) bool) (
 	m.tree.delete(key)
 	m.addCount(-1, true)
 	return old, true
+}
+
+// upsertLeaf finishes an updateOrInsert, or with a nil merge a loadOrStore,
+// under key's leaf latch, as insert does, when that needs no structural
+// change. done reports that it did; otherwise nothing changed.
+func (m *wordMap) upsertLeaf(key, value uint64, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
+	if m.laneFree() {
+		n, id, view, ok := m.lockLeafIfLaneFree(key)
+		if ok {
+			defer n.mu.Unlock()
+			if i := n.exactEntry(key); i < int(n.n) && n.entries()[i].key == key {
+				old = n.entries()[i].value
+				if merge != nil {
+					storeValueIn(view, id, n, i, merge(key, old, value))
+				}
+				return old, true, true
+			}
+			_, _, done = m.insertInLeaf(n, id, view, key, value)
+			return 0, false, done
+		}
+	}
+	guard := m.structure.acquire(key)
+	defer guard.unlock()
+	// Once readers are active, lane-free writers may share any leaf, so this
+	// writer holds its leaf too.
+	serial := guard.lane == nil && !m.laneFree()
+	id := m.leafFor(key)
+	if id == 0 {
+		return 0, false, false
+	}
+	n := m.tree.node(id)
+	if !serial {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+	}
+	i := n.exactEntry(key)
+	if i < int(n.n) && n.entries()[i].key == key {
+		old = n.entries()[i].value
+		if merge != nil {
+			m.storeValue(id, n, i, merge(key, old, value))
+		}
+		return old, true, true
+	}
+	if n.n == nodeSize {
+		return 0, false, false
+	}
+	if i == int(n.n) && n.n > 0 && key < n.entries()[n.n-1].key {
+		i = n.lowerEntry(key)
+	}
+	if i == 0 {
+		return 0, false, false
+	}
+	if m.tree.atomicWrites {
+		m.disableReadCache()
+		n.beginLeafWrite()
+	}
+	m.tree.insertLeaf(n, i, key, value)
+	m.addCount(1, serial)
+	if m.tree.atomicWrites {
+		n.endLeafWrite()
+	}
+	return 0, false, true
+}
+
+// deleteLeafIf finishes a deleteIf under key's leaf latch, as delete does,
+// when that needs no structural change. done reports that it did; otherwise
+// nothing changed.
+func (m *wordMap) deleteLeafIf(key uint64, predicate func(key, value uint64) bool) (value uint64, removed, done bool) {
+	if m.laneFree() {
+		n, _, _, ok := m.lockLeafIfLaneFree(key)
+		if ok {
+			defer n.mu.Unlock()
+			i := n.exactEntry(key)
+			if i == int(n.n) || n.entries()[i].key != key || !predicate(key, n.entries()[i].value) {
+				return 0, false, true
+			}
+			value, removed, done = m.deleteInLeaf(n, key)
+			return value, removed, done
+		}
+	}
+	guard := m.structure.acquire(key)
+	defer guard.unlock()
+	serial := guard.lane == nil && !m.laneFree()
+	id := m.leafFor(key)
+	if id == 0 {
+		return 0, false, true
+	}
+	n := m.tree.node(id)
+	if !serial {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+	}
+	i := n.exactEntry(key)
+	if i == int(n.n) || n.entries()[i].key != key || !predicate(key, n.entries()[i].value) {
+		return 0, false, true
+	}
+	if n.n <= minNodeSize || i == 0 {
+		return 0, false, false
+	}
+	if m.tree.atomicWrites {
+		m.disableReadCache()
+		n.beginLeafWrite()
+	}
+	value = m.tree.removeLeaf(n, i)
+	m.addCount(-1, serial)
+	if m.tree.atomicWrites {
+		n.endLeafWrite()
+	}
+	return value, true, true
 }
 
 // walk visits entries in key order, a leaf at a time. Each leaf is copied

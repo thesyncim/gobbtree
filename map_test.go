@@ -282,3 +282,55 @@ func TestMapLeafReadModifyWriteConcurrent(t *testing.T) {
 		t.Fatalf("stored %d removed %d len %d", stored.Load(), removed.Load(), m.Len())
 	}
 }
+
+// The numeric map's upserts and conditional deletes finish under leaf
+// latches too, before and after readers make writers lane-free.
+func TestNumericMapLeafReadModifyWriteConcurrent(t *testing.T) {
+	for _, readers := range []bool{false, true} {
+		var m Map[uint64, int64]
+		const keys, workers, rounds = 300, 6, 40
+		key := func(i int) uint64 { return uint64(i) * 7 }
+		add := func(_ uint64, old, value int64) int64 { return old + value }
+		if readers {
+			m.Insert(1<<40, 0)
+			m.Get(1 << 40)
+			m.Delete(1 << 40)
+		}
+		var wg sync.WaitGroup
+		var stored, removed atomic.Int64
+		for w := range workers {
+			wg.Go(func() {
+				for r := range rounds {
+					for i := range keys {
+						m.UpdateOrInsert(key((i+w*31+r)%keys), 1, add)
+						if readers {
+							m.Get(key(i))
+						}
+					}
+				}
+			})
+		}
+		wg.Go(func() {
+			for r := range rounds * 4 {
+				for i := range keys {
+					churn := key(i) + 1 + uint64(r%5)
+					if _, loaded := m.LoadOrStore(churn, -1); !loaded {
+						stored.Add(1)
+					}
+					if _, _, ok := m.DeleteIf(churn, func(k uint64, v int64) bool { return k == churn && v == -1 }); ok {
+						removed.Add(1)
+					}
+				}
+			}
+		})
+		wg.Wait()
+		for i := range keys {
+			if v, _ := m.Get(key(i)); v != workers*rounds {
+				t.Fatalf("readers %v: %d = %d, want %d", readers, key(i), v, workers*rounds)
+			}
+		}
+		if stored.Load() != removed.Load() || m.Len() != keys {
+			t.Fatalf("readers %v: stored %d removed %d len %d", readers, stored.Load(), removed.Load(), m.Len())
+		}
+	}
+}
