@@ -4,6 +4,7 @@ import (
 	"math/bits"
 	"runtime"
 	"sync/atomic"
+	"unsafe"
 )
 
 type wordReadView struct {
@@ -301,6 +302,16 @@ retry:
 		}
 	}
 }
+
+// addCount adjusts the count. An exclusive writer, serial or structural,
+// stores it where stores stay ordered: an atomic add is a full barrier.
+func (m *wordMap) addCount(delta int64, exclusive bool) {
+	if exclusive && orderedStores {
+		*(*int64)(unsafe.Pointer(m.count)) = m.count.Load() + delta
+		return
+	}
+	m.count.Add(delta)
+}
 func (m *wordMap) leafFor(key uint64) uint32 {
 	id, _, _ := m.locate(key)
 	return id
@@ -370,7 +381,7 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 					n.beginLeafWrite()
 				}
 				m.tree.insertLeaf(n, i, key, value)
-				m.count.Add(1)
+				m.addCount(1, serial)
 				if m.tree.atomicWrites {
 					n.endLeafWrite()
 				}
@@ -394,14 +405,14 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	// A serial writer never released the writer lock, so the located parent
 	// still holds the absent key's leaf at index.
 	if serial && parent != nil && m.tree.insertAtParent(parent, index, leaf, key, value) {
-		m.count.Add(1)
+		m.addCount(1, true)
 		return 0, false
 	}
 	if !m.tree.insertSharedAtRoute(key, value) {
 		old, replaced = m.tree.insert(key, value)
 	}
 	if !replaced {
-		m.count.Add(1)
+		m.addCount(1, true)
 	}
 	return old, replaced
 }
@@ -450,7 +461,7 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 			n.beginLeafWrite()
 		}
 		value := m.tree.removeLeaf(n, i)
-		m.count.Add(-1)
+		m.addCount(-1, serial)
 		if m.tree.atomicWrites {
 			n.endLeafWrite()
 		}
@@ -469,7 +480,7 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 	defer m.endStructure(guard)
 	value, found := m.tree.delete(key)
 	if found {
-		m.count.Add(-1)
+		m.addCount(-1, true)
 	}
 	return value, found
 }
@@ -546,7 +557,7 @@ func (m *wordMap) updateOrInsert(key, value uint64, merge func(uint64, uint64) u
 	m.version.Add(1)
 	defer m.finishStructure()
 	m.tree.insert(key, value)
-	m.count.Add(1)
+	m.addCount(1, true)
 	return 0, false
 }
 func (m *wordMap) loadOrStore(key, value uint64) (uint64, bool) {
@@ -559,7 +570,7 @@ func (m *wordMap) loadOrStore(key, value uint64) (uint64, bool) {
 	m.version.Add(1)
 	defer m.finishStructure()
 	m.tree.insert(key, value)
-	m.count.Add(1)
+	m.addCount(1, true)
 	return value, false
 }
 func (m *wordMap) deleteIf(key uint64, predicate func(uint64) bool) (uint64, bool) {
@@ -573,7 +584,7 @@ func (m *wordMap) deleteIf(key uint64, predicate func(uint64) bool) (uint64, boo
 	m.version.Add(1)
 	defer m.finishStructure()
 	m.tree.delete(key)
-	m.count.Add(-1)
+	m.addCount(-1, true)
 	return old, true
 }
 
@@ -707,7 +718,7 @@ func (m *wordMap) edge(last, pop bool) (uint64, uint64, bool) {
 		m.version.Add(1)
 		defer m.finishStructure()
 		m.tree.delete(entry.key)
-		m.count.Add(-1)
+		m.addCount(-1, true)
 	}
 	return entry.key, entry.value, true
 }

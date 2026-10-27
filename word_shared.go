@@ -118,8 +118,25 @@ func (n *wordNode) deleteTag(i int) {
 	n.sequence.Store(n.sequence.Load()&^(wordSequenceStep-2) | uint64(n.n)<<1)
 }
 
-func (n *wordNode) beginLeafWrite() { n.sequence.Add(1) }
-func (n *wordNode) endLeafWrite()   { n.sequence.Add(wordSequenceStep - 1) }
+// A leaf has one writer at a time, which holds the leaf or the serial writer
+// lock, so where stores stay ordered it brackets its write with plain stores.
+func (n *wordNode) beginLeafWrite() {
+	if orderedStores {
+		storeOrdered(&n.sequence, n.sequence.Load()+1)
+		return
+	}
+	n.sequence.Add(1)
+}
+func (n *wordNode) endLeafWrite() {
+	if orderedStores {
+		storeOrdered(&n.sequence, n.sequence.Load()+wordSequenceStep-1)
+		return
+	}
+	n.sequence.Add(wordSequenceStep - 1)
+}
+
+// storeOrdered stores v with a plain store, for orderedStores targets only.
+func storeOrdered(p *atomic.Uint64, v uint64) { *(*uint64)(unsafe.Pointer(p)) = v }
 
 // Before optimistic reads start, or where seqlock writers may store plainly,
 // writers copy shared numeric fields with ordinary stores.

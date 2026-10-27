@@ -1,8 +1,10 @@
 package gobbtree
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 const structuralLanes = 16
@@ -13,10 +15,30 @@ type structuralLane struct {
 }
 
 type structuralGates struct {
-	writer   sync.Mutex
+	writer   writerLock
 	parallel atomic.Bool
 	_        [52]byte
 	lanes    [structuralLanes]structuralLane
+}
+
+// writerLock is the serial writer's mutex. Where stores stay ordered it is
+// released by a plain store instead of sync.Mutex's locked read-modify-write.
+// Waiters yield instead of parking: contention moves leaf writers to lanes,
+// after which the lock guards only structural changes.
+type writerLock struct{ state atomic.Uint32 }
+
+func (l *writerLock) TryLock() bool { return l.state.Load() == 0 && l.state.CompareAndSwap(0, 1) }
+func (l *writerLock) Lock() {
+	for !l.TryLock() {
+		runtime.Gosched()
+	}
+}
+func (l *writerLock) Unlock() {
+	if orderedStores {
+		*(*uint32)(unsafe.Pointer(&l.state)) = 0
+		return
+	}
+	l.state.Store(0)
 }
 
 // Ordinary leaf writers share a lane selected by key. Structural operations
