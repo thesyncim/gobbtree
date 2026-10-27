@@ -1,11 +1,17 @@
 # gobbtree
 
-**Ordered maps and sets for Go, with SIMD search and range scans.**
-
-A Go port of [XiangpengHao/bbtree](https://github.com/XiangpengHao/bbtree), built for **Go 1.27.x**. Generic keys and values, a concurrent map, a single-owner tree and set, and read-only file maps. Pure Go: no handwritten assembly, cgo, or external runtime dependencies.
+**Fast ordered maps and sets for Go: a B+ tree that searches with SIMD.**
 
 [![Tests](https://github.com/thesyncim/gobbtree/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/thesyncim/gobbtree/actions/workflows/test.yml)
 [![amd64 SIMD](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml/badge.svg?branch=main)](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml)
+
+A Go port of [XiangpengHao/bbtree](https://github.com/XiangpengHao/bbtree). Nodes keep compact inline summaries of their keys and search them with vector instructions, so most lookups never touch a full key.
+
+- **Fast.** It beats the Rust original on most read, batch and churn workloads. [Benchmarks](#benchmarks) cover every workload, including the ones where Rust still wins.
+- **Concurrent.** `Map` lookups are optimistic and never block; writers lock single leaves.
+- **Any ordered key.** It supports every `cmp.Ordered` type, plus your own types through a two-method `Key` interface.
+- **On disk.** Write a snapshot, then query it in place with `mmap`.
+- **Pure Go.** No assembly, cgo or dependencies. SIMD comes from Go's `simd` package (Go 1.27).
 
 ## Quick start
 
@@ -14,130 +20,124 @@ go get github.com/thesyncim/gobbtree
 ```
 
 ```go
-package main
+scores := gobbtree.New[uint64, string]() // concurrent; the zero value works too
+scores.Insert(42, "answer")
+scores.Insert(7, "lucky")
 
-import (
-    "fmt"
+value, found := scores.Get(42) // "answer", true
 
-    "github.com/thesyncim/gobbtree"
-)
-
-func main() {
-    scores := gobbtree.New[uint64, string]()
-    scores.Insert(42, "answer")
-    scores.Insert(7, "lucky")
-
-    if value, found := scores.Get(42); found {
-        fmt.Println(value) // answer
-    }
-
-    // Visit keys in [0, 100), in ascending order.
-    scores.Scan(0, 100, func(key uint64, value string) bool {
-        fmt.Println(key, value) // 7 lucky, then 42 answer
-        return true            // return false to stop
-    })
-}
-```
-
-Enable Go SIMD when building or running your application:
-
-```sh
-GOEXPERIMENT=simd go run .
-```
-
-## Choose your container
-
-| | `Tree[K, V]` | `Map[K, V]` |
-|---|---|---|
-| Constructor | `NewTree[K, V]()` | `New[K, V]()` |
-| Access | One owner; concurrent reads when there are no writes | Concurrent readers and writers |
-| Ordered iteration | Forward, reverse, and bounded scans | Forward iteration and bounded scans in either direction |
-| Copy | `Clone()` | Consistent `Snapshot()` |
-| Conditional updates | `Update`, `LoadOrStore` | `Update`, `UpdateOrInsert`, `LoadOrStore`, `DeleteIf` |
-
-Both zero values are ready to use. Keys support Go's ordered types, including strings and defined numeric types; values can be any type. Do not copy a container after first use.
-
-`NewSet[K]()` provides the single-owner ordered set from upstream: insertion, removal, batch membership, range scans, union, intersection, difference, and subset checks. It also supports cloning, splitting, appending, filtering and file snapshots. `Tree` offers `LowerBound`, `UpperBound`, `GetKeyValue`, `SplitOff`, `Append`, `Retain`, and lazy `ExtractIf`.
-
-## Core operations
-
-| Operation | Result |
-|---|---|
-| `Get(key)` | Value and presence flag |
-| `Insert(key, value)` | Previous value and replacement flag |
-| `Delete(key)` | Removed value and presence flag |
-| `GetMany(keys, dst)` / `InsertMany(entries, dst)` | Results in input order, using caller-provided storage |
-| `Scan(lower, upper, visit)` / `ScanReverse(...)` | Ordered traversal of `[lower, upper)` |
-| `First()` / `Last()` | Smallest or largest key and its value |
-| `PopFirst()` / `PopLast()` | Remove and return an end entry |
-| `Len()` / `IsEmpty()` / `Clear()` | Size and reset |
-
-`All()` works with Go's range-over-function syntax. `Tree` also offers `Reverse()`:
-
-```go
-tree := gobbtree.NewTree[string, int]()
-tree.Insert("alpha", 1)
-tree.Insert("beta", 2)
-
-for key, value := range tree.All() {
+for key, value := range scores.All() { // ascending: 7, then 42
     fmt.Println(key, value)
 }
+
+scores.Scan(0, 10, func(key uint64, value string) bool { // keys in [0, 10)
+    return true // false stops the scan
+})
 ```
 
-Ordering follows `cmp.Compare`: NaNs sort before other floating-point values, and signed zeros compare equal. Equal keys retain the original stored key. Keys and values are shallow copies.
+Build with `GOEXPERIMENT=simd` to enable the vector search. Without it, the same code uses scalar search.
 
-### Concurrency
+## Containers
 
-`Map` uses optimistic reads for built-in primitive word values and leaf read locks for other values. Writers lock leaves independently; structural changes coordinate splits and merges.
+| Type | Use it for |
+|---|---|
+| `Map[K, V]` · `New` | Concurrent readers and writers |
+| `Tree[K, V]` · `NewTree` | A single owner; concurrent reads only while nobody writes |
+| `Set[K]` · `NewSet` | A single-owner set with union, intersection, difference and subset tests |
+| `MapOf`, `TreeOf`, `SetOf` | The same three containers, for [custom keys](#custom-keys) |
+| `FileMap[K, V]` | A read-only snapshot, searched in place on disk ([file maps](#file-maps)) |
 
-- Scans are ordered and weakly consistent during concurrent writes. Use `Snapshot()` for a consistent copy of the entries.
-- Batch entries are individually consistent; a batch is not a transaction.
-- Callbacks run under locks and must not reenter the same map. A callback panic releases locks; update callbacks store their result only after returning.
-- Synchronizing a map does not synchronize mutable objects referenced by its values.
+All zero values are ready to use. Don't copy a container after first use.
 
-Do not modify a `Tree` while iterating over it.
+| Operation | Returns |
+|---|---|
+| `Get(k)` · `Insert(k, v)` · `Delete(k)` | The value or previous value, and a found flag |
+| `GetMany(keys, dst)` · `InsertMany(entries, dst)` | Per-key results, in caller-provided storage |
+| `Scan(lo, hi, f)` · `ScanReverse(lo, hi, f)` | Visits `[lo, hi)` in order |
+| `All()`, plus `Keys()` · `Values()` · `Reverse()` on Tree | Range-over-func iterators |
+| `First()` · `Last()` · `PopFirst()` · `PopLast()` | The end entries |
+| `Update` · `LoadOrStore` · `UpdateOrInsert` · `DeleteIf` | Atomic read-modify-write on `Map` |
+| `LowerBound` · `UpperBound` · `SplitOff` · `Append` · `Retain` · `ExtractIf` · `Clone` | Ordered editing on `Tree` |
+| `Snapshot()` | A consistent copy of a `Map`'s entries |
+
+Keys follow `cmp.Compare`: NaN sorts first and `-0 == +0`. An equal key keeps the originally stored key. Keys and values are copied shallowly.
+
+## Custom keys
+
+Any type can be a key by implementing `Key`. `Compare` defines the order. `Window` exposes that order to the SIMD search.
+
+```go
+type Key[K any] interface {
+    Compare(other K) int
+    // Bytes offset..offset+8 of an encoding that sorts like Compare,
+    // big-endian and zero past its end.
+    Window(offset int) uint64
+}
+```
+
+For example, to order names case-insensitively:
+
+```go
+type Tag string
+
+func (t Tag) Compare(o Tag) int {
+    return strings.Compare(strings.ToLower(string(t)), strings.ToLower(string(o)))
+}
+
+func (t Tag) Window(offset int) uint64 {
+    return gobbtree.StringWindow(strings.ToLower(string(t)), offset)
+}
+
+tags := gobbtree.NewMapOf[Tag, int]()
+tags.Insert("Go", 1)
+tags.Insert("GO", 2) // same key: replaces the value, keeps "Go"
+```
+
+A composite key encodes its fields one after another. For example, a `uint32` tenant becomes four big-endian bytes, followed by a name. `StringWindow`, `BytesWindow` and `Uint64Window` window the common encodings. Windows that tie are resolved by `Compare`, so even a constant `Window` is correct, just slower. This is the Go counterpart of upstream's `InlineKey` trait.
+
+## Concurrency
+
+`Map` lookups never block writers. They read numeric slabs or immutable search images optimistically and retry if a writer interfered. Writers lock single leaves; splits, merges and scans take a structural lock.
+
+- Scans are ordered but only weakly consistent under concurrent writes. Use `Snapshot()` when you need a consistent copy.
+- Each batch entry is consistent on its own; a batch is not a transaction.
+- Callbacks run under locks and must not call back into the same map. A panicking callback releases its locks and stores nothing.
 
 ## File maps
 
-Write a snapshot, then query its pages directly from disk:
-
 ```go
-if err := tree.WriteFile("index.bbt"); err != nil {
-    panic(err)
-}
-disk, err := gobbtree.MmapFile[string, int]("index.bbt")
-if err != nil {
-    panic(err)
-}
+if err := tree.WriteFile("index.bbt"); err != nil { ... }
+
+disk, err := gobbtree.MmapFile[string, int]("index.bbt") // or ReadFile
+if err != nil { ... }
 defer disk.Close()
 value, found := disk.Get("alpha")
 ```
 
-`ReadFile` loads the same pages into owned memory. Both paths validate the image and search it in place, without reconstructing a `Tree`. File maps support `GetMany`, `GetKeyValue`, forward and reverse iteration, and bounded scans. Returned values remain valid after `Close`.
+A file map validates the image and searches it in place, with no rebuild. It supports `Get`, `GetMany`, iteration in both directions and bounded scans. Files use upstream's version 1 format, which the Rust oracle tests in both directions.
 
-Files use the pinned Rust reference's version 1 format, checked in both directions by the Rust oracle. Integer and string keys, and numeric, plain-array, empty-struct, string and byte-slice values are supported on 64-bit targets. Match the Rust key/value types and platform layout; Go strings use Rust's `VarBytes` representation. Floating-point keys, pointer types, and nonempty structs are rejected. `mmap` is available on Linux, macOS and the BSDs; `ReadFile` also works elsewhere.
+- **Keys:** integer and string keys.
+- **Values:** numbers, plain arrays, empty structs, strings and byte slices.
+- **Writing:** `CreateFile` builds a file from an ascending `iter.Seq2`. `NewFileWriter`, `WriteAt`, `ReadFileRange` and `MmapFileRange` handle snapshots embedded in larger files.
+- **Immutability:** to change a file map, write a new snapshot; `WriteFile` replaces the file atomically.
 
-`CreateFile(path, entries)` accepts an ascending `iter.Seq2`. `NewFileWriter` builds a reusable image; `WriteAt`, `ReadFileRange`, and `MmapFileRange` support embedded snapshots. `WriteFile` publishes a complete replacement by rename. A file map is immutable: publish a new snapshot to change it, and do not modify or truncate a mapped file.
+## SIMD
 
-## SIMD, written in Go
-
-| Architecture | Search kernels |
+| Target | Search kernels |
 |---|---|
-| amd64 | AVX2 and AVX-512, with a 128-bit fallback |
-| arm64 | 128-bit NEON |
-| Other targets | Portable Go SIMD where available; scalar fallback |
+| amd64 | AVX-512 or AVX2, with a 128-bit fallback |
+| arm64 | NEON |
+| Others | Portable Go SIMD where available, otherwise scalar |
 
-Kernels use Go's `simd` and `simd/archsimd` APIs. Runtime CPU checks select a supported path; `gobbtree.SIMD()` returns the selected hardware status and width. A normal build works without the SIMD experiment. `GODEBUG=simd=0` selects the scalar fallback for validation.
+The kernel is chosen at run time. `gobbtree.SIMD()` reports the choice, and `GODEBUG=simd=0` forces the scalar path.
 
 ## Benchmarks
 
-Apple M4 Max (ARM64), Go 1.27.3 with Go SIMD, and Rust 1.97.1 with native CPU tuning, full LTO, and mimalloc. Measured sources: [Go `014d5df`](https://github.com/thesyncim/gobbtree/commit/014d5dfb99e135ee70e50f3ea20ac9189a272130) and [Rust `8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). Timings and memory figures are medians of three fresh-process runs using identical datasets and checked results. 4K and 262K denote 4,096 and 262,144 entries.
-
-### Operation time
+Go 1.27.3 with `GOEXPERIMENT=simd` against the Rust original (1.97.1, native CPU tuning, full LTO, mimalloc) on an Apple M4 Max. Sources: [Go `014d5df`](https://github.com/thesyncim/gobbtree/commit/014d5dfb99e135ee70e50f3ea20ac9189a272130), [Rust `8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). `uint64` keys and values; medians of three fresh-process runs over identical datasets, with checked results.
 
 ![Change in Go operation time versus Rust across four sizes and multiple workloads](benchmarks/cpu-arm64.svg)
 
-Each cell shows the **percentage change in Go time versus Rust**. Negative means faster Go; positive means slower Go. Gray cells are within 5%. Batch timings are per key. Churn timings cover one deletion and one insertion; the two rows distinguish reinserting the same key from inserting a different key. Different-key churn uses unique keys spread throughout the tree and checks that every deletion succeeds and every insertion adds a new key. Parallel cases use four workers; the mixed case replaces existing values on 10% of operations.
+Each cell is the **change in Go time versus Rust**: negative means Go is faster; gray cells are within 5%. Batches are per key. Churn is one deletion plus one insertion, of the same key or of a fresh one. Parallel rows use four workers; the mixed row replaces values on 10% of operations.
 
 <details>
 <summary>Exact timings — Go / Rust, ns/op; lower is better</summary>
@@ -170,15 +170,11 @@ Each cell shows the **percentage change in Go time versus Rust**. Negative means
 
 </details>
 
-### Memory and construction
-
 ![Go versus Rust peak RSS for Tree and Map at four sizes](benchmarks/memory-arm64.svg)
-
-Memory includes each process’s runtime, allocator, GC headroom, and caches populated by a full read pass. Go uses its default GC settings. MB are decimal.
 
 ![Go versus Rust construction time for Tree and Map at four sizes](benchmarks/build-arm64.svg)
 
-Construction measures inserting all entries into an empty container. Small cases use milliseconds; large cases use seconds.
+Memory is whole-process peak RSS, including the Go runtime, GC headroom and read caches. Construction inserts every entry into an empty container.
 
 <details>
 <summary>Memory and build measurements — each cell is Go / Rust</summary>
@@ -196,13 +192,11 @@ Construction measures inserting all entries into an empty container. Small cases
 
 </details>
 
-Background CPU activity was observed on the host; small timing gaps are inconclusive. These are ARM64 measurements. Native amd64 results are available as [CI artifacts](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml). The [raw report](benchmarks/arm64-2026-10-26.json) also includes Go’s built-in `map` and `sync.Map` CPU comparisons through 5M entries.
+Small gaps are within run-to-run noise. The [raw report](benchmarks/arm64-2026-10-26.json) adds Go's built-in `map` and `sync.Map`; amd64 results are [CI artifacts](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml).
 
-## Reproduce the comparisons
+## Reproducing the benchmarks
 
-Performance work compares the Go implementation with a pinned, optimized Rust build, plus Go's built-in `map` and `sync.Map`. Results depend on the workload, entry count, CPU, and concurrency level.
-
-To reproduce the recorded results, use source checkpoint `014d5df` in a separate checkout. Build the drivers from its repository root:
+To reproduce, use source checkpoint `014d5df` and build both drivers:
 
 ```sh
 GOEXPERIMENT=simd go build -o compare-go ./cmd/compare
@@ -211,58 +205,47 @@ RUSTFLAGS='-C target-cpu=native' cargo build --release --locked \
   --manifest-path internal/oracle/Cargo.toml --bin compare --bin memory
 ```
 
-Run the **50-million-entry** CPU comparison:
+Run the CPU comparison (shown for 50M entries; for 4K and 262K use `--queries 8192 --rounds 512`):
 
 ```sh
-python3 internal/cpu_compare.py \
-  --go ./compare-go --rust internal/oracle/target/release/compare \
-  --size 50000000 --queries 1048576 --rounds 4 --threads 4 --repeat 3 \
-  --mutations --distinct
+python3 internal/cpu_compare.py --go ./compare-go --rust internal/oracle/target/release/compare \
+  --size 50000000 --queries 1048576 --rounds 4 --threads 4 --repeat 3 --mutations --distinct
 ```
 
-Each backend runs in a fresh process. The drivers use `uint64`/`u64` keys and values. Rust uses the pinned upstream benchmark’s mimalloc allocator, full LTO, and native CPU tuning; Go uses its normal allocator and GC settings.
-
-Go and Rust receive identical keys, query streams, and operation counts; the driver checks checksums and rotates execution order. Eight-key batches use each library’s public batch API.
-
-Serial replacement checks include every bit of the previous value, independently account for repeated queries, and verify final values outside the timer.
-
-The concurrent APIs have different costs: Rust deliberately omits `len()` and uses optimistic ordinary payload reads, as described in its [concurrency design](https://github.com/XiangpengHao/bbtree/blob/8adae97a0ed97e5c98fa2790312eb0aec9719846/design/09-concurrency.md). Go maintains exact O(1) `Len` and uses atomic numeric payload accesses. The pinned Rust implementation is unmodified.
-
-`--mutations` includes existing-key replacements and same-key delete/reinsert pairs after the read cases. `--distinct` adds successful deletion followed by insertion of a different key, using unique, disjoint key sets; operation counts and expected checksums are checked independently.
-
-Parallel timings exclude worker creation and final checksum reduction. Add `--standard` to compare Go's built-in `map` and `sync.Map`; built-in `map` is read directly for read-only tests and protected by `RWMutex` for concurrent writes.
-
-For 5M entries, change `--size` to `5000000`. For the smaller cases, use `--size 4096` or `--size 262144` with `--queries 8192 --rounds 512`.
-
-At the recorded checkpoint, serial measurements keep the caller on one OS thread. The Go driver sets its worker limit before construction, using the requested parallel worker count, or one for serial-only runs. The output records this setting.
-
-Measure **real process memory**, separately from CPU timings:
+Then the memory and construction comparison:
 
 ```sh
-python3 internal/rss_compare.py \
-  --go ./memory-go --rust internal/oracle/target/release/memory \
+python3 internal/rss_compare.py --go ./memory-go --rust internal/oracle/target/release/memory \
   --size 50000000 --repeat 3 --kinds tree map
 ```
 
-The memory driver supports Linux and macOS. It reports peak RSS, RSS after construction, after reading every entry once, and after Go collection or a Rust settling interval. The full read pass includes any lazily allocated read caches in the memory totals. Each process contains one populated container. Go's runtime and GC headroom remain in the totals. Run `./memory-go -stats` separately for supplementary Go heap and scan counters. Construction time is recorded as `build_ns`. Set `--size 5000000` for the 5M case.
+`python3 internal/render_benchmarks.py` regenerates the charts and the tables above from the saved report.
 
-Built-in integer keys with primitive word values use indexed, GC-noscan slabs in both containers. The concurrent numeric map reads shared numeric fields atomically. Small maps with stable keys can retain an immutable read cache; large maps use a single copy of their entries. Pointer-bearing keys and values remain visible to Go's garbage collector.
+How the comparison is kept fair:
 
-CI artifacts include CPU details, selected SIMD backends, generated code, and benchmark results.
+- **Identical work.** Both languages get identical keys, queries and operation counts. Checksums are verified, including every bit of replaced values. Different-key churn uses disjoint key sets and checks that every delete and insert succeeds.
+- **Fresh processes.** Every backend runs in a fresh process, in rotated order. Serial cases are pinned to one OS thread. Parallel timings exclude starting workers and reducing checksums.
+- **Public APIs.** Batches go through each library's public batch API, and the Rust code is unmodified upstream.
+- **Unequal guarantees.** The concurrent APIs promise different things. Rust omits `len()` and reads payloads with plain loads ([design](https://github.com/XiangpengHao/bbtree/blob/8adae97a0ed97e5c98fa2790312eb0aec9719846/design/09-concurrency.md)). Go keeps an exact O(1) `Len` and reads numeric payloads atomically.
+- **Whole-process memory.** Memory is RSS of a process holding one container, measured after a full read pass, with Go's default GC settings.
 
-Regenerate the SVG charts and tables from the saved report with `python3 internal/render_benchmarks.py` (requires Matplotlib).
+`--standard` adds Go's built-in `map` and `sync.Map`.
 
-## Validation and upstream
+## Testing
 
 ```sh
 GOEXPERIMENT=simd go test -race ./...
 GOEXPERIMENT=simd GODEBUG=simd=0 go test ./...
-go test ./...
 GOEXPERIMENT=simd go test -run '^$' -fuzz FuzzTree -fuzztime 20s
 ```
 
-Tests cover randomized operations against independent Go references, tree invariants, concurrent mutation, callback panic recovery, SIMD boundaries, and steady-state allocations. CI also runs a live Rust oracle for numeric keys and byte strings, checking return values, ranges in both directions, lengths, and deletion to empty.
+The tests check every container against independent references:
 
-The upstream reference is pinned to [`8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). The test suite includes Rust-generated file fixtures and optional live Rust oracles for container operations and file interoperability.
+- randomized operation sequences with tree invariants;
+- concurrent mutation and callback panics;
+- SIMD boundaries and steady-state allocations;
+- custom key orders.
 
-Licensed under **MIT OR Apache-2.0**, following upstream. See [LICENSE](LICENSE).
+CI also runs a live Rust oracle for containers and file interoperability, against upstream pinned at [`8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846).
+
+Licensed under **MIT OR Apache-2.0**, like upstream. See [LICENSE](LICENSE).

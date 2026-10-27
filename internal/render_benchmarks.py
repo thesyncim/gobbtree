@@ -168,15 +168,14 @@ def main():
         save(fig, "memory-arm64" if metric == "peak" else "build-arm64", title)
 
     text = ["## Benchmarks", "",
-            f"Apple M4 Max (ARM64), Go {go_version} with Go SIMD, and Rust {rust_version} with native CPU tuning, full LTO, and mimalloc. "
-            f"Measured sources: [Go `{go_short}`](https://github.com/thesyncim/gobbtree/commit/{go_source}) "
-            f"and [Rust `{rust_short}`](https://github.com/XiangpengHao/bbtree/tree/{rust_source}). "
-            "Timings and memory figures are medians of three fresh-process runs using identical datasets and checked results. "
-            "4K and 262K denote 4,096 and 262,144 entries.", "",
-            "### Operation time", "",
+            f"Go {go_version} with `GOEXPERIMENT=simd` against the Rust original ({rust_version}, native CPU tuning, full LTO, mimalloc) "
+            f"on an Apple M4 Max. Sources: [Go `{go_short}`](https://github.com/thesyncim/gobbtree/commit/{go_source}), "
+            f"[Rust `{rust_short}`](https://github.com/XiangpengHao/bbtree/tree/{rust_source}). "
+            "`uint64` keys and values; medians of three fresh-process runs over identical datasets, with checked results.", "",
             "![Change in Go operation time versus Rust across four sizes and multiple workloads](benchmarks/cpu-arm64.svg)", "",
-            "Each cell shows the **percentage change in Go time versus Rust**. Negative means faster Go; positive means slower Go. Gray cells are within 5%. "
-            "Batch timings are per key. Churn timings cover one deletion and one insertion; the two rows distinguish reinserting the same key from inserting a different key. Different-key churn uses unique keys spread throughout the tree and checks that every deletion succeeds and every insertion adds a new key. Parallel cases use four workers; the mixed case replaces existing values on 10% of operations.", "",
+            "Each cell is the **change in Go time versus Rust**: negative means Go is faster; gray cells are within 5%. "
+            "Batches are per key. Churn is one deletion plus one insertion, of the same key or of a fresh one. "
+            "Parallel rows use four workers; the mixed row replaces values on 10% of operations.", "",
             "<details>", "<summary>Exact timings — Go / Rust, ns/op; lower is better</summary>", ""]
     for kind in ("tree", "map"):
         text += [f"**{kind.title()}**", "", "| Workload | 4K | 262K | 5M | 50M |", "|---|---:|---:|---:|---:|"]
@@ -184,12 +183,11 @@ def main():
             cells = [f"{time(size, kind, 'go', case):.2f} / {time(size, kind, 'rust', case):.2f}" for size in SIZES]
             text.append("| " + label + " | " + " | ".join(cells) + " |")
         text.append("")
-    text += ["</details>", "", "### Memory and construction", "",
+    text += ["</details>", "",
              "![Go versus Rust peak RSS for Tree and Map at four sizes](benchmarks/memory-arm64.svg)", "",
-             "Memory includes each process’s runtime, allocator, GC headroom, and caches populated by a full read pass. "
-             "Go uses its default GC settings. MB are decimal.", "",
              "![Go versus Rust construction time for Tree and Map at four sizes](benchmarks/build-arm64.svg)", "",
-             "Construction measures inserting all entries into an empty container. Small cases use milliseconds; large cases use seconds.", "",
+             "Memory is whole-process peak RSS, including the Go runtime, GC headroom and read caches. "
+             "Construction inserts every entry into an empty container.", "",
              "<details>", "<summary>Memory and build measurements — each cell is Go / Rust</summary>", "",
              "| Container | Entries | Peak RSS, MB | After reads, MB | Collected / settled RSS, MB | Build, seconds |",
              "|---|---:|---:|---:|---:|---:|"]
@@ -201,13 +199,12 @@ def main():
                 cells.append(" / ".join(f"{memory(size, kind, language, metric):,.{precision}f}" for language in ("go", "rust")))
             text.append(f"| {kind.title()} | {label} | " + " | ".join(cells) + " |")
     text += ["", "</details>", "",
-             "Background CPU activity was observed on the host; small timing gaps are inconclusive. "
-             "These are ARM64 measurements. Native amd64 results are available as [CI artifacts](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml). "
-             f"The [raw report]({report_link}) also includes Go’s built-in `map` and `sync.Map` CPU comparisons through 5M entries.", ""]
+             f"Small gaps are within run-to-run noise. The [raw report]({report_link}) adds Go's built-in `map` and `sync.Map`; "
+             "amd64 results are [CI artifacts](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml).", ""]
     readme = ROOT / "README.md"
     old = readme.read_text()
     start = old.index("## Benchmarks")
-    end = old.index("## Reproduce the comparisons", start)
+    end = old.index("## Reproducing the benchmarks", start)
     updated = old[:start] + "\n".join(text) + "\n" + old[end:]
     updated = re.sub(r"use source checkpoint `[0-9a-f]+`", f"use source checkpoint `{go_short}`", updated)
     readme.write_text(updated)
