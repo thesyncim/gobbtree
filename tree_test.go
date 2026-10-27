@@ -495,6 +495,7 @@ func TestTextualMapWritesDoNotAllocate(t *testing.T) {
 		}
 	}
 }
+
 // Word-valued textual maps are read from the live node, so a churn costs
 // only the new key's interned copy.
 func TestWordTextMapWritesAllocateOnlyKeys(t *testing.T) {

@@ -190,6 +190,11 @@ retry:
 			continue retry
 		}
 
+		if seqlockPlainStores {
+			if value, found, ok := m.getOrdered(view, key, version); ok {
+				return value, found
+			}
+		}
 		var id uint32
 		var fill bool
 		if view.leaves != nil {
