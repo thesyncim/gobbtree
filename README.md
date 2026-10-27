@@ -59,10 +59,12 @@ All zero values are ready to use. Don't copy a container after first use.
 | `Ascend(from)` · `Descend(from)` | Iterates keys `>= from` ascending, or `<= from` descending |
 | `All()` · `Reverse()`, plus `Keys()` · `Values()` on Tree | Iterates everything |
 | `First()` · `Last()` · `PopFirst()` · `PopLast()` | The end entries |
-| `Update` · `LoadOrStore` · `LoadOrStoreFunc` · `UpdateOrInsert` | Read-modify-write; atomic on `Map` |
+| `Update` · `LoadOrStore` · `LoadOrStoreFunc` · `UpdateOrInsert` | Read-modify-write; atomic on `Map`. Callbacks receive the stored key |
 | `UpdateRange(b, f)` · `UpdateAll(f)` · `InsertAll(seq)` | Bulk changes |
 | `Read` · `ReadMany` · `UpdateOrInsertMany` · `DeleteIf` | Callback reads, batched upserts and conditional delete on `Map` |
-| `LowerBound` · `UpperBound` · `SplitOff` · `Append` · `Retain` · `ExtractIf` | Ordered editing on `Tree` |
+| `LowerBound` · `UpperBound` · `SplitOff` · `Append` · `Retain` · `ExtractIf(b, f)` | Ordered editing on `Tree` |
+| `Entry(k)` · `FirstEntry()` · `LastEntry()` | Upstream's entry API on `Tree`: `OrInsert`, `OrInsertWith`, `AndModify`, `Remove`, … |
+| `Clone()` · `EqualFunc` · `CompareFunc` · `String()` · `Drain()` | Copy, compare, format and consume (`Equal`/`Compare` on `Set`) |
 
 Iterators are Go range-over-func sequences: `break` stops them. `Set` offers the same iterators over keys, plus union, intersection, difference and subset tests; `FileMap` offers the read-only ones.
 
@@ -116,9 +118,9 @@ A composite key encodes its fields one after another. For example, a `uint32` te
 
 `Map` lookups of word values (integers, floats, bools) are lock-free: they read numeric slabs or immutable search images and retry if a writer interfered. Other values are read under a leaf read latch, so their writes publish no snapshots and allocate nothing. Writers lock single leaves; splits and merges take a structural lock.
 
-- Iteration (`Range`, `RangeReverse`, `Ascend`, `Descend`, `All`, `Reverse`, `First`, `Last`) works like upstream's `scan` and `range_cloned`: it copies a few leaves at a time and visits the copies with nothing held, so the loop body may use the map. Numeric maps copy without any latch, validated like lookups; other maps hold a leaf's read latch only while copying it. Iteration is not a snapshot: an entry present throughout is visited exactly once; entries inserted or removed meanwhile may or may not be.
+- Iteration (`Scan`, `Range`, `Ascend`, `Descend`, `All`, their reverses, `First`, `Last`) works like upstream's `scan` and `range_cloned`: it copies a few leaves at a time and visits the copies with nothing held, so the loop body may use the map. Numeric maps copy without any latch, validated like lookups; other maps hold a leaf's read latch only while copying it. Iteration is not a snapshot: an entry present throughout is visited exactly once; entries inserted or removed meanwhile may or may not be.
 - Each batch entry is consistent on its own; a batch is not a transaction.
-- `Read`, `Update`, `UpdateOrInsert` and `DeleteIf` run their callbacks under the entry's lock; those must not call back into the same map. A panicking callback releases its locks and stores nothing.
+- `Read`, `Update`, `UpdateOrInsert`, `DeleteIf` and `LoadOrStore` run under the entry's leaf latch, as upstream's do; their callbacks must not call back into the same map. A panicking callback releases its locks and stores nothing.
 
 ## File maps
 
@@ -147,17 +149,28 @@ The API follows upstream's operations with Go names; results are Go multi-value 
 | `get` · `get_copied` · `get_cloned` · `contains_key` · `get_key_value` | `Get` · `Contains` · `GetKeyValue` |
 | `insert` · `remove` · `remove_entry` | `Insert` · `Delete` · `Take` |
 | `get_many_*` · `insert_many` · `read_many` · `update_or_insert_many` | `GetMany` · `InsertMany` · `ReadMany` · `UpdateOrInsertMany` |
-| `read` · `update` · `update_or_insert` · `get_or_insert` · `remove_if` | `Read` · `Update` · `UpdateOrInsert` · `LoadOrStore` · `DeleteIf` |
+| `read` · `update` · `update_or_insert` · `get_or_insert` · `remove_if` | `Read` · `Update` · `UpdateOrInsert` · `LoadOrStore` · `DeleteIf`; callbacks see the stored key, and a closure's result is captured by the closure |
 | `get_mut` · `iter_mut` · `values_mut` · `range_mut` | `Update` · `UpdateAll` · `UpdateRange` |
-| `entry`: `or_insert` · `or_insert_with` · `and_modify` | `LoadOrStore` · `LoadOrStoreFunc` · `UpdateOrInsert` |
+| `entry` · `first_entry` · `last_entry` | `Entry` · `FirstEntry` · `LastEntry`, with `OrInsert` · `OrInsertWith` · `OrInsertWithKey` · `OrDefault` · `AndModify` · `Insert` · `InsertEntry` · `Remove` |
+| Range bounds `a..b` · `a..=b` · `a..` · `..b` · `..=b` · `(Excluded(a), _)` | `Between(a, b)` · `AtLeast(a).AtMost(b)` · `AtLeast(a)` · `Below(b)` · `AtMost(b)` · `Above(a)…`; invalid bounds panic as upstream's do |
 | `iter` · `range` · `range_cloned` · `scan` · `scan_rev` | `All` / `Reverse` · `Scan` / `ScanReverse` (any `Bounds`) · `Range` / `RangeReverse` / `Ascend` / `Descend` |
 | `keys` · `values` · `first_key_value` · `last_key_value` · `first_copied` · `pop_first` · `pop_last` | `Keys` · `Values` · `First` · `Last` · `FirstIn` · `PopFirst` · `PopLast` |
 | `retain` · `extract_if` · `split_off` · `append` · `Extend` · `FromIterator` | `Retain` · `ExtractIf` · `SplitOff` · `Append` · `InsertAll` |
 | set `contains_many` · `replace` · `take` · `union` · `intersection` · `difference` · `symmetric_difference` · `is_subset` | the same names on `Set` |
-| `InlineKey` · byte-string keys | `Key` · `Bytes` |
+| `Clone` · `PartialEq`/`Eq` · `PartialOrd`/`Ord` · `Debug` · `into_iter`/`into_keys`/`into_values` | `Clone` · `EqualFunc`/`Equal` · `CompareFunc`/`Compare` · `String` · `Drain` |
+| `InlineKey` (`inline_key_at`) · byte-string keys, which compare from where they differ (`cmp_from`) | `Key` (`Window`) · `Bytes`; string and `Bytes` keys compare from where they differ |
 | `FileMap` · `FileWriter::from_ascending` | `FileMap` · `NewFileWriter` / `CreateFile` |
 
-Not carried over: references into the map (Go takes values out and puts them back with the `Update` family); consuming iterators (`into_iter`, `into_keys`, `into_values`); leaf annexes and their `*_with_leaf` methods, which let `bbtree-store` manage manually allocated pages that Go's garbage collector manages here; allocator, strategy and node-layout parameters; and the `inspect`/`check_invariants` debugging helpers. `Len` on `Map` and `LowerBound`/`UpperBound` are additions.
+Not carried over, because Go has no counterpart:
+- **References into the map.** Go takes values out and puts them back (the `Update` family and `Entry`), so `get_mut`, `iter_mut` and `range_mut` become `Update`, `UpdateAll` and `UpdateRange`.
+- **Rust-only traits.** There is no operator overloading for `Index` (use `Get`) and no `Hash` trait.
+- **Allocators and `InsertError`.** Go's allocation failure is fatal, so `Insert` has no error path.
+- **`NodeConfig` page sizes.** Go array lengths cannot be type parameters, so nodes hold a fixed 32 entries.
+- **The rest of `InlineKey`:** `WIDTH`, `hash_tag`, `cmp_prefix`, and `cmp_from` on custom keys. These tune upstream's node layout, and a generic Go container cannot call an optional key method without boxing the key.
+- **Leaf annexes and their `*_with_leaf` methods.** They let `bbtree-store` manage manually allocated pages, which Go's garbage collector manages here.
+- **The `inspect` and `check_invariants` debugging helpers.**
+
+Additions beyond upstream: `Len`, `First`, `Last`, `PopFirst`, `PopLast`, `Ascend` and `Descend` on `Map`; `LowerBound` and `UpperBound` on `Tree`; and `Range(lo, hi)` as shorthand for `Scan(Between(lo, hi))`.
 
 ## SIMD
 
