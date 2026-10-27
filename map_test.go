@@ -43,7 +43,7 @@ func TestConcurrentMutation(t *testing.T) {
 		checkWordTree(t, &words.tree, m.Len())
 	} else {
 		m.tree.length = m.Len()
-		checkTree(t, &m.tree)
+		checkCore(t, &m.tree)
 	}
 	// Same-key updates must not lose increments.
 	m.Insert(-1, 0)
@@ -148,7 +148,7 @@ func TestConcurrentReadsScansAndStructure(t *testing.T) {
 		checkWordTree(t, &words.tree, m.Len())
 	} else {
 		m.tree.length = m.Len()
-		checkTree(t, &m.tree)
+		checkCore(t, &m.tree)
 	}
 }
 func TestMapCallbacksAndBatch(t *testing.T) {

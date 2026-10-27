@@ -1,8 +1,6 @@
 package gobbtree
 
-import "cmp"
-
-func (t *Tree[K, V]) initWords() bool {
+func (t *treeCore[K, V, O]) initWords() bool {
 	if t.shared {
 		return false
 	}
@@ -13,14 +11,14 @@ func (t *Tree[K, V]) initWords() bool {
 	t.words = &wordTree{keyKind: keyKind, valueKind: valueKind}
 	return true
 }
-func decodeWordKey[K cmp.Ordered](code uint64, kind uint8) K {
+func decodeWordKey[K any](code uint64, kind uint8) K {
 	switch kind {
 	case 2, 3, 6, 8, 10:
 		code ^= 1 << 63
 	}
 	return unpackWord[K](code, kind)
 }
-func (t *Tree[K, V]) wordValue(value uint64) V {
+func (t *treeCore[K, V, O]) wordValue(value uint64) V {
 	if t.words.valueKind == 1 {
 		return any(value).(V)
 	}

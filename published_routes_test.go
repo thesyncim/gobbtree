@@ -6,14 +6,16 @@ import (
 	"testing"
 )
 
-type legacyNumericKey uint64
+// nodeRoutedKey is a defined uint64. The numeric arena accepts only built-in
+// word types, so these tests exercise the node tree and its published routes.
+type nodeRoutedKey uint64
 
 func TestPublishedRoutesTrackStructure(t *testing.T) {
-	var m Map[legacyNumericKey, uint64]
+	var m Map[nodeRoutedKey, uint64]
 	const size = 20000
-	keys := make([]legacyNumericKey, size)
+	keys := make([]nodeRoutedKey, size)
 	for i := range keys {
-		keys[i] = legacyNumericKey(mixedKey(uint64(i)))
+		keys[i] = nodeRoutedKey(mixedKey(uint64(i)))
 		m.Insert(keys[i], uint64(i))
 	}
 	check := func() {
@@ -103,15 +105,15 @@ func TestPublishedRoutesConcurrentRebuild(t *testing.T) {
 }
 
 func TestRetiredNumericImagesRemainInvalidAfterArenaReuse(t *testing.T) {
-	var m Map[legacyNumericKey, uint64]
+	var m Map[nodeRoutedKey, uint64]
 	const size = 4096
 	const mask = uint64(0x9e3779b97f4a7c15)
-	for key := legacyNumericKey(0); key < size; key++ {
+	for key := nodeRoutedKey(0); key < size; key++ {
 		m.Insert(key, uint64(key)^mask)
 	}
 	type retired struct {
-		image *searchImage[legacyNumericKey, uint64]
-		key   legacyNumericKey
+		image *searchImage[nodeRoutedKey, uint64, natural[nodeRoutedKey]]
+		key   nodeRoutedKey
 	}
 	var images []retired
 	for n := m.tree.firstLeaf(); n != nil; n = n.leaf.next {
@@ -130,7 +132,7 @@ func TestRetiredNumericImagesRemainInvalidAfterArenaReuse(t *testing.T) {
 			}
 		}
 	})
-	for key := legacyNumericKey(1); key < size; key++ {
+	for key := nodeRoutedKey(1); key < size; key++ {
 		m.Delete(key)
 	}
 	arena := m.tree.arena
@@ -141,7 +143,7 @@ func TestRetiredNumericImagesRemainInvalidAfterArenaReuse(t *testing.T) {
 	for _, old := range images {
 		reused[old.image.pairs] = true
 	}
-	for key := legacyNumericKey(size); key < 2*size; key++ {
+	for key := nodeRoutedKey(size); key < 2*size; key++ {
 		m.Insert(key, uint64(key)^mask)
 	}
 	stop.Store(true)
@@ -160,7 +162,7 @@ func TestRetiredNumericImagesRemainInvalidAfterArenaReuse(t *testing.T) {
 			t.Fatal("retired image became valid again")
 		}
 	}
-	for key := legacyNumericKey(size); key < 2*size; key++ {
+	for key := nodeRoutedKey(size); key < 2*size; key++ {
 		if value, ok := m.Get(key); !ok || value != uint64(key)^mask {
 			t.Fatalf("reused leaf lookup %d", key)
 		}

@@ -6,7 +6,7 @@ import (
 )
 
 // Entry is a key/value pair used by batch operations and snapshots.
-type Entry[K cmp.Ordered, V any] struct {
+type Entry[K any, V any] struct {
 	Key   K
 	Value V
 }
@@ -19,8 +19,11 @@ type Result[V any] struct {
 
 // Tree is an ordered map for a single owner. Its zero value is ready to use.
 // Concurrent reads are safe only when no goroutine modifies the tree.
-type Tree[K cmp.Ordered, V any] struct {
-	root        *node[K, V]
+type Tree[K cmp.Ordered, V any] struct{ treeCore[K, V, natural[K]] }
+
+// treeCore implements Tree and TreeOf for one key ordering.
+type treeCore[K any, V any, O keyOrder[K]] struct {
+	root        *node[K, V, O]
 	words       *wordTree
 	arena       *nodeArena
 	length      int
@@ -30,9 +33,9 @@ type Tree[K cmp.Ordered, V any] struct {
 
 // NewTree creates an empty tree without synchronization.
 func NewTree[K cmp.Ordered, V any]() *Tree[K, V] { return new(Tree[K, V]) }
-func (t *Tree[K, V]) Len() int                   { return t.length }
-func (t *Tree[K, V]) IsEmpty() bool              { return t.length == 0 }
-func (t *Tree[K, V]) Clear() {
+func (t *treeCore[K, V, O]) Len() int            { return t.length }
+func (t *treeCore[K, V, O]) IsEmpty() bool       { return t.length == 0 }
+func (t *treeCore[K, V, O]) Clear() {
 	t.root = nil
 	t.words = nil
 	t.arena = nil
@@ -41,9 +44,9 @@ func (t *Tree[K, V]) Clear() {
 }
 
 // Get returns a copy of the value associated with key.
-func (t *Tree[K, V]) Get(key K) (V, bool) {
+func (t *treeCore[K, V, O]) Get(key K) (V, bool) {
 	if words := t.words; words != nil {
-		code := numericCode(key)
+		code := numericKey[O](key)
 		n := words.rootNode
 		if id := words.routes.lookup(code); id != 0 {
 			n = words.node(id)
@@ -86,7 +89,7 @@ func (t *Tree[K, V]) Get(key K) (V, bool) {
 
 	if t.root != nil {
 		if !t.root.strings {
-			code := numericCode(key)
+			code := numericKey[O](key)
 			n := t.root
 			for n.children != nil {
 				index := 0
@@ -108,20 +111,20 @@ func (t *Tree[K, V]) Get(key K) (V, bool) {
 		}
 		n := t.root.findLeaf(key)
 		i := n.lower(key)
-		if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
+		if i < n.n && compareKeys[O](n.keys[i], key) == 0 {
 			return n.leaf.values[i], true
 		}
 	}
 	var zero V
 	return zero, false
 }
-func (t *Tree[K, V]) Contains(key K) bool { _, ok := t.Get(key); return ok }
+func (t *treeCore[K, V, O]) Contains(key K) bool { _, ok := t.Get(key); return ok }
 
 // Insert stores value, returning the previous value and whether it replaced
 // an entry. Equal keys keep the original stored key, as in upstream bbtree.
-func (t *Tree[K, V]) Insert(key K, value V) (V, bool) {
+func (t *treeCore[K, V, O]) Insert(key K, value V) (V, bool) {
 	if words := t.words; words != nil {
-		code, packed := numericCode(key), packWord(value)
+		code, packed := numericKey[O](key), packWord(value)
 		if leaf := words.deletedLeaf; leaf != nil {
 			words.deletedLeaf = nil
 			if code == words.deletedKey {
@@ -188,13 +191,13 @@ func (t *Tree[K, V]) Insert(key K, value V) (V, bool) {
 	return t.insertGeneric(key, value)
 }
 
-func (t *Tree[K, V]) insertGeneric(key K, value V) (V, bool) {
+func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 	if t.root == nil && t.initWords() {
 		return t.Insert(key, value)
 	}
 	if t.root == nil {
 		t.arena = new(nodeArena)
-		t.root = newLeaf[K, V](t.shared, t.arena)
+		t.root = newLeaf[K, V, O](t.shared, t.arena)
 		t.routesDirty = true
 	}
 	// Replacements should not split or allocate, even in a full leaf.
@@ -203,16 +206,16 @@ func (t *Tree[K, V]) insertGeneric(key K, value V) (V, bool) {
 	if n.strings {
 		n = n.findLeaf(key)
 	} else {
-		n, full = n.findLeafForInsert(numericCode(key))
+		n, full = n.findLeafForInsert(numericKey[O](key))
 	}
 	i := n.exact(key)
-	if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
+	if i < n.n && compareKeys[O](n.keys[i], key) == 0 {
 		old := n.leaf.values[i]
 		n.setValue(i, value)
 		return old, true
 	}
 	if !full && n.n < nodeSize {
-		if i == n.n && n.n > 0 && cmp.Compare(key, n.keys[n.n-1]) < 0 {
+		if i == n.n && n.n > 0 && compareKeys[O](key, n.keys[n.n-1]) < 0 {
 			i = n.lower(key)
 		}
 		if i > 0 {
@@ -224,7 +227,7 @@ func (t *Tree[K, V]) insertGeneric(key K, value V) (V, bool) {
 	}
 	if t.root.n == nodeSize {
 		right := t.root.split()
-		root := newInner[K, V](t.shared, t.arena)
+		root := newInner[K, V, O](t.shared, t.arena)
 		root.insertChild(0, t.root)
 		root.insertChild(1, right)
 		t.root = root
@@ -235,7 +238,7 @@ func (t *Tree[K, V]) insertGeneric(key K, value V) (V, bool) {
 	var zero V
 	return zero, false
 }
-func (t *Tree[K, V]) insertAbsent(n *node[K, V], key K, value V) {
+func (t *treeCore[K, V, O]) insertAbsent(n *node[K, V, O], key K, value V) {
 	if n.leaf != nil {
 		n.insertLeaf(n.lower(key), key, value)
 		return
@@ -245,12 +248,12 @@ func (t *Tree[K, V]) insertAbsent(n *node[K, V], key K, value V) {
 		right := n.children[i].split()
 		n.insertChild(i+1, right)
 		t.changedRoutes(n)
-		if cmp.Compare(key, right.keys[0]) >= 0 {
+		if compareKeys[O](key, right.keys[0]) >= 0 {
 			i++
 		}
 	}
 	t.insertAbsent(n.children[i], key, value)
-	if cmp.Compare(n.keys[i], n.children[i].keys[0]) != 0 {
+	if compareKeys[O](n.keys[i], n.children[i].keys[0]) != 0 {
 		n.keys[i] = n.children[i].keys[0]
 		n.refit()
 		t.changedRoutes(n)
@@ -258,9 +261,9 @@ func (t *Tree[K, V]) insertAbsent(n *node[K, V], key K, value V) {
 }
 
 // Delete removes an entry, returning its previous value and presence.
-func (t *Tree[K, V]) Delete(key K) (V, bool) {
+func (t *treeCore[K, V, O]) Delete(key K) (V, bool) {
 	if t.words != nil {
-		old, ok := t.words.deleteOwner(numericCode(key))
+		old, ok := t.words.deleteOwner(numericKey[O](key))
 		if ok {
 			t.length--
 			return t.wordValue(old), true
@@ -289,10 +292,10 @@ func (t *Tree[K, V]) Delete(key K) (V, bool) {
 	}
 	return old, true
 }
-func (t *Tree[K, V]) remove(n *node[K, V], key K) (V, bool) {
+func (t *treeCore[K, V, O]) remove(n *node[K, V, O], key K) (V, bool) {
 	if n.leaf != nil {
 		i := n.exact(key)
-		if i == n.n || cmp.Compare(n.keys[i], key) != 0 {
+		if i == n.n || compareKeys[O](n.keys[i], key) != 0 {
 			var v V
 			return v, false
 		}
@@ -312,7 +315,7 @@ func (t *Tree[K, V]) remove(n *node[K, V], key K) (V, bool) {
 		}
 		n.refit()
 		t.changedRoutes(n)
-	} else if cmp.Compare(n.keys[i], child.keys[0]) != 0 {
+	} else if compareKeys[O](n.keys[i], child.keys[0]) != 0 {
 		n.keys[i] = child.keys[0]
 		n.refit()
 		t.changedRoutes(n)
@@ -320,7 +323,7 @@ func (t *Tree[K, V]) remove(n *node[K, V], key K) (V, bool) {
 	return old, true
 }
 
-func (n *node[K, V]) rebalance(i int) {
+func (n *node[K, V, O]) rebalance(i int) {
 	child := n.children[i]
 	if i > 0 && n.children[i-1].n > minNodeSize {
 		left := n.children[i-1]
@@ -386,7 +389,7 @@ func (n *node[K, V]) rebalance(i int) {
 	right.release()
 }
 
-func (t *Tree[K, V]) firstLeaf() *node[K, V] {
+func (t *treeCore[K, V, O]) firstLeaf() *node[K, V, O] {
 	n := t.root
 	if n == nil {
 		return nil
@@ -396,7 +399,7 @@ func (t *Tree[K, V]) firstLeaf() *node[K, V] {
 	}
 	return n
 }
-func (t *Tree[K, V]) lastLeaf() *node[K, V] {
+func (t *treeCore[K, V, O]) lastLeaf() *node[K, V, O] {
 	n := t.root
 	if n == nil {
 		return nil
@@ -406,7 +409,7 @@ func (t *Tree[K, V]) lastLeaf() *node[K, V] {
 	}
 	return n
 }
-func (t *Tree[K, V]) First() (K, V, bool) {
+func (t *treeCore[K, V, O]) First() (K, V, bool) {
 	if t.words != nil {
 		if id := t.words.end(false); id != 0 {
 			n := t.words.node(id)
@@ -425,7 +428,7 @@ func (t *Tree[K, V]) First() (K, V, bool) {
 	var v V
 	return k, v, false
 }
-func (t *Tree[K, V]) Last() (K, V, bool) {
+func (t *treeCore[K, V, O]) Last() (K, V, bool) {
 	if t.words != nil {
 		if id := t.words.end(true); id != 0 {
 			n := t.words.node(id)
@@ -444,14 +447,14 @@ func (t *Tree[K, V]) Last() (K, V, bool) {
 	var v V
 	return k, v, false
 }
-func (t *Tree[K, V]) PopFirst() (K, V, bool) {
+func (t *treeCore[K, V, O]) PopFirst() (K, V, bool) {
 	k, v, ok := t.First()
 	if ok {
 		t.Delete(k)
 	}
 	return k, v, ok
 }
-func (t *Tree[K, V]) PopLast() (K, V, bool) {
+func (t *treeCore[K, V, O]) PopLast() (K, V, bool) {
 	k, v, ok := t.Last()
 	if ok {
 		t.Delete(k)
@@ -461,20 +464,20 @@ func (t *Tree[K, V]) PopLast() (K, V, bool) {
 
 // Scan visits keys in [lower, upper), stopping when visit returns false.
 // Neither visit nor another goroutine may mutate the tree during the scan.
-func (t *Tree[K, V]) Scan(lower, upper K, visit func(K, V) bool) {
+func (t *treeCore[K, V, O]) Scan(lower, upper K, visit func(K, V) bool) {
 	if t.words != nil {
-		t.words.scan(numericCode(lower), numericCode(upper), false, func(k, v uint64) bool { return visit(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
+		t.words.scan(numericKey[O](lower), numericKey[O](upper), false, func(k, v uint64) bool { return visit(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
 		return
 	}
 
-	if t.root == nil || cmp.Compare(lower, upper) >= 0 {
+	if t.root == nil || compareKeys[O](lower, upper) >= 0 {
 		return
 	}
 	n := t.root.findLeaf(lower)
 	i := n.lower(lower)
 	for ; n != nil; n = n.leaf.next {
 		for ; i < n.n; i++ {
-			if cmp.Compare(n.keys[i], upper) >= 0 || !visit(n.keys[i], n.leaf.values[i]) {
+			if compareKeys[O](n.keys[i], upper) >= 0 || !visit(n.keys[i], n.leaf.values[i]) {
 				return
 			}
 		}
@@ -483,20 +486,20 @@ func (t *Tree[K, V]) Scan(lower, upper K, visit func(K, V) bool) {
 }
 
 // ScanReverse visits the same half-open interval as Scan, in descending order.
-func (t *Tree[K, V]) ScanReverse(lower, upper K, visit func(K, V) bool) {
+func (t *treeCore[K, V, O]) ScanReverse(lower, upper K, visit func(K, V) bool) {
 	if t.words != nil {
-		t.words.scan(numericCode(lower), numericCode(upper), true, func(k, v uint64) bool { return visit(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
+		t.words.scan(numericKey[O](lower), numericKey[O](upper), true, func(k, v uint64) bool { return visit(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
 		return
 	}
 
-	if t.root == nil || cmp.Compare(lower, upper) >= 0 {
+	if t.root == nil || compareKeys[O](lower, upper) >= 0 {
 		return
 	}
 	n := t.root.findLeaf(upper)
 	i := n.lower(upper) - 1
 	for ; n != nil; n = n.leaf.prev {
 		for ; i >= 0; i-- {
-			if cmp.Compare(n.keys[i], lower) < 0 || !visit(n.keys[i], n.leaf.values[i]) {
+			if compareKeys[O](n.keys[i], lower) < 0 || !visit(n.keys[i], n.leaf.values[i]) {
 				return
 			}
 		}
@@ -507,7 +510,7 @@ func (t *Tree[K, V]) ScanReverse(lower, upper K, visit func(K, V) bool) {
 }
 
 // All iterates all entries in ascending order. Mutation during iteration is forbidden.
-func (t *Tree[K, V]) All() iter.Seq2[K, V] {
+func (t *treeCore[K, V, O]) All() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
 		if t.words != nil {
 			t.words.all(false, func(k, v uint64) bool { return yield(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
@@ -525,7 +528,7 @@ func (t *Tree[K, V]) All() iter.Seq2[K, V] {
 }
 
 // Reverse iterates all entries in descending order.
-func (t *Tree[K, V]) Reverse() iter.Seq2[K, V] {
+func (t *treeCore[K, V, O]) Reverse() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
 		if t.words != nil {
 			t.words.all(true, func(k, v uint64) bool { return yield(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
@@ -544,7 +547,7 @@ func (t *Tree[K, V]) Reverse() iter.Seq2[K, V] {
 
 // GetMany fills dst in query order, including repeated keys and misses.
 // It panics before writing if dst is shorter than keys. No allocation is needed.
-func (t *Tree[K, V]) GetMany(keys []K, dst []Result[V]) {
+func (t *treeCore[K, V, O]) GetMany(keys []K, dst []Result[V]) {
 	if len(dst) < len(keys) {
 		panic("gobbtree: GetMany destination too short")
 	}
@@ -558,7 +561,7 @@ func (t *Tree[K, V]) GetMany(keys []K, dst []Result[V]) {
 			var codes [batchLanes]uint64
 			var values [batchLanes]Result[uint64]
 			for i := 0; i < count; i++ {
-				codes[i] = numericCode(keys[start+i])
+				codes[i] = numericKey[O](keys[start+i])
 			}
 			t.words.getMany(codes[:count], values[:count])
 			for i := 0; i < count; i++ {
@@ -574,7 +577,7 @@ func (t *Tree[K, V]) GetMany(keys []K, dst []Result[V]) {
 
 	for start := 0; start < len(keys); start += batchLanes {
 		count := min(batchLanes, len(keys)-start)
-		var nodes [batchLanes]*node[K, V]
+		var nodes [batchLanes]*node[K, V, O]
 		var codes [batchLanes]uint64
 		descendBatch(t.root, keys[start:start+count], &nodes, &codes)
 		for j := 0; j < count; j++ {
@@ -586,7 +589,7 @@ func (t *Tree[K, V]) GetMany(keys []K, dst []Result[V]) {
 				} else {
 					i = n.lower(keys[start+j])
 				}
-				if i < n.n && ((!n.strings && n.codes[i] == codes[j]) || (n.strings && cmp.Compare(n.keys[i], keys[start+j]) == 0)) {
+				if i < n.n && ((!n.strings && n.codes[i] == codes[j]) || (n.strings && compareKeys[O](n.keys[i], keys[start+j]) == 0)) {
 					result = Result[V]{n.leaf.values[i], true}
 				}
 			}
@@ -596,7 +599,7 @@ func (t *Tree[K, V]) GetMany(keys []K, dst []Result[V]) {
 }
 
 // InsertMany inserts in input order and fills dst with previous values.
-func (t *Tree[K, V]) InsertMany(entries []Entry[K, V], dst []Result[V]) {
+func (t *treeCore[K, V, O]) InsertMany(entries []Entry[K, V], dst []Result[V]) {
 	if len(dst) < len(entries) {
 		panic("gobbtree: InsertMany destination too short")
 	}
@@ -606,8 +609,10 @@ func (t *Tree[K, V]) InsertMany(entries []Entry[K, V], dst []Result[V]) {
 }
 
 // Clone makes an independent tree; values and keys are shallow copies.
-func (t *Tree[K, V]) Clone() *Tree[K, V] {
-	out := NewTree[K, V]()
+func (t *Tree[K, V]) Clone() *Tree[K, V] { return &Tree[K, V]{*t.clone()} }
+
+func (t *treeCore[K, V, O]) clone() *treeCore[K, V, O] {
+	out := new(treeCore[K, V, O])
 	for k, v := range t.All() {
 		out.Insert(k, v)
 	}

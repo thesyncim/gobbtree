@@ -369,10 +369,10 @@ func checkWordRoutes(t testing.TB, tr *wordTree) {
 }
 
 func TestConcurrentNumericLayout(t *testing.T) {
-	if unsafe.Sizeof(uintptr(0)) == 8 && unsafe.Sizeof(node[uint64, uint64]{}) > 512 {
+	if unsafe.Sizeof(uintptr(0)) == 8 && unsafe.Sizeof(node[uint64, uint64, natural[uint64]]{}) > 512 {
 		t.Fatal("numeric writer node exceeded the small-object scan threshold")
 	}
-	if unsafe.Offsetof(searchImage[uint64, uint64]{}.tags)+nodeSize > 64 {
+	if unsafe.Offsetof(searchImage[uint64, uint64, natural[uint64]]{}.tags)+nodeSize > 64 {
 		t.Fatal("numeric reader tags spilled out of the hot header")
 	}
 	if unsafe.Offsetof(atomicPairs{}.entries) != 64 || unsafe.Sizeof(atomicPairs{}) != 576 {

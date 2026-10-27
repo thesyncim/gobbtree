@@ -1,19 +1,17 @@
 package gobbtree
 
-import "cmp"
-
 const batchLanes = 8
 
 // Interleave independent routing steps so the CPU can overlap child loads.
 // The caller owns the Tree and its scratch arrays.
-func descendBatch[K cmp.Ordered, V any](root *node[K, V], keys []K, nodes *[batchLanes]*node[K, V], codes *[batchLanes]uint64) {
+func descendBatch[K any, V any, O keyOrder[K]](root *node[K, V, O], keys []K, nodes *[batchLanes]*node[K, V, O], codes *[batchLanes]uint64) {
 	if root == nil {
 		return
 	}
 	for j, key := range keys {
 		nodes[j] = root
 		if !root.strings {
-			codes[j] = numericCode(key)
+			codes[j] = numericKey[O](key)
 		}
 	}
 	for nodes[0].children != nil {
@@ -37,14 +35,14 @@ func descendBatch[K cmp.Ordered, V any](root *node[K, V], keys []K, nodes *[batc
 	}
 }
 
-func descendPublished[K cmp.Ordered, V any](root *searchImage[K, V], keys []K, nodes *[batchLanes]*searchImage[K, V], codes *[batchLanes]uint64) bool {
+func descendPublished[K any, V any, O keyOrder[K]](root *searchImage[K, V, O], keys []K, nodes *[batchLanes]*searchImage[K, V, O], codes *[batchLanes]uint64) bool {
 	if root == nil {
 		return true
 	}
 	for j, key := range keys {
 		nodes[j] = root
 		if !root.strings {
-			codes[j] = numericCode(key)
+			codes[j] = numericKey[O](key)
 		}
 	}
 	for nodes[0].readEdges != nil {

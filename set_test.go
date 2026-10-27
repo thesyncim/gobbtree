@@ -135,7 +135,7 @@ func TestSetOperations(t *testing.T) {
 			delete(reference, k)
 		}
 		if i%1000 == 0 {
-			checkTree(t, &s.tree)
+			checkCore(t, &s.tree)
 		}
 	}
 	var want []int
@@ -162,8 +162,8 @@ func TestSetOperations(t *testing.T) {
 			t.Fatal("split upper")
 		}
 	}
-	checkTree(t, &s.tree)
-	checkTree(t, &upper.tree)
+	checkCore(t, &s.tree)
+	checkCore(t, &upper.tree)
 	s.Append(upper)
 	if !upper.IsEmpty() || !slices.Equal(slices.Collect(s.All()), want) {
 		t.Fatal("append")
@@ -192,7 +192,7 @@ func TestSetOperations(t *testing.T) {
 	if clone.Len() != before-7 {
 		t.Fatal("early stop")
 	}
-	checkTree(t, &clone.tree)
+	checkCore(t, &clone.tree)
 }
 
 func TestSetAlgebra(t *testing.T) {

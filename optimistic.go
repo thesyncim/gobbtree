@@ -1,7 +1,6 @@
 package gobbtree
 
 import (
-	"cmp"
 	"math"
 	"runtime"
 	"sync/atomic"
@@ -12,7 +11,7 @@ type atomicWords struct {
 	values   [nodeSize]atomic.Uint64
 }
 
-func (l *leaf[K, V]) sequenceValue() uint64 {
+func (l *leaf[K, V, O]) sequenceValue() uint64 {
 	if l.pairs != nil {
 		return l.pairs.sequence.Load()
 	}
@@ -21,7 +20,7 @@ func (l *leaf[K, V]) sequenceValue() uint64 {
 	}
 	return l.sequence.Load()
 }
-func (n *node[K, V]) advanceSequence() {
+func (n *node[K, V, O]) advanceSequence() {
 	l := n.leaf
 	var sequence uint64
 	if l.pairs != nil {
@@ -36,8 +35,8 @@ func (n *node[K, V]) advanceSequence() {
 
 // SIMD reads immutable tags and routing columns. Paired leaf keys and values
 // are atomic; image validity and the structural epoch validate each read.
-func (n *node[K, V]) publish() { n.publishFrom(0) }
-func (n *node[K, V]) publishFrom(first int) {
+func (n *node[K, V, O]) publish() { n.publishFrom(0) }
+func (n *node[K, V, O]) publishFrom(first int) {
 	if !n.shared {
 		return
 	}
@@ -45,7 +44,7 @@ func (n *node[K, V]) publishFrom(first int) {
 	if old := n.image.Load(); old != nil && old.valid.Load() {
 		old.valid.Store(false)
 	}
-	image := &searchImage[K, V]{n: n.n, prefix: n.prefix, strings: n.strings, leaf: n.leaf, readEdges: n.readEdges}
+	image := &searchImage[K, V, O]{n: n.n, prefix: n.prefix, strings: n.strings, leaf: n.leaf, readEdges: n.readEdges}
 	if n.leaf == nil || n.leaf.pairs == nil {
 		image.codes = new([nodeSize]uint64)
 		*image.codes = n.codes
@@ -110,7 +109,7 @@ func (n *node[K, V]) publishFrom(first int) {
 		n.parentSlot.Store(image)
 	}
 }
-func (n *node[K, V]) setValue(i int, value V) {
+func (n *node[K, V, O]) setValue(i int, value V) {
 	n.leaf.values[i] = value
 	if n.leaf.pairs != nil {
 		n.leaf.pairs.entries[i].value.Store(packWord(value))
@@ -239,13 +238,13 @@ func unpackWord[V any](word uint64, kind uint8) V {
 // from accepting a descent across a split/merge. Only structural writers
 // change it; readers perform loads, not a globally contended reader increment.
 // The three adjacent leaves cover every leaf a split or rebalance can change.
-func (m *Map[K, V]) structuralStart(key K) [3]*node[K, V] {
+func (m *mapCore[K, V, O]) structuralStart(key K) [3]*node[K, V, O] {
 	m.version.Add(1)
 	m.tree.shared = true
-	var held [3]*node[K, V]
+	var held [3]*node[K, V, O]
 	if m.tree.root != nil {
 		target := m.tree.root.findLeaf(key)
-		held = [3]*node[K, V]{target.leaf.prev, target, target.leaf.next}
+		held = [3]*node[K, V, O]{target.leaf.prev, target, target.leaf.next}
 		for _, n := range held {
 			if n != nil {
 				n.leaf.mu.Lock()
@@ -254,7 +253,7 @@ func (m *Map[K, V]) structuralStart(key K) [3]*node[K, V] {
 	}
 	return held
 }
-func (m *Map[K, V]) structuralEnd(held [3]*node[K, V]) {
+func (m *mapCore[K, V, O]) structuralEnd(held [3]*node[K, V, O]) {
 	if m.tree.root == nil {
 		m.root.Store(nil)
 	} else {
@@ -272,9 +271,9 @@ func (m *Map[K, V]) structuralEnd(held [3]*node[K, V]) {
 	}
 }
 
-func (m *Map[K, V]) optimisticGet(key K) (V, bool) {
+func (m *mapCore[K, V, O]) optimisticGet(key K) (V, bool) {
 	var zero V
-	code := numericCode(key)
+	code := numericKey[O](key)
 retry:
 	for {
 		version := m.version.Load()
@@ -359,7 +358,7 @@ retry:
 			} else {
 				i = findCode(image.codes, &image.tags, image.n, code)
 			}
-			found = i < image.n && ((!image.strings && image.codes[i] == code) || (image.strings && cmp.Compare(image.keys[i], key) == 0))
+			found = i < image.n && ((!image.strings && image.codes[i] == code) || (image.strings && compareKeys[O](image.keys[i], key) == 0))
 			var word uint64
 			if found {
 				word = state.values[i].Load()
@@ -388,7 +387,7 @@ retry:
 		} else {
 			i = findCode(image.codes, &image.tags, image.n, code)
 		}
-		found = i < image.n && ((!image.strings && image.codes[i] == code) || (image.strings && cmp.Compare(image.keys[i], key) == 0))
+		found = i < image.n && ((!image.strings && image.codes[i] == code) || (image.strings && compareKeys[O](image.keys[i], key) == 0))
 		if found {
 			value = leaf.values[i]
 		}
@@ -399,7 +398,7 @@ retry:
 	}
 }
 
-func initWordValues[K cmp.Ordered, V any](n *node[K, V]) {
+func initWordValues[K any, V any, O keyOrder[K]](n *node[K, V, O]) {
 	if !n.shared {
 		return
 	}

@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"math"
 	"reflect"
+	"strings"
+	"unsafe"
 )
 
 // numericCode keeps the common uint64 case small enough to inline into
@@ -97,9 +99,98 @@ func keyString[K cmp.Ordered](k K) (string, bool) {
 	if s, ok := any(k).(string); ok {
 		return s, true
 	}
-	v := reflect.ValueOf(k)
-	if v.Kind() == reflect.String {
-		return v.String(), true
+	if reflect.TypeFor[K]().Kind() == reflect.String {
+		// A defined string type shares string's representation.
+		return *(*string)(unsafe.Pointer(&k)), true
 	}
 	return "", false
+}
+
+// keyOrder supplies the ordering of a container's keys. Built-in ordered keys
+// use natural; every operation that compares, windows or prefixes keys goes
+// through it, so the search paths are shared by every key family.
+type keyOrder[K any] interface {
+	compare(a, b K) int
+	// window is an order-preserving eight-byte window at a byte offset.
+	window(key K, offset int) uint64
+	// textual reports keys whose windows may tie for distinct keys; their
+	// nodes resolve ties against full keys and skip shared prefixes.
+	textual() bool
+	// sharedPrefix is the length of the encoding prefix shared by a and b.
+	sharedPrefix(a, b K) int
+	// comparePrefix orders key's first prefix encoding bytes against first's.
+	comparePrefix(key, first K, prefix int) int
+}
+
+type natural[K cmp.Ordered] struct{}
+
+func (natural[K]) compare(a, b K) int { return cmp.Compare(a, b) }
+func (natural[K]) window(key K, offset int) uint64 {
+	if s, ok := keyString(key); ok {
+		return stringCode(s, offset)
+	}
+	return keyCode(key, offset)
+}
+func (natural[K]) textual() bool {
+	var zero K
+	_, ok := keyString(zero)
+	return ok
+}
+func (natural[K]) sharedPrefix(a, b K) int {
+	x, ok := keyString(a)
+	if !ok {
+		return 0
+	}
+	y, _ := keyString(b)
+	end, prefix := min(len(x), len(y), 65535), 0
+	for prefix < end && x[prefix] == y[prefix] {
+		prefix++
+	}
+	return prefix
+}
+func (natural[K]) comparePrefix(key, first K, prefix int) int {
+	s, _ := keyString(key)
+	f, _ := keyString(first)
+	return cmp.Compare(s[:min(len(s), prefix)], f[:prefix])
+}
+
+// Ordering methods are called through the generic dictionary. natural is the
+// only zero-size ordering and strings are the only 16-byte cmp.Ordered keys,
+// so these size tests are constants that select direct built-in paths.
+func naturalText[O keyOrder[K], K any]() bool {
+	var o O
+	var k K
+	return unsafe.Sizeof(o) == 0 && unsafe.Sizeof(k) == unsafe.Sizeof("")
+}
+func textView[K any](key *K) string { return *(*string)(unsafe.Pointer(key)) }
+
+func compareKeys[O keyOrder[K], K any](a, b K) int {
+	if naturalText[O, K]() {
+		return strings.Compare(textView(&a), textView(&b))
+	}
+	var o O
+	return o.compare(a, b)
+}
+func windowKey[O keyOrder[K], K any](key K, offset int) uint64 {
+	if naturalText[O, K]() {
+		return stringCode(textView(&key), offset)
+	}
+	var o O
+	return o.window(key, offset)
+}
+func comparePrefix[O keyOrder[K], K any](key, first K, prefix int) int {
+	if naturalText[O, K]() {
+		s, f := textView(&key), textView(&first)
+		return strings.Compare(s[:min(len(s), prefix)], f[:prefix])
+	}
+	var o O
+	return o.comparePrefix(key, first, prefix)
+}
+
+// numericKey keeps the common uint64 case small enough to inline.
+func numericKey[O keyOrder[K], K any](key K) uint64 {
+	if value, ok := any(key).(uint64); ok {
+		return value
+	}
+	return windowKey[O](key, 0)
 }

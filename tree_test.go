@@ -9,7 +9,9 @@ import (
 	"testing"
 )
 
-func checkTree[K cmp.Ordered, V any](t testing.TB, tr *Tree[K, V]) {
+func checkTree[K cmp.Ordered, V any](t testing.TB, tr *Tree[K, V]) { checkCore(t, &tr.treeCore) }
+
+func checkCore[K any, V any, O keyOrder[K]](t testing.TB, tr *treeCore[K, V, O]) {
 	t.Helper()
 	if tr.words != nil {
 		checkWordTree(t, tr.words, tr.length)
@@ -21,11 +23,11 @@ func checkTree[K cmp.Ordered, V any](t testing.TB, tr *Tree[K, V]) {
 		}
 		return
 	}
-	var leaves []*node[K, V]
+	var leaves []*node[K, V, O]
 	leafDepth := -1
 	total := 0
-	var walk func(*node[K, V], int)
-	walk = func(n *node[K, V], depth int) {
+	var walk func(*node[K, V, O], int)
+	walk = func(n *node[K, V, O], depth int) {
 		if n.n < 1 || n.n > nodeSize || (depth > 0 && n.n < minNodeSize) {
 			t.Fatalf("bad occupancy %d at depth %d", n.n, depth)
 		}
@@ -33,10 +35,10 @@ func checkTree[K cmp.Ordered, V any](t testing.TB, tr *Tree[K, V]) {
 			t.Fatal("uncollapsed root")
 		}
 		for i := 0; i < n.n; i++ {
-			if i > 0 && cmp.Compare(n.keys[i-1], n.keys[i]) >= 0 {
+			if i > 0 && compareKeys[O](n.keys[i-1], n.keys[i]) >= 0 {
 				t.Fatal("keys unordered")
 			}
-			if n.codes[i] != keyCode(n.keys[i], n.prefix) {
+			if n.codes[i] != windowKey[O](n.keys[i], n.prefix) {
 				t.Fatal("stale inline key")
 			}
 			if i > 0 && n.codes[i-1] > n.codes[i] {
@@ -63,7 +65,7 @@ func checkTree[K cmp.Ordered, V any](t testing.TB, tr *Tree[K, V]) {
 			return
 		}
 		for i := 0; i < n.n; i++ {
-			if n.children[i] == nil || cmp.Compare(n.keys[i], n.children[i].keys[0]) != 0 {
+			if n.children[i] == nil || compareKeys[O](n.keys[i], n.children[i].keys[0]) != 0 {
 				t.Fatal("stale child minimum")
 			}
 			walk(n.children[i], depth+1)
@@ -76,10 +78,10 @@ func checkTree[K cmp.Ordered, V any](t testing.TB, tr *Tree[K, V]) {
 	}
 	walk(tr.root, 0)
 	for i, n := range leaves {
-		var prev, next *node[K, V]
+		var prev, next *node[K, V, O]
 		if i > 0 {
 			prev = leaves[i-1]
-			if cmp.Compare(prev.keys[prev.n-1], n.keys[0]) >= 0 {
+			if compareKeys[O](prev.keys[prev.n-1], n.keys[0]) >= 0 {
 				t.Fatal("leaves overlap")
 			}
 		}

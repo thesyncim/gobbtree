@@ -1,7 +1,6 @@
 package gobbtree
 
 import (
-	"cmp"
 	"sync"
 	"sync/atomic"
 )
@@ -43,14 +42,14 @@ func (s *structuralLock) initGates() *structuralGates {
 	return s.state.Load()
 }
 
-func structuralLaneCode[K cmp.Ordered](key K) uint64 {
+func structuralLaneCode[O keyOrder[K], K any](key K) uint64 {
 	if code, ok := any(key).(uint64); ok {
 		return code
 	}
-	return structuralLaneCodeSlow(key)
+	return structuralLaneCodeSlow[O](key)
 }
-func structuralLaneCodeSlow[K cmp.Ordered](key K) uint64 {
-	code := numericCode(key)
+func structuralLaneCodeSlow[O keyOrder[K], K any](key K) uint64 {
+	code := numericKey[O](key)
 	if str, ok := any(key).(string); ok && len(str) > 8 {
 		code ^= stringCode(str, max(0, len(str)-8))
 	}

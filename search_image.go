@@ -1,14 +1,13 @@
 package gobbtree
 
 import (
-	"cmp"
 	"sync/atomic"
 )
 
 // Integer and float codes fully encode ordering, so their published images
 // do not duplicate full keys. Strings retain keys to resolve window ties.
-type searchImage[K cmp.Ordered, V any] struct {
-	readEdges        *[nodeSize]atomic.Pointer[searchImage[K, V]]
+type searchImage[K any, V any, O keyOrder[K]] struct {
+	readEdges        *[nodeSize]atomic.Pointer[searchImage[K, V, O]]
 	pairs            *atomicPairs
 	n                int
 	valid            atomic.Bool
@@ -17,7 +16,7 @@ type searchImage[K cmp.Ordered, V any] struct {
 	_                byte
 	tags             [nodeSize]uint8
 	wordState        *atomicWords
-	leaf             *leaf[K, V]
+	leaf             *leaf[K, V, O]
 	keys             *[nodeSize]K
 	directory        *[256]uint8
 	highCodes        *[nodeSize]uint32
@@ -26,11 +25,9 @@ type searchImage[K cmp.Ordered, V any] struct {
 	imageVersion     uint64
 }
 
-func (n *searchImage[K, V]) lower(key K) int {
+func (n *searchImage[K, V, O]) lower(key K) int {
 	if n.prefix > 0 {
-		s, _ := keyString(key)
-		first, _ := keyString(n.keys[0])
-		c := cmp.Compare(s[:min(len(s), n.prefix)], first[:n.prefix])
+		c := comparePrefix[O](key, n.keys[0], n.prefix)
 		if c < 0 {
 			return 0
 		}
@@ -38,15 +35,15 @@ func (n *searchImage[K, V]) lower(key K) int {
 			return n.n
 		}
 	}
-	code := keyCode(key, n.prefix)
+	code := windowKey[O](key, n.prefix)
 	i := lowerCode(n.codes, n.n, code)
-	if i == n.n || n.codes[i] != code || cmp.Compare(n.keys[i], key) >= 0 {
+	if i == n.n || n.codes[i] != code || compareKeys[O](n.keys[i], key) >= 0 {
 		return i
 	}
 	lo, hi := i+1, n.n
 	for lo < hi {
 		mid := int(uint(lo+hi) >> 1)
-		if n.codes[mid] == code && cmp.Compare(n.keys[mid], key) < 0 {
+		if n.codes[mid] == code && compareKeys[O](n.keys[mid], key) < 0 {
 			lo = mid + 1
 		} else {
 			hi = mid
@@ -54,9 +51,9 @@ func (n *searchImage[K, V]) lower(key K) int {
 	}
 	return lo
 }
-func (n *searchImage[K, V]) childIndex(key K) int {
+func (n *searchImage[K, V, O]) childIndex(key K) int {
 	i := n.lower(key)
-	if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
+	if i < n.n && compareKeys[O](n.keys[i], key) == 0 {
 		return i
 	}
 	return max(0, i-1)
@@ -64,7 +61,7 @@ func (n *searchImage[K, V]) childIndex(key K) int {
 
 // readValue validates one published leaf. Its caller also validates the
 // structural epoch covering the route to this image.
-func (n *searchImage[K, V]) readValue(key K, code uint64) (value V, found, valid bool) {
+func (n *searchImage[K, V, O]) readValue(key K, code uint64) (value V, found, valid bool) {
 	if n.readEdges != nil {
 		return value, false, false
 	}
@@ -96,7 +93,7 @@ func (n *searchImage[K, V]) readValue(key K, code uint64) (value V, found, valid
 	} else {
 		i = findCode(n.codes, &n.tags, n.n, code)
 	}
-	found = i < n.n && ((!n.strings && n.codes[i] == code) || (n.strings && cmp.Compare(n.keys[i], key) == 0))
+	found = i < n.n && ((!n.strings && n.codes[i] == code) || (n.strings && compareKeys[O](n.keys[i], key) == 0))
 	if state := n.wordState; state != nil {
 		var word uint64
 		if found {

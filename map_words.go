@@ -1,14 +1,13 @@
 package gobbtree
 
 import (
-	"cmp"
 	"runtime"
 )
 
 // Native benchmarks favor these conversion forms on their respective targets.
 const checkedMapWordValues = runtime.GOARCH == "arm64"
 
-func (m *Map[K, V]) numericMap() *wordMap {
+func (m *mapCore[K, V, O]) numericMap() *wordMap {
 	if words := m.words.Load(); words != nil {
 		return words
 	}
@@ -17,7 +16,7 @@ func (m *Map[K, V]) numericMap() *wordMap {
 	}
 	return m.initNumericMap()
 }
-func (m *Map[K, V]) initNumericMap() *wordMap {
+func (m *mapCore[K, V, O]) initNumericMap() *wordMap {
 	keyKind, valueKind := wordKind[K](), wordKind[V]()
 	if keyKind == 0 || keyKind == 11 || keyKind == 12 || keyKind == 13 || valueKind == 0 {
 		m.wordDisabled.Store(true)
@@ -42,7 +41,7 @@ func mapWordValue[V any](word uint64, found bool, kind uint8) (V, bool) {
 	var zero V
 	return zero, false
 }
-func mapWordEntry[K cmp.Ordered, V any](key, value uint64, found bool, words *wordMap) (K, V, bool) {
+func mapWordEntry[K any, V any](key, value uint64, found bool, words *wordMap) (K, V, bool) {
 	if found {
 		return decodeWordKey[K](key, words.keyKind), unpackWord[V](value, words.valueKind), true
 	}

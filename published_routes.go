@@ -1,25 +1,24 @@
 package gobbtree
 
 import (
-	"cmp"
 	"math/bits"
 	"sync/atomic"
 )
 
 // Slots remain live when a child publishes a replacement image. Structural
 // changes publish a new table before advancing the same epoch readers check.
-type publishedRoutes[K cmp.Ordered, V any] struct {
+type publishedRoutes[K any, V any, O keyOrder[K]] struct {
 	base  uint64
 	shift uint8
-	slots []*atomic.Pointer[searchImage[K, V]]
+	slots []*atomic.Pointer[searchImage[K, V, O]]
 }
 
-func (t *Tree[K, V]) changedRoutes(n *node[K, V]) {
+func (t *treeCore[K, V, O]) changedRoutes(n *node[K, V, O]) {
 	if t.shared && t.root.level >= 2 && n.level+min(2, t.root.level-1) > t.root.level {
 		t.routesDirty = true
 	}
 }
-func (m *Map[K, V]) rebuildRoutes() {
+func (m *mapCore[K, V, O]) rebuildRoutes() {
 	m.tree.routesDirty = false
 	root := m.tree.root
 	if root == nil || root.strings || root.level < 2 {
@@ -32,15 +31,15 @@ func (m *Map[K, V]) rebuildRoutes() {
 		m.routes.Store(nil)
 		return
 	}
-	routes := &publishedRoutes[K, V]{
+	routes := &publishedRoutes[K, V, O]{
 		base:  root.codes[0] & (^uint64(0) << width),
 		shift: uint8(width - radixBits),
-		slots: make([]*atomic.Pointer[searchImage[K, V]], 1<<radixBits),
+		slots: make([]*atomic.Pointer[searchImage[K, V, O]], 1<<radixBits),
 	}
 	routes.fill(root, int(min(2, root.level-1)), 0, ^uint64(0))
 	m.routes.Store(routes)
 }
-func (r *publishedRoutes[K, V]) fill(n *node[K, V], depth int, low, high uint64) {
+func (r *publishedRoutes[K, V, O]) fill(n *node[K, V, O], depth int, low, high uint64) {
 	if depth == 0 {
 		mask := (uint64(1) << r.shift) - 1
 		limit := r.base | uint64(len(r.slots)-1)<<r.shift | mask

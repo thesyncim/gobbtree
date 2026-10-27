@@ -1,7 +1,6 @@
 package gobbtree
 
 import (
-	"cmp"
 	"sync"
 	"sync/atomic"
 )
@@ -18,15 +17,15 @@ type numericColumns struct {
 	codes     [nodeSize]uint64
 }
 
-type node[K cmp.Ordered, V any] struct {
+type node[K any, V any, O keyOrder[K]] struct {
 	*numericColumns
 	arena                    *nodeArena
-	children                 *[nodeSize]*node[K, V]
-	leaf                     *leaf[K, V]
+	children                 *[nodeSize]*node[K, V, O]
+	leaf                     *leaf[K, V, O]
 	directory                *[256]uint8
-	image                    atomic.Pointer[searchImage[K, V]]
-	parentSlot               *atomic.Pointer[searchImage[K, V]]
-	readEdges                *[nodeSize]atomic.Pointer[searchImage[K, V]]
+	image                    atomic.Pointer[searchImage[K, V, O]]
+	parentSlot               *atomic.Pointer[searchImage[K, V, O]]
+	readEdges                *[nodeSize]atomic.Pointer[searchImage[K, V, O]]
 	n, prefix                int
 	strings, shared, compact bool
 	level                    uint8
@@ -34,39 +33,39 @@ type node[K cmp.Ordered, V any] struct {
 	keys                     [nodeSize]K
 }
 
-type leaf[K cmp.Ordered, V any] struct {
+type leaf[K any, V any, O keyOrder[K]] struct {
 	sequence   atomic.Uint64
 	words      *atomicWords
 	pairs      *atomicPairs
 	wordKind   uint8
 	mu         sync.RWMutex
-	next, prev *node[K, V]
+	next, prev *node[K, V, O]
 	values     [nodeSize]V
 }
 
-func newLeaf[K cmp.Ordered, V any](shared bool, arena *nodeArena) *node[K, V] {
-	n := &node[K, V]{arena: arena, leaf: new(leaf[K, V]), shared: shared}
+func newLeaf[K any, V any, O keyOrder[K]](shared bool, arena *nodeArena) *node[K, V, O] {
+	n := &node[K, V, O]{arena: arena, leaf: new(leaf[K, V, O]), shared: shared}
 	n.numericColumns, n.columnsID = arena.columns.alloc()
 	*n.numericColumns = numericColumns{}
-	var key K
-	_, n.strings = keyString(key)
+	var order O
+	n.strings = order.textual()
 	initWordValues(n)
 	n.pad()
 	return n
 }
-func newInner[K cmp.Ordered, V any](shared bool, arena *nodeArena) *node[K, V] {
-	n := &node[K, V]{arena: arena, children: new([nodeSize]*node[K, V]), shared: shared}
+func newInner[K any, V any, O keyOrder[K]](shared bool, arena *nodeArena) *node[K, V, O] {
+	n := &node[K, V, O]{arena: arena, children: new([nodeSize]*node[K, V, O]), shared: shared}
 	if shared {
-		n.readEdges = new([nodeSize]atomic.Pointer[searchImage[K, V]])
+		n.readEdges = new([nodeSize]atomic.Pointer[searchImage[K, V, O]])
 	}
 	n.numericColumns, n.columnsID = arena.columns.alloc()
 	*n.numericColumns = numericColumns{}
-	var key K
-	_, n.strings = keyString(key)
+	var order O
+	n.strings = order.textual()
 	n.pad()
 	return n
 }
-func (n *node[K, V]) pad() {
+func (n *node[K, V, O]) pad() {
 	for i := n.n; i < nodeSize; i++ {
 		n.codes[i] = ^uint64(0)
 		n.highCodes[i] = ^uint32(0)
@@ -77,19 +76,14 @@ func (n *node[K, V]) pad() {
 // refit derives a prefix from the live keys, instead of upstream's ancestor
 // fences. Searches check that prefix before skipping it. This makes prefix
 // changes local and avoids reading mutable ancestors in the concurrent map.
-func (n *node[K, V]) refit() {
+func (n *node[K, V, O]) refit() {
 	n.prefix = 0
 	if n.strings && n.n > 1 {
-		if a, ok := keyString(n.keys[0]); ok {
-			b, _ := keyString(n.keys[n.n-1])
-			end := min(len(a), len(b), 65535)
-			for n.prefix < end && a[n.prefix] == b[n.prefix] {
-				n.prefix++
-			}
-		}
+		var order O
+		n.prefix = order.sharedPrefix(n.keys[0], n.keys[n.n-1])
 	}
 	for i := 0; i < n.n; i++ {
-		n.codes[i] = keyCode(n.keys[i], n.prefix)
+		n.codes[i] = windowKey[O](n.keys[i], n.prefix)
 		n.highCodes[i] = uint32(n.codes[i] >> 32)
 		n.tags[i] = uint8(n.codes[i])
 	}
@@ -98,14 +92,12 @@ func (n *node[K, V]) refit() {
 	n.publish()
 }
 
-func (n *node[K, V]) lower(key K) int {
+func (n *node[K, V, O]) lower(key K) int {
 	if !n.strings {
-		return n.lowerNumeric(numericCode(key))
+		return n.lowerNumeric(numericKey[O](key))
 	}
 	if n.prefix > 0 {
-		s, _ := keyString(key)
-		first, _ := keyString(n.keys[0])
-		c := cmp.Compare(s[:min(len(s), n.prefix)], first[:n.prefix])
+		c := comparePrefix[O](key, n.keys[0], n.prefix)
 		if c < 0 {
 			return 0
 		}
@@ -113,20 +105,20 @@ func (n *node[K, V]) lower(key K) int {
 			return n.n
 		}
 	}
-	code := keyCode(key, n.prefix)
+	code := windowKey[O](key, n.prefix)
 	i := lowerCode(&n.codes, n.n, code)
 	if i == n.n || n.codes[i] != code {
 		return i
 	}
 	// Usually one candidate. Full ordering settles ties in truncated windows,
 	// and makes zero-padding and total-order floating point semantics exact.
-	if cmp.Compare(n.keys[i], key) >= 0 {
+	if compareKeys[O](n.keys[i], key) >= 0 {
 		return i
 	}
 	lo, hi := i+1, n.n
 	for lo < hi {
 		mid := int(uint(lo+hi) >> 1)
-		if n.codes[mid] == code && cmp.Compare(n.keys[mid], key) < 0 {
+		if n.codes[mid] == code && compareKeys[O](n.keys[mid], key) < 0 {
 			lo = mid + 1
 		} else {
 			hi = mid
@@ -136,25 +128,25 @@ func (n *node[K, V]) lower(key K) int {
 }
 
 // Exact probes use the byte fingerprints; ordered positions still use lower.
-func (n *node[K, V]) exact(key K) int {
+func (n *node[K, V, O]) exact(key K) int {
 	if !n.strings {
-		return findCode(&n.codes, &n.tags, n.n, numericCode(key))
+		return findCode(&n.codes, &n.tags, n.n, numericKey[O](key))
 	}
 	return n.lower(key)
 }
-func (n *node[K, V]) childIndex(key K) int {
+func (n *node[K, V, O]) childIndex(key K) int {
 	if !n.strings {
-		return n.routeNumeric(numericCode(key))
+		return n.routeNumeric(numericKey[O](key))
 	}
 	i := n.lower(key)
-	if i < n.n && cmp.Compare(n.keys[i], key) == 0 {
+	if i < n.n && compareKeys[O](n.keys[i], key) == 0 {
 		return i
 	}
 	return max(0, i-1)
 }
-func (n *node[K, V]) findLeaf(key K) *node[K, V] {
+func (n *node[K, V, O]) findLeaf(key K) *node[K, V, O] {
 	if !n.strings {
-		return n.findLeafCode(numericCode(key))
+		return n.findLeafCode(numericKey[O](key))
 	}
 	for n.children != nil {
 		n = n.children[n.childIndex(key)]
@@ -164,7 +156,7 @@ func (n *node[K, V]) findLeaf(key K) *node[K, V] {
 
 // Numeric codes encode the complete ordering. Routing needs an upper bound
 // on those codes, with no full-key load or re-encoding at each tree level.
-func (n *node[K, V]) findLeafCode(code uint64) *node[K, V] {
+func (n *node[K, V, O]) findLeafCode(code uint64) *node[K, V, O] {
 	for n.children != nil {
 		index := 0
 		if n.directory != nil {
@@ -184,7 +176,7 @@ func (n *node[K, V]) findLeafCode(code uint64) *node[K, V] {
 }
 
 // The shortcut may skip descent only when no ancestor needs its usual split.
-func (n *node[K, V]) findLeafForInsert(code uint64) (*node[K, V], bool) {
+func (n *node[K, V, O]) findLeafForInsert(code uint64) (*node[K, V, O], bool) {
 	full := false
 	for n.children != nil {
 		if n.n == nodeSize {
@@ -206,7 +198,7 @@ func (n *node[K, V]) findLeafForInsert(code uint64) (*node[K, V], bool) {
 	}
 	return n, full
 }
-func (n *node[K, V]) insertLeaf(i int, key K, value V) {
+func (n *node[K, V, O]) insertLeaf(i int, key K, value V) {
 	copy(n.keys[i+1:n.n+1], n.keys[i:n.n])
 	copy(n.codes[i+1:n.n+1], n.codes[i:n.n])
 	copy(n.highCodes[i+1:n.n+1], n.highCodes[i:n.n])
@@ -217,14 +209,14 @@ func (n *node[K, V]) insertLeaf(i int, key K, value V) {
 	if n.strings && (i == 0 || i == n.n-1) {
 		n.refit()
 	} else {
-		n.codes[i] = keyCode(key, n.prefix)
+		n.codes[i] = windowKey[O](key, n.prefix)
 		n.highCodes[i] = uint32(n.codes[i] >> 32)
 		n.tags[i] = uint8(n.codes[i])
 		n.refreshNumeric()
 		n.publishFrom(i)
 	}
 }
-func (n *node[K, V]) deleteLeaf(i int) V {
+func (n *node[K, V, O]) deleteLeaf(i int) V {
 	old := n.leaf.values[i]
 	copy(n.keys[i:n.n-1], n.keys[i+1:n.n])
 	copy(n.codes[i:n.n-1], n.codes[i+1:n.n])
@@ -248,10 +240,10 @@ func (n *node[K, V]) deleteLeaf(i int) V {
 }
 
 // split divides a full node. The caller installs its right half in a parent.
-func (n *node[K, V]) split() *node[K, V] {
-	var right *node[K, V]
+func (n *node[K, V, O]) split() *node[K, V, O] {
+	var right *node[K, V, O]
 	if n.leaf != nil {
-		right = newLeaf[K, V](n.shared, n.arena)
+		right = newLeaf[K, V, O](n.shared, n.arena)
 		copy(right.leaf.values[:], n.leaf.values[minNodeSize:])
 		clear(n.leaf.values[minNodeSize:])
 		right.leaf.next = n.leaf.next
@@ -261,7 +253,7 @@ func (n *node[K, V]) split() *node[K, V] {
 		right.leaf.prev = n
 		n.leaf.next = right
 	} else {
-		right = newInner[K, V](n.shared, n.arena)
+		right = newInner[K, V, O](n.shared, n.arena)
 		copy(right.children[:], n.children[minNodeSize:])
 		clear(n.children[minNodeSize:])
 	}
@@ -274,7 +266,7 @@ func (n *node[K, V]) split() *node[K, V] {
 	right.refit()
 	return right
 }
-func (n *node[K, V]) insertChild(i int, child *node[K, V]) {
+func (n *node[K, V, O]) insertChild(i int, child *node[K, V, O]) {
 	n.level = child.level + 1
 	copy(n.keys[i+1:n.n+1], n.keys[i:n.n])
 	copy(n.children[i+1:n.n+1], n.children[i:n.n])
@@ -282,7 +274,7 @@ func (n *node[K, V]) insertChild(i int, child *node[K, V]) {
 	n.n++
 	n.refit()
 }
-func (n *node[K, V]) removeChild(i int) {
+func (n *node[K, V, O]) removeChild(i int) {
 	copy(n.keys[i:n.n-1], n.keys[i+1:n.n])
 	copy(n.children[i:n.n-1], n.children[i+1:n.n])
 	n.n--
@@ -292,7 +284,7 @@ func (n *node[K, V]) removeChild(i int) {
 	n.refit()
 }
 
-func (n *node[K, V]) refreshNumeric() {
+func (n *node[K, V, O]) refreshNumeric() {
 	n.compact = !n.strings && n.n > 0 && n.codes[0]>>32 != n.codes[n.n-1]>>32
 	if !n.strings && n.children != nil && n.n >= 4 && n.codes[n.n-1]>>56-n.codes[0]>>56 >= uint64(2*n.n) {
 		if n.directory == nil {
@@ -303,13 +295,13 @@ func (n *node[K, V]) refreshNumeric() {
 		n.directory = nil
 	}
 }
-func (n *node[K, V]) lowerNumeric(code uint64) int {
+func (n *node[K, V, O]) lowerNumeric(code uint64) int {
 	if n.compact {
 		return lowerCompact(&n.codes, &n.highCodes, n.n, code)
 	}
 	return lowerCode(&n.codes, n.n, code)
 }
-func (n *node[K, V]) routeNumeric(code uint64) int {
+func (n *node[K, V, O]) routeNumeric(code uint64) int {
 	if n.directory != nil {
 		return directoryRoute(&n.codes, n.directory, n.n, code)
 	}
@@ -322,7 +314,7 @@ func (n *node[K, V]) routeNumeric(code uint64) int {
 	return routeCode(&n.codes, n.n, code)
 }
 
-func (n *node[K, V]) release() {
+func (n *node[K, V, O]) release() {
 	if image := n.image.Load(); image != nil {
 		image.valid.Store(false)
 	}
