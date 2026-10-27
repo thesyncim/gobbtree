@@ -874,9 +874,9 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	leftID, rightID := children[leftIndex], children[leftIndex+1]
 	left, right := t.node(leftID), t.node(rightID)
 	borrowedOuter := false
-	if int(left.n)+int(right.n) == 2*nodeSize {
+	if int(left.n)+int(right.n) > 2*nodeSize-pairRedistributionSlack {
 		borrowed := -1
-		if t.shared {
+		if t.shared && int(left.n)+int(right.n) == 2*nodeSize {
 			borrowed = t.borrowOuterLeaf(parent, index)
 		}
 		if borrowed >= 0 {
@@ -1033,26 +1033,37 @@ func (t *wordTree) borrowOuterLeaf(parent *wordNode, index int) int {
 	return pair
 }
 
-// Two full leaves split into three; only this path needs a merged scratch buffer.
+// Redistribute a full leaf only when its pair has this many free slots;
+// otherwise split the pair into three. Smaller moves keep leaves denser but
+// touch a cold sibling far more often; eight keeps construction fast at a
+// modest density cost. Each of the three keeps at least the minimum occupancy.
+const pairRedistributionSlack = 8
+
+var _ [(2*nodeSize-pairRedistributionSlack+1)/3 - minNodeSize]struct{}
+
+// Two nearly full leaves split into three; only this path needs a merged buffer.
 func (t *wordTree) splitLeafPair(parent *wordNode, index int, key, value uint64) {
 	leftID, rightID := parent.inner().children[index], parent.inner().children[index+1]
 	left, right := t.node(leftID), t.node(rightID)
+	leftCount, rightCount := int(left.n), int(right.n)
+	total := leftCount + rightCount
 	var entries [2*nodeSize + 1]wordEntry
-	copy(entries[:nodeSize], left.entries()[:])
-	copy(entries[nodeSize:], right.entries()[:])
-	position := 0
-	for position < 2*nodeSize && entries[position].key < key {
-		position++
+	copy(entries[:leftCount], left.entries()[:leftCount])
+	copy(entries[leftCount:total], right.entries()[:rightCount])
+	position := leftCount + right.lowerEntry(key)
+	if key < right.entries()[0].key {
+		position = left.lowerEntry(key)
 	}
-	copy(entries[position+1:], entries[position:2*nodeSize])
+	copy(entries[position+1:total+1], entries[position:total])
 	entries[position] = wordEntry{key, value}
+	total++
 	extraID := t.alloc(true)
 	extra := t.node(extraID)
-	const first, second = (2*nodeSize + 1) / 3, 2 * (2*nodeSize + 1) / 3
+	first, second := total/3, 2*total/3
 	t.copyEntries(left, 0, entries[:first])
 	t.copyEntries(right, 0, entries[first:second])
-	t.copyEntries(extra, 0, entries[second:])
-	left.n, right.n, extra.n = first, second-first, 2*nodeSize+1-second
+	t.copyEntries(extra, 0, entries[second:total])
+	left.n, right.n, extra.n = uint8(first), uint8(second-first), uint8(total-second)
 	extra.prev, extra.next = rightID, right.next
 	if right.next != 0 {
 		t.node(right.next).prev = extraID
@@ -1063,9 +1074,9 @@ func (t *wordTree) splitLeafPair(parent *wordNode, index int, key, value uint64)
 		t.refit(right)
 		t.refit(extra)
 	} else {
-		// Both source leaves were full; the new leaf is already padded.
-		t.settleLeafPlain(left, nodeSize)
-		t.settleLeafPlain(right, nodeSize)
+		// The new leaf is already padded.
+		t.settleLeafPlain(left, leftCount)
+		t.settleLeafPlain(right, rightCount)
 		t.settleLeafPlain(extra, 0)
 	}
 	t.storeKey(parent, index, left.keyAt(0))
