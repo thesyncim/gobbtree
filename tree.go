@@ -109,9 +109,9 @@ func (t *treeCore[K, V, O]) Get(key K) (V, bool) {
 			var zero V
 			return zero, false
 		}
-		n := t.root.findLeaf(key)
-		i := n.lower(key)
-		if i < n.n && compareKeys[O](n.keys[i], key) == 0 {
+		search := keySearch[K, O]{key: key}
+		n := t.root.findLeafSearch(&search)
+		if i, equal := n.lowerSearch(&search); equal {
 			return n.leaf.values[i], true
 		}
 	}
@@ -203,13 +203,17 @@ func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 	// Replacements should not split or allocate, even in a full leaf.
 	n := t.root
 	full := true
+	var i int
+	var equal bool
+	search := keySearch[K, O]{key: key}
 	if n.strings {
-		n = n.findLeaf(key)
+		n, full = n.findLeafSearchForInsert(&search)
+		i, equal = n.lowerSearch(&search)
 	} else {
 		n, full = n.findLeafForInsert(numericKey[O](key))
+		i, equal = n.exact(key)
 	}
-	i := n.exact(key)
-	if i < n.n && compareKeys[O](n.keys[i], key) == 0 {
+	if equal {
 		old := n.leaf.values[i]
 		n.setValue(i, value)
 		return old, true
@@ -233,17 +237,29 @@ func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 		t.root = root
 		t.routesDirty = true
 	}
-	t.insertAbsent(t.root, key, value)
+	t.insertAbsent(t.root, &search, value)
 	t.length++
 	var zero V
 	return zero, false
 }
-func (t *treeCore[K, V, O]) insertAbsent(n *node[K, V, O], key K, value V) {
+func (t *treeCore[K, V, O]) insertAbsent(n *node[K, V, O], search *keySearch[K, O], value V) {
+	key := search.key
 	if n.leaf != nil {
-		n.insertLeaf(n.lower(key), key, value)
+		i := 0
+		if n.strings {
+			i, _ = n.lowerSearch(search)
+		} else {
+			i = n.lower(key)
+		}
+		n.insertLeaf(i, key, value)
 		return
 	}
-	i := n.childIndex(key)
+	i := 0
+	if n.strings {
+		i = n.routeSearch(search)
+	} else {
+		i = n.childIndex(key)
+	}
 	if n.children[i].n == nodeSize {
 		right := n.children[i].split()
 		n.insertChild(i+1, right)
@@ -252,7 +268,7 @@ func (t *treeCore[K, V, O]) insertAbsent(n *node[K, V, O], key K, value V) {
 			i++
 		}
 	}
-	t.insertAbsent(n.children[i], key, value)
+	t.insertAbsent(n.children[i], search, value)
 	if compareKeys[O](n.keys[i], n.children[i].keys[0]) != 0 {
 		n.keys[i] = n.children[i].keys[0]
 		n.refit()
@@ -294,8 +310,8 @@ func (t *treeCore[K, V, O]) Delete(key K) (V, bool) {
 }
 func (t *treeCore[K, V, O]) remove(n *node[K, V, O], key K) (V, bool) {
 	if n.leaf != nil {
-		i := n.exact(key)
-		if i == n.n || compareKeys[O](n.keys[i], key) != 0 {
+		i, equal := n.exact(key)
+		if !equal {
 			var v V
 			return v, false
 		}

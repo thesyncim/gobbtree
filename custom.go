@@ -123,3 +123,139 @@ func wordKeyKind[O keyOrder[K], K any]() uint8 {
 	}
 	return wordKind[K]()
 }
+
+// keySearch carries one search key down a descent. Custom keys cache their
+// aligned windows, so each level costs no Window calls for bytes an ancestor
+// already read; built-in keys use their direct paths.
+type keySearch[K any, O keyOrder[K]] struct {
+	key    K
+	filled int
+	words  [4]uint64
+}
+
+func isCustom[O keyOrder[K], K any]() bool {
+	var o O
+	return unsafe.Sizeof(o) != 0
+}
+
+// aligned is the key's window at byte 8*i. Windows fill in order, so the
+// cached ones are a prefix of words.
+func (s *keySearch[K, O]) aligned(i int) uint64 {
+	if uint(i) < uint(s.filled) {
+		return s.words[i]
+	}
+	return s.fill(i)
+}
+func (s *keySearch[K, O]) fill(i int) uint64 {
+	var o O
+	if i >= len(s.words) {
+		return o.window(s.key, 8*i)
+	}
+	for ; s.filled <= i; s.filled++ {
+		s.words[s.filled] = o.window(s.key, 8*s.filled)
+	}
+	return s.words[i]
+}
+
+// numeric is the key's leading window, as numericKey computes it.
+func (s *keySearch[K, O]) numeric() uint64 {
+	if !isCustom[O, K]() {
+		return numericKey[O](s.key)
+	}
+	return s.aligned(0)
+}
+
+// window is the key's window at offset.
+func (s *keySearch[K, O]) window(offset int) uint64 {
+	if !isCustom[O, K]() {
+		return windowKey[O](s.key, offset)
+	}
+	i, r := offset>>3, uint(offset&7)
+	if r == 0 {
+		return s.aligned(i)
+	}
+	return s.aligned(i)<<(8*r) | s.aligned(i+1)>>(64-8*r)
+}
+
+// comparePrefix orders the key's first prefix bytes against first's, whose
+// leading windows a node caches in head.
+func (s *keySearch[K, O]) comparePrefix(first *K, head *[2]uint64, prefix int) int {
+	if !isCustom[O, K]() {
+		return comparePrefix[O](s.key, *first, prefix)
+	}
+	for i := 0; 8*i < prefix; i++ {
+		x := s.aligned(i)
+		var y uint64
+		if i < len(head) {
+			y = head[i]
+		} else {
+			var o O
+			y = o.window(*first, 8*i)
+		}
+		if tail := 8*i + 8 - prefix; tail > 0 {
+			x, y = x>>(8*tail), y>>(8*tail)
+		}
+		if x != y {
+			if x < y {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
+}
+
+// locate orders the key's first prefix bytes against a node's first key
+// and, when they match, returns the key's window past them: the node's
+// search code. Custom keys read each cached word once.
+func (s *keySearch[K, O]) locate(first *K, head *[2]uint64, prefix int) (int, uint64) {
+	if !isCustom[O, K]() {
+		if prefix > 0 {
+			if c := comparePrefix[O](s.key, *first, prefix); c != 0 {
+				return c, 0
+			}
+		}
+		return 0, windowKey[O](s.key, prefix)
+	}
+	i, r := prefix>>3, uint(prefix&7)
+	for j := 0; j < i; j++ {
+		x, y := s.aligned(j), s.headWord(first, head, j)
+		if x != y {
+			return compareWords(x, y), 0
+		}
+	}
+	x := s.aligned(i)
+	if r == 0 {
+		return 0, x
+	}
+	if a, b := x>>(64-8*r), s.headWord(first, head, i)>>(64-8*r); a != b {
+		return compareWords(a, b), 0
+	}
+	return 0, x<<(8*r) | s.aligned(i+1)>>(64-8*r)
+}
+func (s *keySearch[K, O]) headWord(first *K, head *[2]uint64, i int) uint64 {
+	if i < len(head) {
+		return head[i]
+	}
+	var o O
+	return o.window(*first, 8*i)
+}
+func compareWords(x, y uint64) int {
+	if x < y {
+		return -1
+	}
+	return 1
+}
+
+// prefixHead caches the leading windows of a custom node's first key.
+func prefixHead[O keyOrder[K], K any](first K, prefix int) (head [2]uint64) {
+	if !isCustom[O, K]() || prefix == 0 {
+		return head
+	}
+	var o O
+	head[0] = o.window(first, 0)
+	if prefix > 8 {
+		head[1] = o.window(first, 8)
+	}
+	return head
+}

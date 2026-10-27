@@ -27,6 +27,7 @@ type node[K any, V any, O keyOrder[K]] struct {
 	parentSlot               *atomic.Pointer[searchImage[K, V, O]]
 	readEdges                *[nodeSize]atomic.Pointer[searchImage[K, V, O]]
 	n, prefix                int
+	prefixHead               [2]uint64
 	strings, shared, compact bool
 	level                    uint8
 	columnsID, pairsID       uint32
@@ -82,6 +83,7 @@ func (n *node[K, V, O]) refit() {
 		var order O
 		n.prefix = order.sharedPrefix(n.keys[0], n.keys[n.n-1])
 	}
+	n.prefixHead = prefixHead[O](n.keys[0], n.prefix)
 	for i := 0; i < n.n; i++ {
 		n.codes[i] = windowKey[O](n.keys[i], n.prefix)
 		n.highCodes[i] = uint32(n.codes[i] >> 32)
@@ -93,53 +95,75 @@ func (n *node[K, V, O]) refit() {
 }
 
 func (n *node[K, V, O]) lower(key K) int {
+	i, _ := n.lowerExact(key)
+	return i
+}
+
+// lowerExact also reports whether keys[i] equals key. Equal keys share
+// their encoding, so a window mismatch rules equality out without Compare.
+func (n *node[K, V, O]) lowerExact(key K) (int, bool) {
 	if !n.strings {
-		return n.lowerNumeric(numericKey[O](key))
+		code := numericKey[O](key)
+		i := n.lowerNumeric(code)
+		return i, i < n.n && n.codes[i] == code
 	}
-	if n.prefix > 0 {
-		c := comparePrefix[O](key, n.keys[0], n.prefix)
-		if c < 0 {
-			return 0
-		}
-		if c > 0 {
-			return n.n
-		}
+	s := keySearch[K, O]{key: key}
+	return n.lowerSearch(&s)
+}
+func (n *node[K, V, O]) lowerSearch(s *keySearch[K, O]) (int, bool) {
+	c, code := s.locate(&n.keys[0], &n.prefixHead, n.prefix)
+	if c < 0 {
+		return 0, false
 	}
-	code := windowKey[O](key, n.prefix)
-	i := lowerCode(&n.codes, n.n, code)
-	if i == n.n || n.codes[i] != code {
-		return i
+	if c > 0 {
+		return n.n, false
 	}
-	// Usually one candidate. Full ordering settles ties in truncated windows,
-	// and makes zero-padding and total-order floating point semantics exact.
-	if compareKeys[O](n.keys[i], key) >= 0 {
-		return i
+	return lowerTied[O](&n.keys, &n.codes, n.n, s.key, code)
+}
+
+// lowerTied finds key's position from its window code. Usually one entry
+// shares the code; full ordering settles ties in truncated windows, and makes
+// zero-padding and total-order floating point semantics exact.
+func lowerTied[O keyOrder[K], K any](keys *[nodeSize]K, codes *[nodeSize]uint64, n int, key K, code uint64) (int, bool) {
+	i := lowerCode(codes, n, code)
+	if i == n || codes[i] != code {
+		return i, false
 	}
-	lo, hi := i+1, n.n
+	c := compareKeys[O](keys[i], key)
+	if c >= 0 {
+		return i, c == 0
+	}
+	lo, hi := i+1, n
 	for lo < hi {
 		mid := int(uint(lo+hi) >> 1)
-		if n.codes[mid] == code && compareKeys[O](n.keys[mid], key) < 0 {
+		if codes[mid] == code && compareKeys[O](keys[mid], key) < 0 {
 			lo = mid + 1
 		} else {
 			hi = mid
 		}
 	}
-	return lo
+	return lo, lo < n && codes[lo] == code && compareKeys[O](keys[lo], key) == 0
 }
 
 // Exact probes use the byte fingerprints; ordered positions still use lower.
-func (n *node[K, V, O]) exact(key K) int {
+func (n *node[K, V, O]) exact(key K) (int, bool) {
 	if !n.strings {
-		return findCode(&n.codes, &n.tags, n.n, numericKey[O](key))
+		code := numericKey[O](key)
+		i := findCode(&n.codes, &n.tags, n.n, code)
+		return i, i < n.n && n.codes[i] == code
 	}
-	return n.lower(key)
+	return n.lowerExact(key)
 }
 func (n *node[K, V, O]) childIndex(key K) int {
 	if !n.strings {
 		return n.routeNumeric(numericKey[O](key))
 	}
-	i := n.lower(key)
-	if i < n.n && compareKeys[O](n.keys[i], key) == 0 {
+	s := keySearch[K, O]{key: key}
+	return n.routeSearch(&s)
+}
+func (n *node[K, V, O]) routeSearch(s *keySearch[K, O]) int {
+	i, equal := n.lowerSearch(s)
+	if equal {
 		return i
 	}
 	return max(0, i-1)
@@ -148,8 +172,22 @@ func (n *node[K, V, O]) findLeaf(key K) *node[K, V, O] {
 	if !n.strings {
 		return n.findLeafCode(numericKey[O](key))
 	}
+	s := keySearch[K, O]{key: key}
+	return n.findLeafSearch(&s)
+}
+// findLeafSearchForInsert also reports a full node on the path, which
+// rules out inserting without the splitting descent.
+func (n *node[K, V, O]) findLeafSearchForInsert(s *keySearch[K, O]) (*node[K, V, O], bool) {
+	full := false
 	for n.children != nil {
-		n = n.children[n.childIndex(key)]
+		full = full || n.n == nodeSize
+		n = n.children[n.routeSearch(s)]
+	}
+	return n, full
+}
+func (n *node[K, V, O]) findLeafSearch(s *keySearch[K, O]) *node[K, V, O] {
+	for n.children != nil {
+		n = n.children[n.routeSearch(s)]
 	}
 	return n
 }

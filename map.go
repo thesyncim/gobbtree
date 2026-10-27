@@ -111,8 +111,8 @@ func (m *mapCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 	if m.tree.root != nil {
 		n := m.tree.root.findLeaf(key)
 		n.leaf.mu.Lock()
-		i := n.exact(key)
-		if i < n.n && compareKeys[O](n.keys[i], key) == 0 {
+		i, equal := n.exact(key)
+		if equal {
 			old := n.leaf.values[i]
 			n.setValue(i, value)
 			n.leaf.mu.Unlock()
@@ -186,8 +186,8 @@ func (m *mapCore[K, V, O]) deleteGeneric(key K) (V, bool) {
 	}
 	n := m.tree.root.findLeaf(key)
 	n.leaf.mu.Lock()
-	i := n.exact(key)
-	if i == n.n || compareKeys[O](n.keys[i], key) != 0 {
+	i, equal := n.exact(key)
+	if !equal {
 		n.leaf.mu.Unlock()
 		lane.RUnlock()
 		var v V
@@ -231,8 +231,8 @@ func (m *mapCore[K, V, O]) Read(key K, visit func(K, V)) bool {
 	n := m.tree.root.findLeaf(key)
 	n.leaf.mu.RLock()
 	defer n.leaf.mu.RUnlock()
-	i := n.exact(key)
-	if i == n.n || compareKeys[O](n.keys[i], key) != 0 {
+	i, equal := n.exact(key)
+	if !equal {
 		return false
 	}
 	visit(n.keys[i], n.leaf.values[i])
@@ -253,8 +253,8 @@ func (m *mapCore[K, V, O]) Update(key K, change func(V) V) (V, bool) {
 		n := m.tree.root.findLeaf(key)
 		n.leaf.mu.Lock()
 		defer n.leaf.mu.Unlock()
-		i := n.exact(key)
-		if i < n.n && compareKeys[O](n.keys[i], key) == 0 {
+		i, equal := n.exact(key)
+		if equal {
 			value := change(n.leaf.values[i])
 			n.setValue(i, value)
 			return value, true

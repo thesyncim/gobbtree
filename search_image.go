@@ -22,38 +22,35 @@ type searchImage[K any, V any, O keyOrder[K]] struct {
 	highCodes        *[nodeSize]uint32
 	codes            *[nodeSize]uint64
 	prefix           int
+	prefixHead       [2]uint64
 	imageVersion     uint64
 }
 
 func (n *searchImage[K, V, O]) lower(key K) int {
-	if n.prefix > 0 {
-		c := comparePrefix[O](key, n.keys[0], n.prefix)
-		if c < 0 {
-			return 0
-		}
-		if c > 0 {
-			return n.n
-		}
+	i, _ := n.lowerExact(key)
+	return i
+}
+func (n *searchImage[K, V, O]) lowerExact(key K) (int, bool) {
+	s := keySearch[K, O]{key: key}
+	return n.lowerSearch(&s)
+}
+func (n *searchImage[K, V, O]) lowerSearch(s *keySearch[K, O]) (int, bool) {
+	c, code := s.locate(&n.keys[0], &n.prefixHead, n.prefix)
+	if c < 0 {
+		return 0, false
 	}
-	code := windowKey[O](key, n.prefix)
-	i := lowerCode(n.codes, n.n, code)
-	if i == n.n || n.codes[i] != code || compareKeys[O](n.keys[i], key) >= 0 {
-		return i
+	if c > 0 {
+		return n.n, false
 	}
-	lo, hi := i+1, n.n
-	for lo < hi {
-		mid := int(uint(lo+hi) >> 1)
-		if n.codes[mid] == code && compareKeys[O](n.keys[mid], key) < 0 {
-			lo = mid + 1
-		} else {
-			hi = mid
-		}
-	}
-	return lo
+	return lowerTied[O](n.keys, n.codes, n.n, s.key, code)
 }
 func (n *searchImage[K, V, O]) childIndex(key K) int {
-	i := n.lower(key)
-	if i < n.n && compareKeys[O](n.keys[i], key) == 0 {
+	s := keySearch[K, O]{key: key}
+	return n.routeSearch(&s)
+}
+func (n *searchImage[K, V, O]) routeSearch(s *keySearch[K, O]) int {
+	i, equal := n.lowerSearch(s)
+	if equal {
 		return i
 	}
 	return max(0, i-1)
@@ -89,11 +86,11 @@ func (n *searchImage[K, V, O]) readValue(key K, code uint64) (value V, found, va
 	}
 	i := 0
 	if n.strings {
-		i = n.lower(key)
+		i, found = n.lowerExact(key)
 	} else {
 		i = findCode(n.codes, &n.tags, n.n, code)
+		found = i < n.n && n.codes[i] == code
 	}
-	found = i < n.n && ((!n.strings && n.codes[i] == code) || (n.strings && compareKeys[O](n.keys[i], key) == 0))
 	if state := n.wordState; state != nil {
 		var word uint64
 		if found {

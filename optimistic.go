@@ -44,7 +44,7 @@ func (n *node[K, V, O]) publishFrom(first int) {
 	if old := n.image.Load(); old != nil && old.valid.Load() {
 		old.valid.Store(false)
 	}
-	image := &searchImage[K, V, O]{n: n.n, prefix: n.prefix, strings: n.strings, leaf: n.leaf, readEdges: n.readEdges}
+	image := &searchImage[K, V, O]{n: n.n, prefix: n.prefix, prefixHead: n.prefixHead, strings: n.strings, leaf: n.leaf, readEdges: n.readEdges}
 	if n.leaf == nil || n.leaf.pairs == nil {
 		image.codes = new([nodeSize]uint64)
 		*image.codes = n.codes
@@ -273,7 +273,8 @@ func (m *mapCore[K, V, O]) structuralEnd(held [3]*node[K, V, O]) {
 
 func (m *mapCore[K, V, O]) optimisticGet(key K) (V, bool) {
 	var zero V
-	code := numericKey[O](key)
+	search := keySearch[K, O]{key: key}
+	code := search.numeric()
 retry:
 	for {
 		version := m.version.Load()
@@ -304,7 +305,7 @@ retry:
 		for image.readEdges != nil {
 			index := 0
 			if image.strings {
-				index = image.childIndex(key)
+				index = image.routeSearch(&search)
 			} else if image.directory != nil {
 				index = directoryRoute(image.codes, image.directory, image.n, code)
 			} else if image.compact {
@@ -354,11 +355,11 @@ retry:
 		if state := image.wordState; state != nil {
 			i := 0
 			if image.strings {
-				i = image.lower(key)
+				i, found = image.lowerSearch(&search)
 			} else {
 				i = findCode(image.codes, &image.tags, image.n, code)
+				found = i < image.n && image.codes[i] == code
 			}
-			found = i < image.n && ((!image.strings && image.codes[i] == code) || (image.strings && compareKeys[O](image.keys[i], key) == 0))
 			var word uint64
 			if found {
 				word = state.values[i].Load()
@@ -383,11 +384,11 @@ retry:
 		}
 		i := 0
 		if image.strings {
-			i = image.lower(key)
+			i, found = image.lowerSearch(&search)
 		} else {
 			i = findCode(image.codes, &image.tags, image.n, code)
+			found = i < image.n && image.codes[i] == code
 		}
-		found = i < image.n && ((!image.strings && image.codes[i] == code) || (image.strings && compareKeys[O](image.keys[i], key) == 0))
 		if found {
 			value = leaf.values[i]
 		}
