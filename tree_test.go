@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
+	"sort"
 	"testing"
 )
 
@@ -396,6 +397,56 @@ func TestSearchAllLengths(t *testing.T) {
 	}
 	hardware, width := SIMD()
 	t.Logf("hardware SIMD=%v, vector bits=%d", hardware, width)
+}
+
+// Each kernel and its scalar fallback agree with a plain search at every
+// length, with padding laid out as the nodes lay it out.
+func TestKernelsMatchScalar(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 4))
+	for n := 0; n <= nodeSize; n++ {
+		for trial := 0; trial < 200; trial++ {
+			var codes [nodeSize]uint64
+			var high [nodeSize]uint32
+			var inline [nodeSize]uint16
+			var tags [nodeSize]uint8
+			for i := range nodeSize {
+				codes[i], high[i], inline[i] = math.MaxUint64, math.MaxUint32, math.MaxUint16
+			}
+			for i := range n {
+				codes[i] = rng.Uint64N(6)<<32 | rng.Uint64N(6)
+				inline[i] = uint16(rng.Uint64N(20))
+				tags[i] = uint8(rng.Uint64N(20))
+			}
+			slices.Sort(codes[:n])
+			slices.Sort(inline[:n])
+			slices.Sort(tags[:n])
+			for i := range n {
+				high[i] = uint32(codes[i] >> 32)
+			}
+			for q := range uint64(22) {
+				code := q/4<<32 | q%4
+				want, _ := slices.BinarySearch(codes[:n], code)
+				if a, b, c := lowerCode(&codes, n, code), lowerCodeScalar(&codes, n, code), lowerCompact(&codes, &high, n, code); a != want || b != want || c != want {
+					t.Fatalf("n=%d code=%x lower=%d scalar=%d compact=%d want=%d", n, code, a, b, c, want)
+				}
+				want = sort.Search(n, func(i int) bool { return uint64(inline[i]) > q })
+				if a, b := upperWordInline(&inline, n, uint16(q)), upperWordInlineScalar(&inline, n, uint16(q)); a != want || b != want {
+					t.Fatalf("n=%d key=%d inline=%d scalar=%d want=%d", n, q, a, b, want)
+				}
+				want = sort.Search(n, func(i int) bool { return uint64(tags[i]) > q })
+				if a, b := upperTag(&tags, n, uint8(q)), upperTagScalar(&tags, n, uint8(q)); a != want || b != want {
+					t.Fatalf("n=%d key=%d upperTag=%d scalar=%d want=%d", n, q, a, b, want)
+				}
+				want = n
+				if i := slices.Index(tags[:n], uint8(q)); i >= 0 {
+					want = i
+				}
+				if a, b := firstTag(&tags, n, q), firstTagScalar(&tags, n, uint8(q)); a != want || b != want {
+					t.Fatalf("n=%d key=%d firstTag=%d scalar=%d want=%d", n, q, a, b, want)
+				}
+			}
+		}
+	}
 }
 func TestSteadyStateAllocations(t *testing.T) {
 	tr := NewTree[uint64, uint64]()

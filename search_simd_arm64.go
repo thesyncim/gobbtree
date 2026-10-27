@@ -72,7 +72,7 @@ func lowerCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, key uin
 	c := countEight32((*[8]uint32)(high[16:24]), target)
 	d := countEight32((*[8]uint32)(high[24:32]), target)
 	i := min(-int(a.Add(b).Add(c.Add(d)).ReduceSum()), n)
-	if i < n && high[i] == uint32(key>>32) && keys[i] < key {
+	if j := i & (nodeSize - 1); i < n && high[j] == uint32(key>>32) && keys[j] < key {
 		return lowerCodeScalar(keys, n, key)
 	}
 	return i

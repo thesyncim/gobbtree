@@ -42,7 +42,7 @@ func (n *wordNode) lowerEntry(key uint64) int { return lowerEntries(n.entries(),
 func lowerEntriesScalar(entries *[nodeSize]wordEntry, key uint64) int {
 	lo, hi := 0, nodeSize
 	for lo < hi {
-		mid := int(uint(lo+hi) >> 1)
+		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
 		if entries[mid].key < key {
 			lo = mid + 1
 		} else {

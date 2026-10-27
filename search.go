@@ -11,10 +11,13 @@ func routeCode(keys *[nodeSize]uint64, n int, code uint64) int {
 	return max(0, lowerCode(keys, n, code+1)-1)
 }
 
+// Scalar searches mask indexes that are already below n <= nodeSize. Without
+// a bounds-check panic, the SIMD kernels that inline them as their fallback
+// call nothing and need no stack frame or stack check.
 func lowerCodeScalar(keys *[nodeSize]uint64, n int, key uint64) int {
 	lo, hi := 0, n
 	for lo < hi {
-		mid := int(uint(lo+hi) >> 1)
+		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
 		if keys[mid] < key {
 			lo = mid + 1
 		} else {
@@ -69,7 +72,7 @@ func routeCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, code ui
 }
 
 func firstTagScalar(tags *[nodeSize]uint8, n int, tag uint8) int {
-	for i := 0; i < n; i++ {
+	for i := range min(n, nodeSize) {
 		if tags[i] == tag {
 			return i
 		}
@@ -80,7 +83,7 @@ func firstTagScalar(tags *[nodeSize]uint8, n int, tag uint8) int {
 func upperTagScalar(tags *[nodeSize]uint8, n int, key uint8) int {
 	lo, hi := 0, n
 	for lo < hi {
-		mid := int(uint(lo+hi) >> 1)
+		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
 		if tags[mid] <= key {
 			lo = mid + 1
 		} else {
