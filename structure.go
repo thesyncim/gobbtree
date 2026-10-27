@@ -15,25 +15,25 @@ type structuralLane struct {
 }
 
 type structuralGates struct {
-	writer   writerLock
+	writer   storeLock
 	parallel atomic.Bool
 	_        [52]byte
 	lanes    [structuralLanes]structuralLane
 }
 
-// writerLock is the serial writer's mutex. Where stores stay ordered it is
-// released by a plain store instead of sync.Mutex's locked read-modify-write.
-// Waiters yield instead of parking: contention moves leaf writers to lanes,
-// after which the lock guards only structural changes.
-type writerLock struct{ state atomic.Uint32 }
+// storeLock is a mutex for short critical sections: the serial writer's
+// and each numeric leaf's. Where stores stay ordered it is released by a
+// plain store instead of sync.Mutex's locked read-modify-write. Waiters
+// yield instead of parking.
+type storeLock struct{ state atomic.Uint32 }
 
-func (l *writerLock) TryLock() bool { return l.state.Load() == 0 && l.state.CompareAndSwap(0, 1) }
-func (l *writerLock) Lock() {
+func (l *storeLock) TryLock() bool { return l.state.CompareAndSwap(0, 1) }
+func (l *storeLock) Lock() {
 	for !l.TryLock() {
 		runtime.Gosched()
 	}
 }
-func (l *writerLock) Unlock() {
+func (l *storeLock) Unlock() {
 	if orderedStores {
 		*(*uint32)(unsafe.Pointer(&l.state)) = 0
 		return

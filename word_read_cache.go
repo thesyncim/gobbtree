@@ -46,8 +46,12 @@ func (c *wordReadCache) node(id uint32) *wordNode {
 	return &c.nodes[index]
 }
 func (m *wordMap) storeValue(id uint32, n *wordNode, index int, value uint64) {
+	storeValueIn(m.view.Load(), id, n, index, value)
+}
+
+// storeValueIn replaces a value in the arena and in view's cache image.
+func storeValueIn(view *wordReadView, id uint32, n *wordNode, index int, value uint64) {
 	atomic.StoreUint64(&n.entries()[index].value, value)
-	view := m.view.Load()
 	if view != nil && view.cache != nil {
 		image := view.cache.node(id)
 		if image != nil && image.sequence.Load() != 0 {

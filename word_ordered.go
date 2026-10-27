@@ -1,6 +1,9 @@
 package gobbtree
 
-import "unsafe"
+import (
+	"runtime"
+	"unsafe"
+)
 
 // orderingZero is never written. An address offset by a loaded value masked
 // with it carries an address dependency on that value: arm64 performs the
@@ -406,4 +409,164 @@ func (m *wordMap) copyOrdered(low, high uint64, limited, reverse, bounded bool, 
 	}
 	*next, *epoch = id, version
 	return count, done || id == 0, true
+}
+
+// Lane-free writers. Once readers are active, a leaf write routes to its leaf
+// as a lookup does, locks only that leaf, and checks that the structural
+// epoch has not moved since it routed. Structural writers bump the epoch and
+// then lock every leaf they can change (lockWindow), so a leaf writer either
+// sees the new epoch and routes again, or finishes before the structural
+// writer takes its leaf. Race builds and maps without readers use lanes.
+
+// laneFree reports whether writes skip lanes: readers are active, so every
+// leaf write holds its leaf.
+func (m *wordMap) laneFree() bool {
+	if !seqlockPlainStores {
+		return false
+	}
+	view := m.view.Load()
+	return view != nil && view.ready
+}
+
+// lockLeafIfLaneFree routes key to its leaf and locks it when writes are
+// lane-free, with the epoch unchanged since routing. ok is false when the map
+// is not ready for lane-free writes, or routing keeps meeting structure.
+func (m *wordMap) lockLeafIfLaneFree(key uint64) (n *wordNode, id uint32, view *wordReadView, ok bool) {
+	if !seqlockPlainStores {
+		return nil, 0, nil, false
+	}
+	for attempt := 0; attempt < 64; attempt++ {
+		version := m.version.Load()
+		view = m.view.Load()
+		if view == nil || !view.ready {
+			return nil, 0, nil, false
+		}
+		if version&1 != 0 {
+			runtime.Gosched()
+			continue
+		}
+		id = 0
+		if view.cache != nil {
+			// A small map's cache routes reach the leaf directly.
+			id = view.cache.routes.lookupAtomic(key)
+		}
+		if id == 0 {
+			id, _, _ = m.leafOrdered(view, key)
+		}
+		if n = view.slabNode(id); n == nil || id&wordLeafID == 0 {
+			continue
+		}
+		n.mu.Lock()
+		if m.version.Load() == version {
+			return n, id, view, true
+		}
+		n.mu.Unlock()
+	}
+	return nil, 0, nil, false
+}
+
+// lockWindow locks the leaves a structural change around key can touch: its
+// leaf and two neighbours on each side, which cover a pair split, borrowing
+// from the outer leaf, and a merge. The caller holds the structure lock.
+func (m *wordMap) lockWindow(key uint64) { m.lockWindowAt(m.leafFor(key)) }
+func (m *wordMap) lockWindowAt(id uint32) {
+	if id == 0 {
+		return
+	}
+	first, last := id, id
+	for range 2 {
+		if prev := m.tree.node(first).prev; prev != 0 {
+			first = prev
+		}
+		if next := m.tree.node(last).next; next != 0 {
+			last = next
+		}
+	}
+	// Left to right; a leaf writer holds one leaf and waits for nothing.
+	for i, id := 0, first; ; i, id = i+1, m.tree.node(id).next {
+		n := m.tree.node(id)
+		n.mu.Lock()
+		m.held[i] = n
+		if id == last {
+			return
+		}
+	}
+}
+
+// unlockWindow releases what lockWindow took.
+func (m *wordMap) unlockWindow() {
+	for i, n := range m.held {
+		if n != nil {
+			n.mu.Unlock()
+			m.held[i] = nil
+		}
+	}
+}
+
+// lockAllLeaves locks every leaf, for a change to the whole map.
+func (m *wordMap) lockAllLeaves() []*wordNode {
+	var held []*wordNode
+	for id := m.tree.end(false); id != 0; id = m.tree.node(id).next {
+		n := m.tree.node(id)
+		n.mu.Lock()
+		held = append(held, n)
+	}
+	return held
+}
+
+// insertInLeaf inserts or replaces key within its locked leaf when that
+// changes no other node; done is false when the insert needs structure.
+func (m *wordMap) insertInLeaf(n *wordNode, id uint32, view *wordReadView, key, value uint64) (old uint64, replaced, done bool) {
+	i := n.exactEntry(key)
+	if i < int(n.n) && n.entries()[i].key == key {
+		old = n.entries()[i].value
+		storeValueIn(view, id, n, i, value)
+		return old, true, true
+	}
+	if n.n == nodeSize {
+		return 0, false, false
+	}
+	if i == int(n.n) && n.n > 0 && key < n.entries()[n.n-1].key {
+		i = n.lowerEntry(key)
+	}
+	if i == 0 {
+		return 0, false, false
+	}
+	m.disableReadCache()
+	n.beginLeafWrite()
+	m.tree.insertLeaf(n, i, key, value)
+	m.addCount(1, false)
+	n.endLeafWrite()
+	return 0, false, true
+}
+
+// deleteInLeaf removes key within its locked leaf when that changes no other
+// node; done is false when the removal needs structure.
+func (m *wordMap) deleteInLeaf(n *wordNode, key uint64) (value uint64, found, done bool) {
+	i := n.exactEntry(key)
+	if i == int(n.n) || n.entries()[i].key != key {
+		return 0, false, true
+	}
+	if n.n <= minNodeSize || i == 0 {
+		return 0, false, false
+	}
+	m.disableReadCache()
+	n.beginLeafWrite()
+	value = m.tree.removeLeaf(n, i)
+	m.addCount(-1, false)
+	n.endLeafWrite()
+	return value, true, true
+}
+
+// structural runs change under the structure lock, with the epoch odd and
+// the leaves around key locked, so that lane-free writers stay out.
+func (m *wordMap) structural(key uint64, change func()) {
+	m.structure.Lock()
+	defer m.structure.Unlock()
+	m.disableReadCache()
+	m.version.Add(1)
+	m.lockWindow(key)
+	defer m.unlockWindow()
+	defer m.finishStructure()
+	change()
 }

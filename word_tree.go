@@ -2,7 +2,6 @@ package gobbtree
 
 import (
 	"math/bits"
-	"sync"
 	"sync/atomic"
 	"unsafe"
 )
@@ -17,7 +16,7 @@ type wordNode struct {
 	directory, prev, next uint32
 	tags                  [nodeSize]uint8
 	sequence              atomic.Uint64
-	mu                    sync.Mutex
+	mu                    storeLock
 	payload               [nodeSize]uint64
 	keys                  [nodeSize]uint64
 }

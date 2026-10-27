@@ -25,6 +25,8 @@ type wordMap struct {
 	structure          *structuralLock
 	count              *atomic.Int64
 	tree               wordTree
+	// held is what lockWindow locked, for the structural writer that took it.
+	held [5]*wordNode
 }
 
 // Publish the shared arena directories; an optional small-map cache is attached
@@ -304,9 +306,10 @@ retry:
 }
 
 // addCount adjusts the count. An exclusive writer, serial or structural,
-// stores it where stores stay ordered: an atomic add is a full barrier.
+// stores it where stores stay ordered: an atomic add is a full barrier. Once
+// writes are lane-free, leaf writers add concurrently, so nothing is.
 func (m *wordMap) addCount(delta int64, exclusive bool) {
-	if exclusive && orderedStores {
+	if exclusive && orderedStores && !m.laneFree() {
 		*(*int64)(unsafe.Pointer(m.count)) = m.count.Load() + delta
 		return
 	}
@@ -351,8 +354,26 @@ func (m *wordMap) locate(key uint64) (uint32, *wordNode, int) {
 	}
 }
 func (m *wordMap) insert(key, value uint64) (uint64, bool) {
+	if n, id, view, ok := m.lockLeafIfLaneFree(key); ok {
+		old, replaced, done := m.insertInLeaf(n, id, view, key, value)
+		n.mu.Unlock()
+		if done {
+			return old, replaced
+		}
+		m.structural(key, func() {
+			if !m.tree.insertSharedAtRoute(key, value) {
+				old, replaced = m.tree.insert(key, value)
+			}
+			if !replaced {
+				m.addCount(1, true)
+			}
+		})
+		return old, replaced
+	}
 	guard := m.structure.acquire(key)
-	serial := guard.lane == nil
+	// Once readers are active, lane-free writers may share any leaf, so this
+	// writer holds its leaf too.
+	serial := guard.lane == nil && !m.laneFree()
 	id, parent, index := m.locate(key)
 	var leaf *wordNode
 	if id != 0 {
@@ -399,6 +420,7 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	guard = m.lockStructure(guard)
 	m.disableReadCache()
 	m.version.Add(1)
+	m.lockWindow(key)
 	defer m.endStructure(guard)
 	var old uint64
 	var replaced bool
@@ -429,6 +451,7 @@ func (m *wordMap) lockStructure(guard structuralGuard) structuralGuard {
 }
 func (m *wordMap) endStructure(guard structuralGuard) {
 	m.finishStructure()
+	m.unlockWindow()
 	if guard.g != nil {
 		guard.g.writer.Unlock()
 	} else {
@@ -436,8 +459,23 @@ func (m *wordMap) endStructure(guard structuralGuard) {
 	}
 }
 func (m *wordMap) delete(key uint64) (uint64, bool) {
+	if n, _, _, ok := m.lockLeafIfLaneFree(key); ok {
+		value, found, done := m.deleteInLeaf(n, key)
+		n.mu.Unlock()
+		if done {
+			return value, found
+		}
+		m.structural(key, func() {
+			if value, found = m.tree.delete(key); found {
+				m.addCount(-1, true)
+			}
+		})
+		return value, found
+	}
 	guard := m.structure.acquire(key)
-	serial := guard.lane == nil
+	// Once readers are active, lane-free writers may share any leaf, so this
+	// writer holds its leaf too.
+	serial := guard.lane == nil && !m.laneFree()
 	id := m.leafFor(key)
 	if id == 0 {
 		guard.unlock()
@@ -477,6 +515,7 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 	guard = m.lockStructure(guard)
 	m.disableReadCache()
 	m.version.Add(1)
+	m.lockWindow(key)
 	defer m.endStructure(guard)
 	value, found := m.tree.delete(key)
 	if found {
@@ -490,18 +529,25 @@ func (m *wordMap) clear() {
 	m.disableReadCache()
 	m.version.Add(1)
 	defer m.finishStructure()
+	// Lane-free writers may hold leaves of the tree being dropped.
+	for _, n := range m.lockAllLeaves() {
+		defer n.mu.Unlock()
+	}
 	m.tree = wordTree{shared: true, keyKind: m.keyKind, valueKind: m.valueKind}
 	m.count.Store(0)
 }
 func (m *wordMap) read(key uint64, visit func(uint64, uint64)) bool {
-	guard := m.structure.acquire(key)
-	defer guard.unlock()
-	id := m.leafFor(key)
-	if id == 0 {
-		return false
+	n, _, _, ok := m.lockLeafIfLaneFree(key)
+	if !ok {
+		guard := m.structure.acquire(key)
+		defer guard.unlock()
+		id := m.leafFor(key)
+		if id == 0 {
+			return false
+		}
+		n = m.tree.node(id)
+		n.mu.Lock()
 	}
-	n := m.tree.node(id)
-	n.mu.Lock()
 	defer n.mu.Unlock()
 	i := n.exactEntry(key)
 	if i == int(n.n) || n.entries()[i].key != key {
@@ -511,14 +557,17 @@ func (m *wordMap) read(key uint64, visit func(uint64, uint64)) bool {
 	return true
 }
 func (m *wordMap) update(key uint64, change func(uint64) uint64) (uint64, bool) {
-	guard := m.structure.acquire(key)
-	defer guard.unlock()
-	id := m.leafFor(key)
-	if id == 0 {
-		return 0, false
+	n, id, _, ok := m.lockLeafIfLaneFree(key)
+	if !ok {
+		guard := m.structure.acquire(key)
+		defer guard.unlock()
+		id = m.leafFor(key)
+		if id == 0 {
+			return 0, false
+		}
+		n = m.tree.node(id)
+		n.mu.Lock()
 	}
-	n := m.tree.node(id)
-	n.mu.Lock()
 	defer n.mu.Unlock()
 	i := n.exactEntry(key)
 	if i == int(n.n) || n.entries()[i].key != key {
@@ -543,6 +592,9 @@ func (m *wordMap) lookupLocked(key uint64) (uint64, bool) {
 func (m *wordMap) updateOrInsert(key, value uint64, merge func(uint64, uint64) uint64) (uint64, bool) {
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	// Lane-free writers stay out of the leaves this may read or change.
+	m.lockWindow(key)
+	defer m.unlockWindow()
 	if id := m.leafFor(key); id != 0 {
 		n := m.tree.node(id)
 		i := n.exactEntry(key)
@@ -563,6 +615,9 @@ func (m *wordMap) updateOrInsert(key, value uint64, merge func(uint64, uint64) u
 func (m *wordMap) loadOrStore(key, value uint64) (uint64, bool) {
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	// Lane-free writers stay out of the leaves this may read or change.
+	m.lockWindow(key)
+	defer m.unlockWindow()
 	if old, found := m.lookupLocked(key); found {
 		return old, true
 	}
@@ -576,6 +631,9 @@ func (m *wordMap) loadOrStore(key, value uint64) (uint64, bool) {
 func (m *wordMap) deleteIf(key uint64, predicate func(uint64) bool) (uint64, bool) {
 	m.structure.Lock()
 	defer m.structure.Unlock()
+	// Lane-free writers stay out of the leaves this may read or change.
+	m.lockWindow(key)
+	defer m.unlockWindow()
 	old, found := m.lookupLocked(key)
 	if !found || !predicate(old) {
 		return 0, false
@@ -707,6 +765,8 @@ func (m *wordMap) edge(last, pop bool) (uint64, uint64, bool) {
 	if id == 0 {
 		return 0, 0, false
 	}
+	m.lockWindowAt(id)
+	defer m.unlockWindow()
 	n := m.tree.node(id)
 	i := 0
 	if last {
