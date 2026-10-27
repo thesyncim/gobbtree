@@ -72,7 +72,7 @@ func (m *wordMap) enableReads() {
 		if m.count.Load() > smallReadCacheLimit {
 			view := *current
 			view.uncached = current
-			view.leaves = newWordLeafCache(view.routes, m.count.Load())
+			view.leaves = newWordLeafCache(view.routes, view.level, m.count.Load())
 			m.view.Store(&view)
 			return
 		}
@@ -379,11 +379,17 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	// Before readers, a serial writer appends past the largest key straight
 	// to the rightmost leaf, as Tree does.
 	plain := serial && !m.tree.atomicWrites
-	if n := m.tree.tail; plain && n != nil && n.next == 0 && n.n-1 < nodeSize-1 && key > n.entries()[n.n-1].key {
-		m.tree.insertLeaf(n, int(n.n), key, value)
-		m.addCount(1, true)
-		guard.unlock()
-		return 0, false
+	if n := m.tree.tail; plain && n != nil && n.next == 0 && n.n > 0 && key > n.entries()[n.n-1].key {
+		if n.n < nodeSize {
+			m.tree.insertLeaf(n, int(n.n), key, value)
+		} else if !m.tree.appendFull(n, key, value) {
+			n = nil
+		}
+		if n != nil {
+			m.addCount(1, true)
+			guard.unlock()
+			return 0, false
+		}
 	}
 	id, parent, index := m.locate(key)
 	var leaf *wordNode

@@ -1009,16 +1009,41 @@ func (t *wordTree) splitRun(parent *wordNode, index, i int, key, value uint64) {
 		t.node(leaf.next).prev = extraID
 	}
 	leaf.next = extraID
+	// Past the leaf's last key, only its next link changed.
 	if t.atomicWrites {
-		t.refit(leaf)
+		if i < nodeSize {
+			t.refit(leaf)
+		}
 		t.refit(extra)
 	} else {
+		if i < nodeSize {
+			t.settleLeafPlain(leaf, nodeSize)
+		}
 		// The new leaf is already padded.
-		t.settleLeafPlain(leaf, nodeSize)
 		t.settleLeafPlain(extra, 0)
 	}
 	t.insertChild(parent, index+1, extraID)
 	t.noteInsert(key)
+}
+
+// appendFull appends key past the largest, which full rightmost leaf tail
+// holds, by starting a new rightmost leaf beside it, as splitRun does. It
+// reports false when tail's parent is full and the split needs ancestors.
+func (t *wordTree) appendFull(tail *wordNode, key, value uint64) bool {
+	parent := t.rootNode
+	if parent.leaf {
+		return false
+	}
+	for parent.level > 1 {
+		parent = t.node(parent.inner().children[parent.n-1])
+	}
+	index := int(parent.n) - 1
+	if parent.n == nodeSize || t.node(parent.inner().children[index]) != tail {
+		return false
+	}
+	t.splitRun(parent, index, nodeSize, key, value)
+	t.tail = t.node(parent.inner().children[index+1])
+	return true
 }
 
 // Before optimistic readers start, a redistribution moves only the entries and

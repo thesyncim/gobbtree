@@ -21,13 +21,14 @@ type wordLeafCache struct {
 	cells []wordLeafCell
 }
 
-func newWordLeafCache(routes wordRoutes, count int64) *wordLeafCache {
+func newWordLeafCache(routes wordRoutes, level uint8, count int64) *wordLeafCache {
 	if len(routes.ids) == 0 {
 		return nil
 	}
-	parentBits := bits.Len(uint(len(routes.ids) - 1))
-	radixBits := min(20, max(parentBits, bits.Len64(uint64(count-1)/32)))
-	width := int(routes.shift) + parentBits
+	// The cache spans the route domain, at least four cells per level of the
+	// tree and one per 32 entries, however coarse the route buckets.
+	width := int(routes.shift) + bits.Len(uint(len(routes.ids)-1))
+	radixBits := min(20, width, max(int(level)*4, bits.Len64(uint64(count-1)/32)))
 	return &wordLeafCache{base: routes.base, shift: uint8(width - radixBits), cells: make([]wordLeafCell, 1<<radixBits)}
 }
 func (c *wordLeafCache) fraction(key uint64) uint64 {

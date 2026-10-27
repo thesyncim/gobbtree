@@ -58,7 +58,14 @@ func (t *wordTree) rebuildRoutes() {
 		largest = max(largest, last.entries()[last.n-1].key)
 	}
 	width := bits.Len64(root.keys[0] ^ largest)
-	radixBits := min(20, int(root.level)*4, width)
+	// Routes resolve down to leaf parents, so a few buckets per leaf parent
+	// suffice; finer buckets only add work to every rebuild. Node counts
+	// along the leftmost path estimate how many leaf parents there are.
+	parents := 1
+	for n := root; n.level > 1; n = t.node(n.inner().children[0]) {
+		parents *= int(n.n)
+	}
+	radixBits := min(20, bits.Len(uint(parents))+3, width)
 	if radixBits < 4 {
 		t.routes = wordRoutes{}
 		return

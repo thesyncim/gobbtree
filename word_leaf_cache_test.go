@@ -24,7 +24,7 @@ func TestNumericLeafRouteCache(t *testing.T) {
 			view.uncached = words.view.Load()
 		}
 		view.cache = nil
-		view.leaves = newWordLeafCache(view.routes, int64(m.Len()))
+		view.leaves = newWordLeafCache(view.routes, view.level, int64(m.Len()))
 		words.view.Store(&view)
 		words.structure.Unlock()
 		if view.leaves == nil {
@@ -174,7 +174,7 @@ func TestLeafCachedReadsDuringLeafShifts(t *testing.T) {
 			return
 		}
 		if leaves == nil {
-			leaves = newWordLeafCache(current.routes, int64(m.Len()))
+			leaves = newWordLeafCache(current.routes, current.level, int64(m.Len()))
 		}
 		// Without structural changes, filled cells keep routing correctly.
 		view := *current
@@ -274,7 +274,7 @@ func TestLeafCachedReadsDuringSplits(t *testing.T) {
 		view := *current
 		view.uncached = current
 		view.cache = nil
-		view.leaves = newWordLeafCache(view.routes, int64(m.Len()))
+		view.leaves = newWordLeafCache(view.routes, view.level, int64(m.Len()))
 		words.view.Store(&view)
 	}
 	stop := make(chan struct{})

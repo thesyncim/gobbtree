@@ -135,12 +135,19 @@ func (t *treeCore[K, V, O]) Insert(key K, value V) (V, bool) {
 			}
 		}
 		// Appends past the largest key go straight to the rightmost leaf.
-		if n := words.tail; n != nil && n.next == 0 && n.n-1 < nodeSize-1 && code > n.entries()[n.n-1].key {
-			words.inserted = code
-			n.insertLeafPlain(int(n.n), code, packed)
-			t.length++
-			var zero V
-			return zero, false
+		if n := words.tail; n != nil && n.next == 0 && n.n > 0 && code > n.entries()[n.n-1].key {
+			if n.n < nodeSize {
+				words.inserted = code
+				n.insertLeafPlain(int(n.n), code, packed)
+				t.length++
+				var zero V
+				return zero, false
+			}
+			if words.appendFull(n, code, packed) {
+				t.length++
+				var zero V
+				return zero, false
+			}
 		}
 		n := words.rootNode
 		if n == nil {
