@@ -149,7 +149,7 @@ func checkOrdered[K Key[K]](t *testing.T, keys []K, ops int, seed uint64) {
 	if len(ref) > 2 {
 		lo, hi := ref[len(ref)/4], ref[3*len(ref)/4]
 		var scanned []K
-		m.Scan(lo, hi, func(k K, _ int) bool { scanned = append(scanned, k); return true })
+		visitRange(m.Range(lo, hi), func(k K, _ int) bool { scanned = append(scanned, k); return true })
 		if len(scanned) != 3*len(ref)/4-len(ref)/4 {
 			t.Fatalf("scan visited %d", len(scanned))
 		}

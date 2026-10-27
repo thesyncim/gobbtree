@@ -30,9 +30,9 @@ for key, value := range scores.All() { // ascending: 7, then 42
     fmt.Println(key, value)
 }
 
-scores.Scan(0, 10, func(key uint64, value string) bool { // keys in [0, 10)
-    return true // false stops the scan
-})
+for key, value := range scores.Range(0, 10) { // keys in [0, 10)
+    fmt.Println(key, value) // break stops early
+}
 ```
 
 Build with `GOEXPERIMENT=simd` to enable the vector search. Without it, the same code uses scalar search.
@@ -52,12 +52,17 @@ All zero values are ready to use. Don't copy a container after first use.
 | Operation | Returns |
 |---|---|
 | `Get(k)` · `Insert(k, v)` · `Delete(k)` | The value or previous value, and a found flag |
+| `Take(k)` | Removes `k`, returning the stored key and value |
 | `GetMany(keys, dst)` · `InsertMany(entries, dst)` | Per-key results, in caller-provided storage |
-| `Scan(lo, hi, f)` · `ScanReverse(lo, hi, f)` | Visits `[lo, hi)` in order |
-| `All()`, plus `Keys()` · `Values()` · `Reverse()` on Tree | Range-over-func iterators |
+| `Range(lo, hi)` · `RangeReverse(lo, hi)` | Iterates `[lo, hi)`, ascending or descending |
+| `Ascend(from)` · `Descend(from)` | Iterates keys `>= from` ascending, or `<= from` descending |
+| `All()` · `Reverse()`, plus `Keys()` · `Values()` on Tree | Iterates everything |
 | `First()` · `Last()` · `PopFirst()` · `PopLast()` | The end entries |
-| `Update` · `LoadOrStore` · `UpdateOrInsert` · `DeleteIf` | Atomic read-modify-write on `Map` |
+| `Update` · `LoadOrStore` · `UpdateOrInsert` | Read-modify-write; atomic on `Map` |
+| `Read` · `DeleteIf` | Callback read and conditional delete on `Map` |
 | `LowerBound` · `UpperBound` · `SplitOff` · `Append` · `Retain` · `ExtractIf` | Ordered editing on `Tree` |
+
+Iterators are Go range-over-func sequences: `break` stops them. `Set` offers the same iterators over keys, plus union, intersection, difference and subset tests; `FileMap` offers the read-only ones.
 
 Keys follow `cmp.Compare`: NaN sorts first and `-0 == +0`. An equal key keeps the originally stored key. Keys and values are copied shallowly.
 
@@ -109,7 +114,7 @@ A composite key encodes its fields one after another. For example, a `uint32` te
 
 `Map` lookups of word values (integers, floats, bools) are lock-free: they read numeric slabs or immutable search images and retry if a writer interfered. Other values are read under a leaf read latch, so their writes publish no snapshots and allocate nothing. Writers lock single leaves; splits and merges take a structural lock.
 
-- Scans (`Scan`, `ScanReverse`, `All`, `First`, `Last`) work like upstream's: they copy a leaf at a time and release its latches before visiting, so a scan never holds writers back for longer than one leaf copy, and its callback may use the map. A scan is not a snapshot: an entry present throughout is visited exactly once; entries inserted or removed meanwhile may or may not be.
+- Iteration (`Range`, `RangeReverse`, `Ascend`, `Descend`, `All`, `Reverse`, `First`, `Last`) works like upstream's `scan` and `range_cloned`: it copies a few leaves at a time and visits the copies with nothing held, so the loop body may use the map. Numeric maps copy without any latch, validated like lookups; other maps hold a leaf's read latch only while copying it. Iteration is not a snapshot: an entry present throughout is visited exactly once; entries inserted or removed meanwhile may or may not be.
 - Each batch entry is consistent on its own; a batch is not a transaction.
 - `Read`, `Update`, `UpdateOrInsert` and `DeleteIf` run their callbacks under the entry's lock; those must not call back into the same map. A panicking callback releases its locks and stores nothing.
 
@@ -130,6 +135,24 @@ A file map validates the image and searches it in place, with no rebuild. It sup
 - **Values:** numbers, plain arrays, empty structs, strings and byte slices.
 - **Writing:** `CreateFile` builds a file from an ascending `iter.Seq2`. `NewFileWriter`, `WriteAt`, `ReadFileRange` and `MmapFileRange` handle snapshots embedded in larger files.
 - **Immutability:** to change a file map, write a new snapshot; `WriteFile` replaces the file atomically.
+
+## Coming from bbtree
+
+The API follows upstream's operations with Go names; results are Go multi-value returns and iterators are range-over-func sequences.
+
+| Upstream | gobbtree |
+|---|---|
+| `get` · `get_copied` · `get_cloned` · `contains_key` · `get_key_value` | `Get` · `Contains` · `GetKeyValue` (Tree) |
+| `insert` · `remove` · `remove_entry` | `Insert` · `Delete` · `Take` |
+| `get_many_*` · `insert_many` | `GetMany` · `InsertMany` |
+| `read` · `update` · `update_or_insert` · `get_or_insert` · `remove_if` | `Read` · `Update` · `UpdateOrInsert` · `LoadOrStore` · `DeleteIf` |
+| `iter` · `range` · `range_cloned` · `scan` · `scan_rev` | `All` / `Reverse` · `Range` / `RangeReverse` / `Ascend` / `Descend` |
+| `keys` · `values` · `first_key_value` · `last_key_value` · `pop_first` · `pop_last` | `Keys` · `Values` · `First` · `Last` · `PopFirst` · `PopLast` |
+| `retain` · `extract_if` · `split_off` · `append` · `entry` | `Retain` · `ExtractIf` · `SplitOff` · `Append` · `LoadOrStore` / `UpdateOrInsert` |
+| `InlineKey` · byte-string keys | `Key` · `Bytes` |
+| `FileMap` · `FileWriter::from_ascending` | `FileMap` · `NewFileWriter` / `CreateFile` |
+
+Not carried over: mutable references (`get_mut`, `iter_mut`, `values_mut`, `range_mut`), which Go expresses with `Update`; allocator and node-layout parameters; and the `Debug`/`check_invariants` helpers. `Len` on `Map` and `LowerBound`/`UpperBound` are additions.
 
 ## SIMD
 

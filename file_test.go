@@ -73,8 +73,8 @@ func checkFileEntries(t *testing.T, m *FileMap[uint64, uint64], n int) {
 	}
 	for _, bounds := range [][2]uint64{{0, 0}, {0, 1}, {1, 170}, {160, 190}, {1, math.MaxUint64}, {math.MaxUint64, 0}} {
 		var forward, reverse []uint64
-		m.Scan(bounds[0], bounds[1], func(k, v uint64) bool { forward = append(forward, k); return true })
-		m.ScanReverse(bounds[0], bounds[1], func(k, v uint64) bool { reverse = append(reverse, k); return true })
+		visitRange(m.Range(bounds[0], bounds[1]), func(k, v uint64) bool { forward = append(forward, k); return true })
+		visitRange(m.RangeReverse(bounds[0], bounds[1]), func(k, v uint64) bool { reverse = append(reverse, k); return true })
 		slices.Reverse(reverse)
 		var want []uint64
 		for j := 0; j < n; j++ {

@@ -169,11 +169,12 @@ func (m *FileMap[K, V]) route(node int, key K) int {
 
 type diskFrame struct{ node, index int }
 type fileCursor[K cmp.Ordered, V any] struct {
-	mapFile                         *FileMap[K, V]
-	path                            [fileMaxDepth]diskFrame
-	depth, leaf, index              int
-	started, done, reverse, bounded bool
-	lower, upper                    K
+	mapFile                *FileMap[K, V]
+	path                   [fileMaxDepth]diskFrame
+	depth, leaf, index     int
+	started, done, reverse bool
+	hasLower, hasUpper     bool
+	lower, upper           K
 }
 
 func (c *fileCursor[K, V]) descend(tagged int, seek bool) {
@@ -294,7 +295,7 @@ func (c *fileCursor[K, V]) next() (key K, value V, ok bool) {
 	}
 	if !c.started {
 		c.started = true
-		c.descend(m.root, c.bounded)
+		c.descend(m.root, c.reverse && c.hasUpper || !c.reverse && c.hasLower)
 	}
 	for c.index < 0 || c.index >= c.count() {
 		if !c.advanceLeaf() {
@@ -303,7 +304,7 @@ func (c *fileCursor[K, V]) next() (key K, value V, ok bool) {
 		}
 	}
 	key = c.key(c.index)
-	if c.bounded && (cmp.Compare(key, c.lower) < 0 || cmp.Compare(key, c.upper) >= 0) {
+	if c.hasLower && cmp.Compare(key, c.lower) < 0 || c.hasUpper && cmp.Compare(key, c.upper) >= 0 {
 		c.done = true
 		return key, value, false
 	}
@@ -410,11 +411,18 @@ func (m *FileMap[K, V]) GetMany(keys []K, dst []Result[V]) {
 	}
 }
 
-func (m *FileMap[K, V]) scan(lower, upper K, bounded, reverse bool, visit func(K, V) bool) {
-	if bounded && cmp.Compare(lower, upper) >= 0 {
+// scan visits keys in [lower, upper); a nil bound is open.
+func (m *FileMap[K, V]) scan(lower, upper *K, reverse bool, visit func(K, V) bool) {
+	if lower != nil && upper != nil && cmp.Compare(*lower, *upper) >= 0 {
 		return
 	}
-	c := fileCursor[K, V]{mapFile: m, lower: lower, upper: upper, bounded: bounded, reverse: reverse}
+	c := fileCursor[K, V]{mapFile: m, reverse: reverse, hasLower: lower != nil, hasUpper: upper != nil}
+	if lower != nil {
+		c.lower = *lower
+	}
+	if upper != nil {
+		c.upper = *upper
+	}
 	for {
 		k, v, ok := c.next()
 		if !ok || !visit(k, v) {
@@ -423,17 +431,36 @@ func (m *FileMap[K, V]) scan(lower, upper K, bounded, reverse bool, visit func(K
 	}
 }
 
-func (m *FileMap[K, V]) Scan(lower, upper K, visit func(K, V) bool) {
-	m.scan(lower, upper, true, false, visit)
+// Range iterates the entries with keys in [lower, upper), ascending.
+func (m *FileMap[K, V]) Range(lower, upper K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) { m.scan(&lower, &upper, false, yield) }
 }
-func (m *FileMap[K, V]) ScanReverse(lower, upper K, visit func(K, V) bool) {
-	m.scan(lower, upper, true, true, visit)
+
+// RangeReverse iterates the entries with keys in [lower, upper), descending.
+func (m *FileMap[K, V]) RangeReverse(lower, upper K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) { m.scan(&lower, &upper, true, yield) }
 }
+
+// Ascend iterates the entries with keys at or above from, ascending.
+func (m *FileMap[K, V]) Ascend(from K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) { m.scan(&from, nil, false, yield) }
+}
+
+// Descend iterates the entries with keys at or below from, descending.
+func (m *FileMap[K, V]) Descend(from K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		if k, v, ok := m.GetKeyValue(from); ok && !yield(k, v) {
+			return
+		}
+		m.scan(nil, &from, true, yield)
+	}
+}
+
 func (m *FileMap[K, V]) All() iter.Seq2[K, V] {
-	return func(yield func(K, V) bool) { var z K; m.scan(z, z, false, false, yield) }
+	return func(yield func(K, V) bool) { m.scan(nil, nil, false, yield) }
 }
 func (m *FileMap[K, V]) Reverse() iter.Seq2[K, V] {
-	return func(yield func(K, V) bool) { var z K; m.scan(z, z, false, true, yield) }
+	return func(yield func(K, V) bool) { m.scan(nil, nil, true, yield) }
 }
 
 // WriteTo copies the validated image, preserving its Rust-compatible layout.

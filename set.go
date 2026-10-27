@@ -62,11 +62,29 @@ func (s *setCore[K, O]) Reverse() iter.Seq[K] {
 		}
 	}
 }
-func (s *setCore[K, O]) Scan(lower, upper K, visit func(K) bool) {
-	s.tree.Scan(lower, upper, func(k K, _ struct{}) bool { return visit(k) })
+
+// Range iterates the keys in [lower, upper), ascending.
+func (s *setCore[K, O]) Range(lower, upper K) iter.Seq[K] { return setKeys(s.tree.Range(lower, upper)) }
+
+// RangeReverse iterates the keys in [lower, upper), descending.
+func (s *setCore[K, O]) RangeReverse(lower, upper K) iter.Seq[K] {
+	return setKeys(s.tree.RangeReverse(lower, upper))
 }
-func (s *setCore[K, O]) ScanReverse(lower, upper K, visit func(K) bool) {
-	s.tree.ScanReverse(lower, upper, func(k K, _ struct{}) bool { return visit(k) })
+
+// Ascend iterates the keys at or above from, ascending.
+func (s *setCore[K, O]) Ascend(from K) iter.Seq[K] { return setKeys(s.tree.Ascend(from)) }
+
+// Descend iterates the keys at or below from, descending.
+func (s *setCore[K, O]) Descend(from K) iter.Seq[K] { return setKeys(s.tree.Descend(from)) }
+
+func setKeys[K any](entries iter.Seq2[K, struct{}]) iter.Seq[K] {
+	return func(yield func(K) bool) {
+		for k := range entries {
+			if !yield(k) {
+				return
+			}
+		}
+	}
 }
 
 func (s *setCore[K, O]) ContainsMany(keys []K, dst []bool) {

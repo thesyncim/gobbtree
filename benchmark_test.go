@@ -132,7 +132,7 @@ func BenchmarkScan64(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		start = mixedKey(start) % 262080
-		tr.Scan(start, start+64, func(k, v uint64) bool { sum += v; return true })
+		visitRange(tr.Range(start, start+64), func(k, v uint64) bool { sum += v; return true })
 	}
 	benchmarkSink = sum
 }

@@ -331,6 +331,26 @@ func (m *mapCore[K, V, O]) DeleteIf(key K, predicate func(V) bool) (V, bool) {
 	return v, false
 }
 
+// Take removes key, returning the stored key and its value, as upstream's
+// remove_entry does.
+func (m *mapCore[K, V, O]) Take(key K) (K, V, bool) {
+	if words := m.numericMap(); words != nil {
+		old, found := words.delete(numericKey[O](key))
+		return mapWordEntry[K, V](numericKey[O](key), old, found, words)
+	}
+	m.structure.Lock()
+	defer m.structure.Unlock()
+	stored, v, ok := m.tree.GetKeyValue(key)
+	if ok {
+		held := m.structuralStart(key)
+		defer m.structuralEnd(held)
+		m.tree.length = int(m.count.Load())
+		m.tree.Delete(key)
+		m.count.Add(-1)
+	}
+	return stored, v, ok
+}
+
 // GetMany fills dst in query order. Each result is individually consistent;
 // the batch is not a transaction. It uses no output allocations.
 func (m *mapCore[K, V, O]) GetMany(keys []K, dst []Result[V]) {
@@ -462,47 +482,70 @@ func (m *mapCore[K, V, O]) InsertMany(entries []Entry[K, V], dst []Result[V]) {
 	}
 }
 
-// Scan visits [lower,upper) in ascending order, a leaf at a time, as
-// upstream's scan does. Each leaf is copied under its latches, released before
-// visit runs, so visit holds no latch and may use the map. It is not a
-// snapshot: an entry present throughout is visited exactly once; entries
-// inserted or removed meanwhile may or may not be. Returning false stops.
-func (m *mapCore[K, V, O]) Scan(lower, upper K, visit func(K, V) bool) {
-	if words := m.numericMap(); words != nil {
-		words.walk(numericKey[O](lower), numericKey[O](upper), false, true, func(k, v uint64) bool {
-			return visit(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
-		})
-		return
-	}
-	if compareKeys[O](lower, upper) < 0 {
-		m.walk(&lower, &upper, false, visit)
-	}
+// Range iterates the entries with keys in [lower, upper), ascending, as
+// upstream's scan and range_cloned do: a few leaves are copied under their
+// latches, or validated without latches for numeric maps, and visited with
+// no latch held, so the loop body may use the map. It is not a snapshot: an
+// entry present throughout is visited exactly once; entries inserted or
+// removed meanwhile may or may not be.
+func (m *mapCore[K, V, O]) Range(lower, upper K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) { m.scan(&lower, &upper, false, yield) }
 }
 
-// ScanReverse is Scan in descending order.
-func (m *mapCore[K, V, O]) ScanReverse(lower, upper K, visit func(K, V) bool) {
-	if words := m.numericMap(); words != nil {
-		words.walk(numericKey[O](lower), numericKey[O](upper), true, true, func(k, v uint64) bool {
-			return visit(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
-		})
-		return
-	}
-	if compareKeys[O](lower, upper) < 0 {
-		m.walk(&lower, &upper, true, visit)
-	}
+// RangeReverse is Range in descending order.
+func (m *mapCore[K, V, O]) RangeReverse(lower, upper K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) { m.scan(&lower, &upper, true, yield) }
 }
 
-// All visits every entry in key order, as Scan does.
-func (m *mapCore[K, V, O]) All() iter.Seq2[K, V] {
+// Ascend iterates the entries with keys at or above from, ascending.
+func (m *mapCore[K, V, O]) Ascend(from K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) { m.scan(&from, nil, false, yield) }
+}
+
+// Descend iterates the entries with keys at or below from, descending.
+func (m *mapCore[K, V, O]) Descend(from K) iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
-		if words := m.numericMap(); words != nil {
-			words.walk(0, 0, false, false, func(k, v uint64) bool {
-				return yield(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
-			})
+		var key K
+		var value V
+		if m.Read(from, func(k K, v V) { key, value = k, v }) && !yield(key, value) {
 			return
 		}
-		m.walk(nil, nil, false, yield)
+		m.scan(nil, &from, true, yield)
 	}
+}
+
+// All iterates every entry in ascending order, as Range does.
+func (m *mapCore[K, V, O]) All() iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) { m.scan(nil, nil, false, yield) }
+}
+
+// Reverse iterates every entry in descending order, as Range does.
+func (m *mapCore[K, V, O]) Reverse() iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) { m.scan(nil, nil, true, yield) }
+}
+
+// scan visits keys in [lower, upper); a nil bound is open. Descending scans
+// have an upper bound or none: Descend reads its inclusive end separately.
+func (m *mapCore[K, V, O]) scan(lower, upper *K, reverse bool, visit func(K, V) bool) {
+	if words := m.numericMap(); words != nil {
+		low, high := uint64(0), uint64(0)
+		if lower != nil {
+			low = numericKey[O](*lower)
+		}
+		if upper != nil {
+			high = numericKey[O](*upper)
+		}
+		// An unbounded walk starts at low ascending and at the last key
+		// descending; a bounded one checks both ends.
+		words.walk(low, high, reverse, upper != nil, func(k, v uint64) bool {
+			return visit(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
+		})
+		return
+	}
+	if lower != nil && upper != nil && compareKeys[O](*lower, *upper) >= 0 {
+		return
+	}
+	m.walk(lower, upper, reverse, visit)
 }
 
 // walk visits leaf copies from lower (inclusive) to upper (exclusive); a nil

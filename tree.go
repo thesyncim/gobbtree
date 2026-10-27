@@ -478,50 +478,80 @@ func (t *treeCore[K, V, O]) PopLast() (K, V, bool) {
 	return k, v, ok
 }
 
-// Scan visits keys in [lower, upper), stopping when visit returns false.
-// Neither visit nor another goroutine may mutate the tree during the scan.
-func (t *treeCore[K, V, O]) Scan(lower, upper K, visit func(K, V) bool) {
-	if t.words != nil {
-		t.words.scan(numericKey[O](lower), numericKey[O](upper), false, func(k, v uint64) bool { return visit(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
-		return
-	}
+// Range iterates the entries with keys in [lower, upper), ascending.
+// Neither the loop body nor another goroutine may mutate the tree meanwhile.
+func (t *treeCore[K, V, O]) Range(lower, upper K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) { t.scan(&lower, &upper, false, yield) }
+}
 
-	if t.root == nil || compareKeys[O](lower, upper) >= 0 {
+// RangeReverse iterates the entries with keys in [lower, upper), descending.
+func (t *treeCore[K, V, O]) RangeReverse(lower, upper K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) { t.scan(&lower, &upper, true, yield) }
+}
+
+// Ascend iterates the entries with keys at or above from, ascending.
+func (t *treeCore[K, V, O]) Ascend(from K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) { t.scan(&from, nil, false, yield) }
+}
+
+// Descend iterates the entries with keys at or below from, descending.
+func (t *treeCore[K, V, O]) Descend(from K) iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		if k, v, ok := t.GetKeyValue(from); ok && !yield(k, v) {
+			return
+		}
+		t.scan(nil, &from, true, yield)
+	}
+}
+
+// scan visits keys in [lower, upper); a nil bound is open.
+func (t *treeCore[K, V, O]) scan(lower, upper *K, reverse bool, visit func(K, V) bool) {
+	if words := t.words; words != nil {
+		low, high, open := uint64(0), uint64(0), upper == nil
+		if lower != nil {
+			low = numericKey[O](*lower)
+		}
+		if upper != nil {
+			high = numericKey[O](*upper)
+		}
+		words.scan(low, high, open, reverse, func(k, v uint64) bool { return visit(decodeWordKey[K](k, words.keyKind), t.wordValue(v)) })
 		return
 	}
-	n := t.root.findLeaf(lower)
-	i := n.lower(lower)
+	if t.root == nil || lower != nil && upper != nil && compareKeys[O](*lower, *upper) >= 0 {
+		return
+	}
+	if reverse {
+		n, i := t.lastLeaf(), 0
+		if upper != nil {
+			n = t.root.findLeaf(*upper)
+			i = n.lower(*upper) - 1
+		} else {
+			i = n.n - 1
+		}
+		for ; n != nil; n = n.leaf.prev {
+			for ; i >= 0; i-- {
+				if lower != nil && compareKeys[O](n.keys[i], *lower) < 0 || !visit(n.keys[i], n.leaf.values[i]) {
+					return
+				}
+			}
+			if n.leaf.prev != nil {
+				i = n.leaf.prev.n - 1
+			}
+		}
+		return
+	}
+	n, i := t.firstLeaf(), 0
+	if lower != nil {
+		n = t.root.findLeaf(*lower)
+		i = n.lower(*lower)
+	}
 	for ; n != nil; n = n.leaf.next {
 		for ; i < n.n; i++ {
-			if compareKeys[O](n.keys[i], upper) >= 0 || !visit(n.keys[i], n.leaf.values[i]) {
+			if upper != nil && compareKeys[O](n.keys[i], *upper) >= 0 || !visit(n.keys[i], n.leaf.values[i]) {
 				return
 			}
 		}
 		i = 0
-	}
-}
-
-// ScanReverse visits the same half-open interval as Scan, in descending order.
-func (t *treeCore[K, V, O]) ScanReverse(lower, upper K, visit func(K, V) bool) {
-	if t.words != nil {
-		t.words.scan(numericKey[O](lower), numericKey[O](upper), true, func(k, v uint64) bool { return visit(decodeWordKey[K](k, t.words.keyKind), t.wordValue(v)) })
-		return
-	}
-
-	if t.root == nil || compareKeys[O](lower, upper) >= 0 {
-		return
-	}
-	n := t.root.findLeaf(upper)
-	i := n.lower(upper) - 1
-	for ; n != nil; n = n.leaf.prev {
-		for ; i >= 0; i-- {
-			if compareKeys[O](n.keys[i], lower) < 0 || !visit(n.keys[i], n.leaf.values[i]) {
-				return
-			}
-		}
-		if n.leaf.prev != nil {
-			i = n.leaf.prev.n - 1
-		}
 	}
 }
 

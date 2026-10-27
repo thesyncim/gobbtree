@@ -21,8 +21,8 @@ type oracleMap[K any] interface {
 	Get(K) (uint64, bool)
 	Len() int
 	Clear()
-	Scan(K, K, func(K, uint64) bool)
-	ScanReverse(K, K, func(K, uint64) bool)
+	Range(K, K) iter.Seq2[K, uint64]
+	RangeReverse(K, K) iter.Seq2[K, uint64]
 	All() iter.Seq2[K, uint64]
 }
 
@@ -73,7 +73,7 @@ func runUpstreamOracle(t *testing.T, tr oracleMap[uint64]) {
 				end = math.MaxUint64
 			}
 			fmt.Fprintf(&input, "R %d %d\n", key, end)
-			tr.Scan(key, end, func(k, v uint64) bool { fmt.Fprintf(&want, "%d:%d,", k, v); return true })
+			visitRange(tr.Range(key, end), func(k, v uint64) bool { fmt.Fprintf(&want, "%d:%d,", k, v); return true })
 			fmt.Fprintln(&want)
 		case 9:
 			end := key + 64
@@ -81,7 +81,7 @@ func runUpstreamOracle(t *testing.T, tr oracleMap[uint64]) {
 				end = math.MaxUint64
 			}
 			fmt.Fprintf(&input, "V %d %d\n", key, end)
-			tr.ScanReverse(key, end, func(k, v uint64) bool { fmt.Fprintf(&want, "%d:%d,", k, v); return true })
+			visitRange(tr.RangeReverse(key, end), func(k, v uint64) bool { fmt.Fprintf(&want, "%d:%d,", k, v); return true })
 			fmt.Fprintln(&want)
 		}
 		if i%3000 == 2999 {
@@ -179,9 +179,9 @@ func runUpstreamOracleStrings(t *testing.T, tr oracleMap[string]) {
 			fmt.Fprintf(&input, "%s %s %s\n", cmd, encode(key), encode(upper))
 			visit := func(k string, v uint64) bool { fmt.Fprintf(&want, "%s:%d,", encode(k), v); return true }
 			if op == 4 {
-				tr.Scan(key, upper, visit)
+				visitRange(tr.Range(key, upper), visit)
 			} else {
-				tr.ScanReverse(key, upper, visit)
+				visitRange(tr.RangeReverse(key, upper), visit)
 			}
 			fmt.Fprintln(&want)
 		}

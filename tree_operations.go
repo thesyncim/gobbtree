@@ -164,3 +164,24 @@ func (t *treeCore[K, V, O]) LoadOrStore(key K, value V) (V, bool) {
 	t.Insert(key, value)
 	return value, false
 }
+
+// Take removes key, returning the stored key and its value, as upstream's
+// remove_entry does.
+func (t *treeCore[K, V, O]) Take(key K) (K, V, bool) {
+	stored, value, ok := t.GetKeyValue(key)
+	if ok {
+		t.Delete(key)
+	}
+	return stored, value, ok
+}
+
+// UpdateOrInsert inserts value if key is absent, and otherwise stores
+// merge(old, value). It returns the old value and whether key was present.
+func (t *treeCore[K, V, O]) UpdateOrInsert(key K, value V, merge func(old, value V) V) (V, bool) {
+	old, ok := t.Get(key)
+	if ok {
+		value = merge(old, value)
+	}
+	t.Insert(key, value)
+	return old, ok
+}

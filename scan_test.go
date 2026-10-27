@@ -2,6 +2,7 @@ package gobbtree
 
 import (
 	"fmt"
+	"iter"
 	"sync"
 	"testing"
 	"time"
@@ -24,11 +25,15 @@ func scanMaps() map[string]func() scanMap {
 				insert: func(i int) { m.Insert(uint64(i), uint64(i)) },
 				delete: func(i int) { m.Delete(uint64(i)) },
 				scan: func(lower, upper int, reverse bool, visit func(int) bool) {
-					f := m.Scan
+					f := m.Range
 					if reverse {
-						f = m.ScanReverse
+						f = m.RangeReverse
 					}
-					f(uint64(lower), uint64(upper), func(k, _ uint64) bool { return visit(int(k)) })
+					for k := range f(uint64(lower), uint64(upper)) {
+						if !visit(int(k)) {
+							return
+						}
+					}
 				},
 				all: func(visit func(int) bool) {
 					for k := range m.All() {
@@ -45,11 +50,15 @@ func scanMaps() map[string]func() scanMap {
 				insert: func(i int) { m.Insert(key(i), [2]int{i}) },
 				delete: func(i int) { m.Delete(key(i)) },
 				scan: func(lower, upper int, reverse bool, visit func(int) bool) {
-					f := m.Scan
+					f := m.Range
 					if reverse {
-						f = m.ScanReverse
+						f = m.RangeReverse
 					}
-					f(key(lower), key(upper), func(k string, _ [2]int) bool { return visit(parse(k)) })
+					for k := range f(key(lower), key(upper)) {
+						if !visit(parse(k)) {
+							return
+						}
+					}
 				},
 				all: func(visit func(int) bool) {
 					for k := range m.All() {
@@ -174,5 +183,14 @@ func TestScanDuringWrites(t *testing.T) {
 			close(stop)
 			writers.Wait()
 		})
+	}
+}
+
+// visitRange feeds an iterator to a callback until it returns false.
+func visitRange[K, V any](seq iter.Seq2[K, V], visit func(K, V) bool) {
+	for k, v := range seq {
+		if !visit(k, v) {
+			return
+		}
 	}
 }

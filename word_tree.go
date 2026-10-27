@@ -768,22 +768,27 @@ func (t *wordTree) end(last bool) uint32 {
 	}
 	return id
 }
-func (t *wordTree) scan(lower, upper uint64, reverse bool, visit func(uint64, uint64) bool) {
-	if t.root == 0 || lower >= upper {
+
+// scan visits keys in [lower, upper), or at or above lower when open.
+func (t *wordTree) scan(lower, upper uint64, open, reverse bool, visit func(uint64, uint64) bool) {
+	if t.root == 0 || !open && lower >= upper {
 		return
 	}
-	key := lower
-	if reverse {
-		key = upper
-	}
-	id := t.leafFor(key)
-	n := t.node(id)
-	i := n.lowerEntry(key)
-	if reverse {
-		i--
+	var id uint32
+	var i int
+	switch {
+	case !reverse:
+		id = t.leafFor(lower)
+		i = t.node(id).lowerEntry(lower)
+	case open:
+		id = t.end(true)
+		i = int(t.node(id).n) - 1
+	default:
+		id = t.leafFor(upper)
+		i = t.node(id).lowerEntry(upper) - 1
 	}
 	for id != 0 {
-		n = t.node(id)
+		n := t.node(id)
 		if reverse {
 			for ; i >= 0; i-- {
 				if n.entries()[i].key < lower || !visit(n.entries()[i].key, n.entries()[i].value) {
@@ -796,7 +801,7 @@ func (t *wordTree) scan(lower, upper uint64, reverse bool, visit func(uint64, ui
 			}
 		} else {
 			for ; i < int(n.n); i++ {
-				if n.entries()[i].key >= upper || !visit(n.entries()[i].key, n.entries()[i].value) {
+				if !open && n.entries()[i].key >= upper || !visit(n.entries()[i].key, n.entries()[i].value) {
 					return
 				}
 			}

@@ -300,14 +300,14 @@ func TestRangesBatchesAndOwnership(t *testing.T) {
 	}
 	for _, bounds := range [][2]int{{-5, 0}, {-5, 90}, {15, 33}, {16, 32}, {319, 811}, {4990, 6000}, {9, 9}, {8, 4}} {
 		var got, rev []int
-		tr.Scan(bounds[0], bounds[1], func(k, v int) bool {
+		visitRange(tr.Range(bounds[0], bounds[1]), func(k, v int) bool {
 			if v != k*2 {
 				t.Fatal("value")
 			}
 			got = append(got, k)
 			return true
 		})
-		tr.ScanReverse(bounds[0], bounds[1], func(k, v int) bool { rev = append(rev, k); return true })
+		visitRange(tr.RangeReverse(bounds[0], bounds[1]), func(k, v int) bool { rev = append(rev, k); return true })
 		var want []int
 		for i := max(0, bounds[0]); i < min(5000, bounds[1]); i++ {
 			want = append(want, i)
@@ -321,7 +321,7 @@ func TestRangesBatchesAndOwnership(t *testing.T) {
 		}
 	}
 	calls := 0
-	tr.Scan(0, 5000, func(k, v int) bool { calls++; return false })
+	visitRange(tr.Range(0, 5000), func(k, v int) bool { calls++; return false })
 	if calls != 1 {
 		t.Fatal(calls)
 	}
@@ -458,8 +458,8 @@ func TestSteadyStateAllocations(t *testing.T) {
 		"tree churn": func() { tr.Delete(500); tr.Insert(500, 2) },
 		"map churn":  func() { m.Delete(500); m.Insert(500, 2) },
 		"tree batch": func() { tr.GetMany(queries, dst) }, "map batch": func() { m.GetMany(queries, dst) },
-		"tree scan": func() { tr.Scan(300, 340, func(k, v uint64) bool { return true }) },
-		"map scan":  func() { m.Scan(300, 340, func(k, v uint64) bool { return true }) },
+		"tree scan": func() { visitRange(tr.Range(300, 340), func(k, v uint64) bool { return true }) },
+		"map scan":  func() { visitRange(m.Range(300, 340), func(k, v uint64) bool { return true }) },
 	} {
 		if n := testing.AllocsPerRun(100, call); n != 0 {
 			t.Errorf("%s: %v allocations", name, n)

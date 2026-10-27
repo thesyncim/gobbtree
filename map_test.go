@@ -128,7 +128,7 @@ func TestConcurrentReadsScansAndStructure(t *testing.T) {
 				m.Get(round)
 				m.GetMany([]int{0, 9, 1500, 3999}, dst)
 				previous := -1
-				m.Scan(0, 4000, func(k, v int) bool {
+				visitRange(m.Range(0, 4000), func(k, v int) bool {
 					if k <= previous || k != v {
 						t.Error("invalid concurrent scan")
 					}
@@ -136,7 +136,7 @@ func TestConcurrentReadsScansAndStructure(t *testing.T) {
 					return k < 150
 				})
 				previous = 4001
-				m.ScanReverse(0, 4000, func(k, v int) bool {
+				visitRange(m.RangeReverse(0, 4000), func(k, v int) bool {
 					if k >= previous || k != v {
 						t.Error("invalid concurrent reverse")
 					}
@@ -184,7 +184,7 @@ func TestMapCallbacksAndBatch(t *testing.T) {
 		func() { m.Update("b", func(int) int { panic("test") }) },
 		func() { m.UpdateOrInsert("b", 1, func(int, int) int { panic("test") }) },
 		func() { m.DeleteIf("b", func(int) bool { panic("test") }) },
-		func() { m.Scan("a", "z", func(string, int) bool { panic("test") }) },
+		func() { visitRange(m.Range("a", "z"), func(string, int) bool { panic("test") }) },
 		func() {
 			for range m.All() {
 				panic("test")
