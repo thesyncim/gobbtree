@@ -144,7 +144,7 @@ The kernel is chosen at run time. `gobbtree.SIMD()` reports the choice, and `GOD
 
 ## Benchmarks
 
-Go 1.27.3 with `GOEXPERIMENT=simd` against the Rust original (1.97.1, native CPU tuning, full LTO, mimalloc) on an Apple M4 Max. Sources: [Go `e456e10`](https://github.com/thesyncim/gobbtree/commit/e456e10653b71fa1c80cebe467649bbf63baa6c7), [Rust `8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). `uint64` keys and values; medians of three fresh-process runs over identical datasets, with checked results.
+Go 1.27.3 with `GOEXPERIMENT=simd` against the Rust original (1.97.1, native CPU tuning, full LTO, mimalloc) on an Apple M4 Max. Sources: [Go `ce67381`](https://github.com/thesyncim/gobbtree/commit/ce67381d0705115202ef246bf5b5de01db4ad00b), [Rust `8adae97`](https://github.com/XiangpengHao/bbtree/tree/8adae97a0ed97e5c98fa2790312eb0aec9719846). `uint64` keys and values; medians of three fresh-process runs over identical datasets, with checked results.
 
 ![Change in Go operation time versus Rust across four sizes and multiple workloads](benchmarks/cpu-arm64.svg)
 
@@ -157,27 +157,27 @@ Each cell is the **change in Go time versus Rust**: negative means Go is faster;
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 10.67 / 12.96 | 16.96 / 24.95 | 55.01 / 98.06 | 97.20 / 133.91 |
-| Read miss | 10.99 / 12.31 | 15.17 / 23.64 | 42.93 / 89.22 | 79.73 / 128.53 |
-| Batch hit · 8 keys | 10.42 / 12.69 | 14.30 / 23.62 | 42.90 / 60.35 | 69.58 / 84.37 |
-| Batch miss · 8 keys | 10.26 / 12.37 | 13.35 / 21.27 | 36.85 / 50.16 | 60.66 / 70.61 |
-| Replace value | 16.31 / 13.37 | 27.73 / 27.98 | 116.55 / 102.10 | 176.00 / 149.35 |
-| Delete + reinsert same key | 46.69 / 79.12 | 74.56 / 123.84 | 218.00 / 298.02 | 381.92 / 395.92 |
-| Delete + insert new key | 91.07 / 102.32 | 131.42 / 163.34 | 327.87 / 436.94 | 595.17 / 652.68 |
+| Read hit | 10.32 / 12.50 | 15.89 / 23.94 | 46.83 / 87.78 | 76.46 / 112.46 |
+| Read miss | 10.39 / 11.89 | 14.58 / 22.67 | 32.70 / 71.92 | 60.97 / 107.95 |
+| Batch hit · 8 keys | 10.07 / 12.35 | 13.51 / 22.69 | 35.70 / 55.14 | 56.29 / 66.86 |
+| Batch miss · 8 keys | 10.00 / 12.00 | 12.75 / 20.41 | 27.72 / 42.93 | 49.75 / 55.70 |
+| Replace value | 15.75 / 13.01 | 26.23 / 26.88 | 84.71 / 94.92 | 153.35 / 112.85 |
+| Delete + reinsert same key | 45.04 / 74.42 | 69.06 / 114.35 | 163.42 / 256.36 | 289.04 / 337.38 |
+| Delete + insert new key | 88.21 / 95.81 | 120.79 / 149.56 | 266.48 / 376.26 | 463.95 / 522.03 |
 
 **Map**
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 9.21 / 14.06 | 14.75 / 28.46 | 69.64 / 97.18 | 109.66 / 129.29 |
-| Read miss | 9.16 / 12.80 | 13.20 / 25.23 | 53.35 / 76.62 | 85.86 / 121.06 |
-| Batch hit · 8 keys | 8.81 / 14.02 | 13.57 / 23.92 | 56.00 / 61.48 | 87.10 / 84.50 |
-| Batch miss · 8 keys | 9.07 / 12.85 | 11.91 / 21.30 | 44.89 / 51.68 | 74.63 / 73.00 |
-| Replace value | 17.46 / 15.09 | 33.80 / 31.66 | 119.37 / 121.99 | 161.73 / 170.42 |
-| Delete + reinsert same key | 84.99 / 77.86 | 119.79 / 121.99 | 292.22 / 291.87 | 444.40 / 399.79 |
-| Delete + insert new key | 121.31 / 107.50 | 165.14 / 161.39 | 433.46 / 430.02 | 693.46 / 624.74 |
-| 4 workers · reads | 2.40 / 4.69 | 3.68 / 7.47 | 17.63 / 25.15 | 25.70 / 34.03 |
-| 4 workers · 10% writes | 7.07 / 6.51 | 6.00 / 9.26 | 20.51 / 27.04 | 28.17 / 37.06 |
+| Read hit | 9.09 / 13.61 | 14.12 / 26.66 | 54.59 / 88.52 | 102.94 / 102.14 |
+| Read miss | 9.38 / 12.35 | 12.75 / 23.85 | 42.10 / 65.37 | 77.30 / 93.64 |
+| Batch hit · 8 keys | 8.61 / 13.48 | 13.16 / 22.70 | 42.82 / 54.12 | 70.90 / 69.04 |
+| Batch miss · 8 keys | 8.58 / 12.42 | 11.82 / 20.43 | 33.33 / 41.23 | 67.43 / 58.21 |
+| Replace value | 16.74 / 14.64 | 29.04 / 28.96 | 92.68 / 109.27 | 148.39 / 145.72 |
+| Delete + reinsert same key | 83.06 / 74.38 | 109.81 / 112.46 | 239.78 / 246.96 | 383.47 / 326.93 |
+| Delete + insert new key | 116.50 / 102.56 | 145.53 / 146.93 | 388.76 / 355.87 | 601.04 / 506.15 |
+| 4 workers · reads | 2.41 / 4.21 | 3.67 / 7.16 | 16.68 / 22.59 | 26.49 / 32.33 |
+| 4 workers · 10% writes | 5.93 / 6.78 | 4.85 / 8.63 | 18.99 / 23.91 | 29.20 / 35.56 |
 
 </details>
 
@@ -192,14 +192,14 @@ Memory is whole-process peak RSS, including the Go runtime, GC headroom and read
 
 | Container | Entries | Peak RSS, MB | After reads, MB | Collected / settled RSS, MB | Build, seconds |
 |---|---:|---:|---:|---:|---:|
-| Tree | 4K | 5.67 / 2.16 | 4.90 / 2.15 | 5.67 / 2.15 | 0.0005 / 0.0003 |
-| Tree | 262K | 12.14 / 9.06 | 11.63 / 9.04 | 12.14 / 9.04 | 0.0300 / 0.0270 |
-| Tree | 5M | 123.52 / 136.48 | 123.45 / 136.46 | 123.52 / 136.46 | 0.7304 / 0.7916 |
-| Tree | 50M | 1,180.73 / 1,347.81 | 1,180.68 / 1,347.80 | 1,180.73 / 1,347.80 | 13.0852 / 13.6610 |
-| Map | 4K | 5.75 / 2.16 | 4.87 / 2.15 | 5.75 / 2.15 | 0.0003 / 0.0003 |
-| Map | 262K | 18.91 / 9.06 | 18.76 / 9.04 | 18.91 / 9.04 | 0.0320 / 0.0303 |
-| Map | 5M | 127.47 / 136.51 | 127.43 / 136.50 | 127.47 / 136.50 | 0.8912 / 0.8220 |
-| Map | 50M | 1,196.23 / 1,348.21 | 1,196.15 / 1,348.19 | 1,196.23 / 1,348.19 | 15.1163 / 14.3175 |
+| Tree | 4K | 5.62 / 2.16 | 4.72 / 2.15 | 5.62 / 2.15 | 0.0004 / 0.0004 |
+| Tree | 262K | 12.12 / 9.06 | 11.70 / 9.04 | 12.12 / 9.04 | 0.0273 / 0.0269 |
+| Tree | 5M | 123.40 / 136.48 | 123.37 / 136.46 | 123.40 / 136.46 | 0.5874 / 0.6409 |
+| Tree | 50M | 1,180.68 / 1,347.81 | 1,180.61 / 1,347.80 | 1,180.68 / 1,347.80 | 10.2088 / 10.8485 |
+| Map | 4K | 5.73 / 2.16 | 4.92 / 2.15 | 5.73 / 2.15 | 0.0005 / 0.0004 |
+| Map | 262K | 18.89 / 9.06 | 18.74 / 9.04 | 18.89 / 9.04 | 0.0317 / 0.0236 |
+| Map | 5M | 127.48 / 136.51 | 127.43 / 136.50 | 127.48 / 136.50 | 0.6912 / 0.6462 |
+| Map | 50M | 1,196.15 / 1,348.21 | 1,196.13 / 1,348.19 | 1,196.15 / 1,348.19 | 11.9244 / 10.9468 |
 
 </details>
 
@@ -207,7 +207,7 @@ Small gaps are within run-to-run noise. The [raw report](benchmarks/arm64-2026-1
 
 ## Reproducing the benchmarks
 
-To reproduce, use source checkpoint `e456e10` and build both drivers:
+To reproduce, use source checkpoint `ce67381` and build both drivers:
 
 ```sh
 GOEXPERIMENT=simd go build -o compare-go ./cmd/compare
