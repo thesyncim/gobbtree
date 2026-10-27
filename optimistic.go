@@ -33,6 +33,12 @@ func (n *node[K, V, O]) advanceSequence() {
 	n.image.Load().valid.Store(sequence&1 == 0)
 }
 
+type textImage[K any, V any, O keyOrder[K]] struct {
+	image searchImage[K, V, O]
+	codes [nodeSize]uint64
+	keys  [nodeSize]K
+}
+
 // SIMD reads immutable tags and routing columns. Paired leaf keys and values
 // are atomic; image validity and the structural epoch validate each read.
 func (n *node[K, V, O]) publish() { n.publishFrom(0) }
@@ -56,11 +62,21 @@ func (n *node[K, V, O]) publishFrom(first int) {
 	if old := n.image.Load(); old != nil && old.valid.Load() {
 		old.valid.Store(false)
 	}
-	image := &searchImage[K, V, O]{n: n.n, prefix: n.prefix, prefixHead: n.prefixHead, strings: n.strings, leaf: n.leaf, readEdges: n.readEdges}
-	if n.leaf == nil || n.leaf.pairs == nil {
-		image.codes = new([nodeSize]uint64)
-		*image.codes = n.codes
+	var image *searchImage[K, V, O]
+	if n.strings {
+		// One allocation carries a textual image and the columns it copies.
+		block := &textImage[K, V, O]{codes: n.codes, keys: n.keys}
+		image = &block.image
+		image.codes, image.keys = &block.codes, &block.keys
+	} else {
+		image = new(searchImage[K, V, O])
+		if n.leaf == nil || n.leaf.pairs == nil {
+			image.codes = new([nodeSize]uint64)
+			*image.codes = n.codes
+		}
 	}
+	image.n, image.prefix, image.prefixHead, image.strings = n.n, n.prefix, n.prefixHead, n.strings
+	image.leaf, image.readEdges = n.leaf, n.readEdges
 	image.compact = n.compact
 	if n.children != nil && n.compact && n.directory == nil {
 		image.highCodes = new([nodeSize]uint32)
@@ -73,10 +89,6 @@ func (n *node[K, V, O]) publishFrom(first int) {
 	if n.directory != nil {
 		image.directory = new([256]uint8)
 		*image.directory = *n.directory
-	}
-	if n.strings {
-		image.keys = new([nodeSize]K)
-		*image.keys = n.keys
 	}
 	if n.children != nil {
 		for i := 0; i < n.n; i++ {
