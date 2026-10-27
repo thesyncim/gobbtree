@@ -118,37 +118,42 @@ func (n *node[K, V, O]) lowerSearch(s *keySearch[K, O]) (int, bool) {
 	if c > 0 {
 		return n.n, false
 	}
-	return lowerTied[O](&n.keys, &n.codes, n.n, s, code)
+	return lowerTied[O](&n.keys, &n.codes, n.n, s, code, n.prefix+8)
 }
 
 // lowerTied finds key's position from its window code. Usually one entry
 // shares the code; full ordering settles ties in truncated windows, and makes
-// zero-padding and total-order floating point semantics exact.
-func lowerTied[O keyOrder[K], K any](keys *[nodeSize]K, codes *[nodeSize]uint64, n int, s *keySearch[K, O], code uint64) (int, bool) {
+// zero-padding and total-order floating point semantics exact. Tied keys'
+// encodings agree on their first equal bytes.
+func lowerTied[O keyOrder[K], K any](keys *[nodeSize]K, codes *[nodeSize]uint64, n int, s *keySearch[K, O], code uint64, equal int) (int, bool) {
 	i := lowerCode(codes, n, code)
 	if i == n || codes[i] != code {
 		return i, false
 	}
-	c := s.compareTied(&keys[i])
+	c := s.compareTied(&keys[i], equal)
 	if c >= 0 {
 		return i, c == 0
 	}
 	lo, hi := i+1, n
 	for lo < hi {
 		mid := int(uint(lo+hi) >> 1)
-		if codes[mid] == code && s.compareTied(&keys[mid]) < 0 {
+		if codes[mid] == code && s.compareTied(&keys[mid], equal) < 0 {
 			lo = mid + 1
 		} else {
 			hi = mid
 		}
 	}
-	return lo, lo < n && codes[lo] == code && s.compareTied(&keys[lo]) == 0
+	return lo, lo < n && codes[lo] == code && s.compareTied(&keys[lo], equal) == 0
 }
 
-// compareTied orders a stored key whose window ties the search key's.
-func (s *keySearch[K, O]) compareTied(stored *K) int {
+// compareTied orders a stored key whose window ties the search key's, their
+// encodings agreeing on their first equal bytes. Byte strings compare from
+// there, as upstream's cmp_from does.
+func (s *keySearch[K, O]) compareTied(stored *K, equal int) int {
 	if s.direct {
-		return strings.Compare(textView(stored), textView(&s.key))
+		x, y := textView(stored), textView(&s.key)
+		equal = min(equal, len(x), len(y))
+		return strings.Compare(x[equal:], y[equal:])
 	}
 	var o O
 	return o.compare(*stored, s.key)

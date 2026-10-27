@@ -3,6 +3,7 @@ package gobbtree
 import (
 	"fmt"
 	"iter"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"path/filepath"
@@ -185,5 +186,41 @@ func TestExtractIfBounds(t *testing.T) {
 
 func drain[K, V any](seq iter.Seq2[K, V]) {
 	for range seq {
+	}
+}
+
+// Keys over a two-byte alphabet with trailing NULs tie on windows often;
+// comparing past the tied bytes must still order and find them exactly.
+func TestTiedTextKeysCompareFromDifference(t *testing.T) {
+	r := rand.New(rand.NewPCG(9, 9))
+	tree, m := NewTree[string, int](), New[string, int]()
+	bt := NewTreeOf[Bytes, int]()
+	want := map[string]int{}
+	for i := range 4000 {
+		b := make([]byte, r.IntN(40))
+		for j := range b {
+			if r.IntN(3) == 0 {
+				b[j] = 'a'
+			}
+		}
+		tree.Insert(string(b), i)
+		m.Insert(string(b), i)
+		bt.Insert(Bytes(b), i)
+		want[string(b)] = i
+	}
+	keys := slices.Sorted(maps.Keys(want))
+	if got := slices.Collect(keysOf(tree.All())); !slices.Equal(got, keys) {
+		t.Fatal("tree order")
+	}
+	for _, k := range keys {
+		v1, ok1 := tree.Get(k)
+		v2, ok2 := m.Get(k)
+		v3, ok3 := bt.Get(Bytes(k))
+		if !ok1 || !ok2 || !ok3 || v1 != want[k] || v2 != want[k] || v3 != want[k] {
+			t.Fatalf("get %q", k)
+		}
+		if _, ok := tree.Get(k + "\x00"); ok != (want[k+"\x00"] != 0 || slices.Contains(keys, k+"\x00")) {
+			t.Fatalf("padded miss %q", k)
+		}
 	}
 }

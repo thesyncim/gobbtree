@@ -46,7 +46,7 @@ func (n *searchImage[K, V, O]) lowerSearch(s *keySearch[K, O]) (int, bool) {
 	if c > 0 {
 		return n.n, false
 	}
-	return lowerTied[O](n.keys, n.codes, n.n, s, code)
+	return lowerTied[O](n.keys, n.codes, n.n, s, code, n.prefix+8)
 }
 func (n *searchImage[K, V, O]) childIndex(key K) int {
 	s := newKeySearch[O](key)
