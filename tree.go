@@ -138,7 +138,7 @@ func (t *treeCore[K, V, O]) Insert(key K, value V) (V, bool) {
 		if n := words.tail; n != nil && n.next == 0 && n.n > 0 && code > n.entries()[n.n-1].key {
 			if n.n < nodeSize {
 				words.inserted = code
-				n.insertLeafPlain(int(n.n), code, packed)
+				n.appendLeafPlain(code, packed)
 				t.length++
 				var zero V
 				return zero, false

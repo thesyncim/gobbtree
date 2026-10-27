@@ -397,6 +397,14 @@ func (n *wordNode) insertLeafPlain(i int, key, value uint64) {
 	n.n++
 }
 
+// appendLeafPlain adds key after a non-full leaf's entries, shifting none.
+func (n *wordNode) appendLeafPlain(key, value uint64) {
+	count := int(n.n) & (nodeSize - 1)
+	n.entries()[count] = wordEntry{key, value}
+	n.tags[count] = uint8(key)
+	n.n++
+}
+
 func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
 	t.noteInsert(key)
 	if !t.atomicWrites {

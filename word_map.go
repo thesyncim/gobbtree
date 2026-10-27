@@ -381,7 +381,9 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	plain := serial && !m.tree.atomicWrites
 	if n := m.tree.tail; plain && n != nil && n.next == 0 && n.n > 0 && key > n.entries()[n.n-1].key {
 		if n.n < nodeSize {
-			m.tree.insertLeaf(n, int(n.n), key, value)
+			m.tree.insertedShared.Store(key)
+			n.appendLeafPlain(key, value)
+			n.sequence.Store(uint64(n.n) << 1)
 		} else if !m.tree.appendFull(n, key, value) {
 			n = nil
 		}
