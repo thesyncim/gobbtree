@@ -37,7 +37,11 @@ type latchedTree struct {
 	rightmost atomic.Uint32
 	blocks    atomic.Pointer[[]*wordNode]
 	routes    atomic.Pointer[latchedRoutes]
-	pages     latchedPages
+	// Every descent reads the words above; splits and merges write the
+	// pages below. Apart, a page taken costs no other core the line.
+	_        [128 - 24]byte
+	pages    latchedPages
+	starting sync.Mutex
 }
 
 // Leaves and internal nodes below the root are underfull below these sizes,
@@ -52,15 +56,13 @@ const (
 
 // The pages of a latched tree: slabs that never move, and a free list per
 // kind, linked through the directory field, which readers never read.
-// Only splits, merges and a tree's first insert take its lock.
+// Only splits and merges take its lock, to take or give a page.
 type latchedPages struct {
 	mu                sync.Mutex
 	slabs             []*wordNode
 	used              int
 	freeLeaf          uint32
 	freeInner         uint32
-	pendingLeaf       []uint32
-	pendingInner      []uint32
 	littleEndianCount bool
 }
 
@@ -88,35 +90,11 @@ func (t *latchedTree) node(id uint32) *wordNode { return nodeIn(t.dir(), id) }
 // alloc takes a page for a new node of the kind leaf says, off its free list
 // if it can, latched exclusively, waiting for a thread that reached a free
 // page through a stale pointer, which holds it a moment and waits on nothing.
-// The caller holds pages.mu.
+// Only taking the page holds the pages' lock.
 func (t *latchedTree) alloc(leaf bool) (uint32, *wordNode, uint64) {
-	p := &t.pages
-	free := &p.freeInner
-	if leaf {
-		free = &p.freeLeaf
-	}
-	var id uint32
-	if *free != 0 {
-		id = *free
-		*free = t.node(id).directory
-	} else {
-		slab := len(p.slabs) - 1
-		if slab < 0 || p.used == wordSlabSize(slab) {
-			if len(p.slabs) >= (1<<23)-1 {
-				panic("gobbtree: numeric arena exhausted")
-			}
-			nodes := make([]wordNode, wordSlabSize(len(p.slabs)))
-			p.slabs = append(p.slabs, &nodes[0])
-			dir := append([]*wordNode(nil), p.slabs...)
-			t.blocks.Store(&dir)
-			slab, p.used = len(p.slabs)-1, 0
-		}
-		id = uint32(slab)<<8 | uint32(p.used) + 1
-		p.used++
-		if leaf {
-			id |= wordLeafID
-		}
-	}
+	t.pages.mu.Lock()
+	id := t.take(leaf)
+	t.pages.mu.Unlock()
 	n := t.node(id)
 	version := n.lockExclusive()
 	n.directory = 0
@@ -145,36 +123,71 @@ func (t *latchedTree) alloc(leaf bool) (uint32, *wordNode, uint64) {
 	return id, n, version
 }
 
-// free queues a page that the operation holding it freed. It goes on its free
-// list once the operation let go, so that its latch word says it changed:
-// release does that.
-func (t *latchedTree) free(id uint32) {
-	if id&wordLeafID != 0 {
-		t.pages.pendingLeaf = append(t.pages.pendingLeaf, id)
-	} else {
-		t.pages.pendingInner = append(t.pages.pendingInner, id)
+// take is a page for a new node of leaf's kind: off its free list, or the
+// next slot of the arena. The caller holds pages.mu.
+func (t *latchedTree) take(leaf bool) uint32 {
+	p := &t.pages
+	free := &p.freeInner
+	if leaf {
+		free = &p.freeLeaf
 	}
+	var id uint32
+	if *free != 0 {
+		id = *free
+		*free = t.node(id).directory
+	} else {
+		slab := len(p.slabs) - 1
+		if slab < 0 || p.used == wordSlabSize(slab) {
+			if len(p.slabs) >= (1<<23)-1 {
+				panic("gobbtree: numeric arena exhausted")
+			}
+			nodes := make([]wordNode, wordSlabSize(len(p.slabs)))
+			p.slabs = append(p.slabs, &nodes[0])
+			dir := append([]*wordNode(nil), p.slabs...)
+			t.blocks.Store(&dir)
+			slab, p.used = len(p.slabs)-1, 0
+		}
+		id = uint32(slab)<<8 | uint32(p.used) + 1
+		p.used++
+		if leaf {
+			id |= wordLeafID
+		}
+	}
+	return id
 }
 
-// release puts the freed pages on their free lists. The caller holds
-// pages.mu, and has let go of every node.
-func (t *latchedTree) release() {
+// freedPages are the pages one operation freed. They go on their free lists
+// once the operation let go of them, so that their latch words say they
+// changed (upstream's NodePages).
+type freedPages struct {
+	ids [maxDepth + 1]uint32
+	n   int
+}
+
+func (f *freedPages) add(id uint32) { f.ids[f.n] = id; f.n++ }
+
+// release puts freed pages on their free lists. The caller let go of them.
+func (t *latchedTree) release(f *freedPages) {
+	if f.n == 0 {
+		return
+	}
 	p := &t.pages
-	for _, id := range p.pendingLeaf {
-		t.node(id).directory = p.freeLeaf
-		p.freeLeaf = id
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, id := range f.ids[:f.n] {
+		free := &p.freeInner
+		if id&wordLeafID != 0 {
+			free = &p.freeLeaf
+		}
+		t.node(id).directory = *free
+		*free = id
 	}
-	for _, id := range p.pendingInner {
-		t.node(id).directory = p.freeInner
-		p.freeInner = id
-	}
-	p.pendingLeaf, p.pendingInner = p.pendingLeaf[:0], p.pendingInner[:0]
 }
 
 // start makes the tree's root leaf, once: the first insert's.
 func (t *latchedTree) start() {
-	t.pages.mu.Lock()
-	defer t.pages.mu.Unlock()
+	t.starting.Lock()
+	defer t.starting.Unlock()
 	if t.root.Load() != 0 {
 		return
 	}

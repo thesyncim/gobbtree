@@ -1,6 +1,9 @@
 package gobbtree
 
-import "math/bits"
+import (
+	"math/bits"
+	"slices"
+)
 
 // Route hints let a descent skip the levels above a leaf: a table of buckets
 // of the key space, each naming the leaf whose fences hold the whole bucket,
@@ -24,6 +27,8 @@ type latchedRoutes struct {
 	rootCount int
 	base      uint64
 	shift     uint8
+	hashed    bool
+	bits      uint8
 	ids       []uint32
 }
 
@@ -50,10 +55,16 @@ func setLeafFences(n *wordNode, low, high uint64) {
 // holds reports that fences low and high hold key.
 func holds(low, high, key uint64) bool { return low <= key && (high == 0 || key < high) }
 
-// bucket is key's hint slot, or nil outside the table's domain.
+// bucket is key's hint slot, or nil outside the table's domain. A table
+// over a domain no wider than itself indexes regions directly; a sparser
+// one hashes them.
 func (r *latchedRoutes) bucket(key uint64) *uint32 {
-	if index := (key - r.base) >> r.shift; index < uint64(len(r.ids)) {
-		return &r.ids[index]
+	region := (key - r.base) >> r.shift
+	if r.hashed {
+		return &r.ids[region*0x9e3779b97f4a7c15>>(64-r.bits)]
+	}
+	if region < uint64(len(r.ids)) {
+		return &r.ids[region]
 	}
 	return nil
 }
@@ -74,24 +85,29 @@ func jump(dir []*wordNode, id uint32, key uint64) (n *wordNode, version, acc uin
 	return n, version, count ^ low ^ high, count != 0 && holds(low, high, key)
 }
 
-// fillLeaf names leaf id in key's bucket, and the buckets beside it, while
-// its fences hold them whole; false if they don't hold key's.
+// fillLeaf names leaf id in key's bucket, and in a direct table the
+// buckets beside it, while its fences hold them whole; false if they don't
+// hold key's.
 func (r *latchedRoutes) fillLeaf(id uint32, key, low, high uint64) bool {
-	index := (key - r.base) >> r.shift
-	if index >= uint64(len(r.ids)) || !r.within(index, low, high) {
+	slot := r.bucket(key)
+	region := (key - r.base) >> r.shift
+	if slot == nil || !r.within(region, low, high) {
 		return false
 	}
-	r.ids[index] = id
-	for i, n := index, 0; i > 0 && n < 4 && r.within(i-1, low, high); i, n = i-1, n+1 {
-		r.ids[i-1] = id
+	set(slot, id)
+	if r.hashed {
+		return true
 	}
-	for i, n := index+1, 0; i < uint64(len(r.ids)) && n < 4 && r.within(i, low, high); i, n = i+1, n+1 {
-		r.ids[i] = id
+	for i, n := region, 0; i > 0 && n < 4 && r.within(i-1, low, high); i, n = i-1, n+1 {
+		set(&r.ids[i-1], id)
+	}
+	for i, n := region+1, 0; i < uint64(len(r.ids)) && n < 4 && r.within(i, low, high); i, n = i+1, n+1 {
+		set(&r.ids[i], id)
 	}
 	return true
 }
 
-// within reports that fences low and high hold bucket i whole.
+// within reports that fences low and high hold region i whole.
 func (r *latchedRoutes) within(i, low, high uint64) bool {
 	start := r.base + i<<r.shift
 	end := start + (uint64(1)<<r.shift - 1)
@@ -99,19 +115,29 @@ func (r *latchedRoutes) within(i, low, high uint64) bool {
 }
 
 // fill names node id, a leaf parent with fences low and high, in key's
-// bucket if they hold it whole.
+// bucket if they hold its region whole.
 func (r *latchedRoutes) fill(id uint32, key, low, high uint64) {
-	index := (key - r.base) >> r.shift
-	if index >= uint64(len(r.ids)) || !r.within(index, low, high) {
-		return
+	if slot := r.bucket(key); slot != nil && r.within((key-r.base)>>r.shift, low, high) {
+		set(slot, id)
 	}
-	r.ids[index] = id
+}
+
+// set names id in a slot, writing only a change: every core reads the
+// table, so a store of what is there already costs each of them its line.
+func set(slot *uint32, id uint32) {
+	if *slot != id {
+		*slot = id
+	}
 }
 
 // refreshRoutes makes a hint table for the current root when there is none,
-// or the root changed or doubled its children since: about four buckets
-// for every leaf, from the root's separators. The tree
-// needs internal nodes above its leaf parents for hints to skip any.
+// or the root changed or doubled its children since. Its regions are about
+// a 32nd of a leaf's span, the median gap between separators of a few
+// leaf parents, so most fit in one leaf whatever the keys' distribution;
+// about 32 regions a leaf fit in the table. A domain, the root's
+// separators' span, that holds no more regions than that is indexed
+// directly; a sparse one, such as clustered keys', is hashed. The tree needs
+// internal nodes above its leaf parents for hints to skip any.
 func (t *latchedTree) refreshRoutes(dir []*wordNode) *latchedRoutes {
 	rootID := t.root.Load()
 	root := nodeIn(dir, rootID)
@@ -140,15 +166,53 @@ func (t *latchedTree) refreshRoutes(dir []*wordNode) *latchedRoutes {
 		t.routes.Store(r)
 		return r
 	}
-	parents := count << (4 * (level - 2))
-	buckets := min(max(bits.Len(uint(parents*320-1)), 8), 22)
-	width := bits.Len64(lo ^ hi)
-	base := lo &^ (uint64(1)<<width - 1)
-	if width == 64 {
-		base = 0
+	span := sampleLeafSpan(dir, root, count)
+	if span == 0 {
+		return nil
 	}
-	shift := max(width-buckets, 0)
-	r := &latchedRoutes{root: rootID, rootCount: count, base: base, shift: uint8(shift), ids: make([]uint32, 1<<min(buckets, width))}
+	parents := count << (4 * (level - 2))
+	tableBits := min(max(bits.Len(uint(parents*20*32-1)), 8), 22)
+	shift := max(bits.Len64(span)-5, 0)
+	width := bits.Len64(lo ^ hi)
+	r := &latchedRoutes{root: rootID, rootCount: count, shift: uint8(shift)}
+	if width-shift <= tableBits {
+		// Few enough regions to index directly.
+		r.base = lo &^ (uint64(1)<<width - 1)
+		r.ids = make([]uint32, 1<<max(width-shift, 0))
+	} else {
+		// Keys fill a hashed table's regions, so it takes fewer, wider
+		// ones, about six a leaf, in 32 slots a leaf, to collide less.
+		r.shift = uint8(max(bits.Len64(span)-3, 0))
+		r.hashed, r.bits = true, uint8(tableBits)
+		r.ids = make([]uint32, 1<<r.bits)
+	}
 	t.routes.Store(r)
 	return r
+}
+
+// sampleLeafSpan estimates a leaf's span: the median gap between
+// neighboring separators of leaf parents under a few of the root's
+// children. Its reads race writers; a heuristic needs no check.
+func sampleLeafSpan(dir []*wordNode, root *wordNode, count int) uint64 {
+	var gaps []uint64
+	for j := 0; j < count && len(gaps) < 256; j += max(count/8, 1) {
+		n := nodeIn(dir, root.inner().children[j&(nodeSize-1)])
+		for depth := 0; n != nil && !n.leaf && depth < maxDepth; depth++ {
+			child := n.inner().children[0]
+			if child&wordLeafID != 0 {
+				for i := 1; i+1 < min(int(n.n), nodeSize); i++ {
+					if gap := n.keys[i+1] - n.keys[i]; n.keys[i+1] > n.keys[i] {
+						gaps = append(gaps, gap)
+					}
+				}
+				break
+			}
+			n = nodeIn(dir, child)
+		}
+	}
+	if len(gaps) == 0 {
+		return 0
+	}
+	slices.Sort(gaps)
+	return gaps[len(gaps)/2]
 }

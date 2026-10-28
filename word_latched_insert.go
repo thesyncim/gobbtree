@@ -119,7 +119,6 @@ func loadEntryKeyRacing(n *wordNode, i int) uint64 {
 // keeping the internal nodes it goes through, and splits, until no other
 // thread holds a node the split needs.
 func (t *latchedTree) insertSplitting(key, value uint64, policy int, merge func(key, old, value uint64) uint64) (uint64, bool) {
-	var b backoff
 	for {
 		var path treePath
 		leaf, leafID, version := t.descend(key, exclusive, &path)
@@ -132,7 +131,9 @@ func (t *latchedTree) insertSplitting(key, value uint64, policy int, merge func(
 			return 0, false
 		}
 		leaf.unlockExclusive(version)
-		b.spin()
+		// Another thread holds a node the split needs: wait a moment, as
+		// upstream's Interleaving::wait(1).
+		spinWait()
 	}
 }
 
@@ -261,7 +262,6 @@ func (t *latchedTree) split(path *treePath, leaf *wordNode, leafID uint32, leafV
 		}
 	}
 
-	t.pages.mu.Lock()
 	var fresh heldNodes
 	rightID, right, version := t.alloc(true)
 	fresh.push(right, version)
@@ -312,7 +312,6 @@ func (t *latchedTree) split(path *treePath, leaf *wordNode, leafID uint32, leafV
 		insertChildFit(root, 1, separator, carried)
 		t.root.Store(rootID)
 	}
-	t.pages.mu.Unlock()
 	held.unlock()
 	leaf.unlockExclusive(leafVersion)
 	fresh.unlock()

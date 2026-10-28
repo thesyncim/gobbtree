@@ -21,14 +21,14 @@ func (t *latchedTree) remove(which int, key uint64, condition func(key, value ui
 	if done {
 		return k, v, removed
 	}
-	var b backoff
 	for {
 		k, v, removed, done := t.removeRebalancing(which, key, condition)
 		if done {
 			return k, v, removed
 		}
-		// Another thread holds a node the removal needs.
-		b.spin()
+		// Another thread holds a node the removal needs: wait a moment,
+		// as upstream's Interleaving::wait(1).
+		spinWait()
 	}
 }
 
@@ -119,13 +119,12 @@ func (t *latchedTree) removeRebalancing(which int, key uint64, condition func(ke
 	if !ok {
 		return 0, 0, false, false
 	}
-	t.pages.mu.Lock()
-	defer t.pages.mu.Unlock()
+	var freed freedPages
 	removeAt(leaf, i)
 	depth := path.depth
 	for fix := 0; fix < fixes; fix++ {
 		level := path.levels[depth-1-fix]
-		t.fixUnderfullChild(level.n, level.edge, fix == 0)
+		t.fixUnderfullChild(level.n, level.edge, fix == 0, &freed)
 	}
 	if fixes == depth && depth > 0 {
 		// The root lost a separator; one without any is popped.
@@ -134,14 +133,14 @@ func (t *latchedTree) removeRebalancing(which int, key uint64, condition func(ke
 			// A freed node holds no children, so that a route that
 			// reaches it through a stale hint starts over.
 			storeCountRacing(root, 0)
-			t.free(path.levels[0].id)
+			freed.add(path.levels[0].id)
 		}
 	}
 	// Let go first, so that every freed page's latch word says it changed.
 	held.unlock()
 	leaf.unlockExclusive(version)
 	released = true
-	t.release()
+	t.release(&freed)
 	return k, v, true, true
 }
 
@@ -199,7 +198,7 @@ func fitMerged(left, right int) bool { return left+right <= nodeSize }
 // minimum (D22): it merges the child with its fixing sibling when both fit
 // in one node, and otherwise moves one entry over from the sibling. Only a
 // merge takes a separator from the parent. Every node it changes is held.
-func (t *latchedTree) fixUnderfullChild(parent *wordNode, index int, leaves bool) {
+func (t *latchedTree) fixUnderfullChild(parent *wordNode, index int, leaves bool, freed *freedPages) {
 	children := &parent.inner().children
 	sibling := fixingSibling(index)
 	child, other := t.node(children[index]), t.node(children[sibling])
@@ -218,7 +217,7 @@ func (t *latchedTree) fixUnderfullChild(parent *wordNode, index int, leaves bool
 			setHighFence(l, highFence(r))
 		}
 		removeChild(parent, right)
-		t.free(rightID)
+		freed.add(rightID)
 		return
 	}
 	switch {
