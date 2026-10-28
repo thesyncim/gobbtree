@@ -42,16 +42,15 @@ func linearizable(history []historyOperation) bool {
 			case 1:
 				next[op.key] = Result[int]{}
 			case 3:
-				expected = Result[int]{}
-				next = [2]Result[int]{}
+				next[op.key] = Result[int]{}
 			case 4:
-				count := 0
+				empty := 1
 				for _, entry := range state {
 					if entry.OK {
-						count++
+						empty = 0
 					}
 				}
-				expected = Result[int]{count, true}
+				expected = Result[int]{empty, true}
 			case 5:
 				if expected.OK {
 					expected.Value++
@@ -96,9 +95,12 @@ func TestConcurrentLinearizability(t *testing.T) {
 					case 2:
 						op.result.Value, op.result.OK = m.Get(op.key)
 					case 3:
-						m.Clear()
+						_, op.result.Value, op.result.OK = m.DeleteIf(op.key, func(int, int) bool { return true })
 					case 4:
-						op.result = Result[int]{m.Len(), true}
+						op.result = Result[int]{0, true}
+						if m.IsEmpty() {
+							op.result.Value = 1
+						}
 					case 5:
 						op.result.Value, op.result.OK = m.Update(op.key, func(_, v int) int { return v + 1 })
 					case 6:

@@ -170,7 +170,7 @@ func TestTakeReturnsStoredKey(t *testing.T) {
 	if k, v, ok := tr.Take("BOB"); !ok || k != "Bob" || v != 1 || tr.Len() != 0 {
 		t.Fatalf("tree take %q %d %v", k, v, ok)
 	}
-	if k, v, ok := m.Take("bob"); !ok || k != "Bob" || v != 1 || m.Len() != 0 {
+	if k, v, ok := m.Take("bob"); !ok || k != "Bob" || v != 1 || seqLen(m.All()) != 0 {
 		t.Fatalf("map take %q %d %v", k, v, ok)
 	}
 	if _, _, ok := m.Take("bob"); ok {
@@ -178,7 +178,7 @@ func TestTakeReturnsStoredKey(t *testing.T) {
 	}
 	n := New[uint64, uint64]()
 	n.Insert(7, 70)
-	if k, v, ok := n.Take(7); !ok || k != 7 || v != 70 || n.Len() != 0 {
+	if k, v, ok := n.Take(7); !ok || k != 7 || v != 70 || seqLen(n.All()) != 0 {
 		t.Fatalf("numeric take %d %d %v", k, v, ok)
 	}
 }
@@ -200,7 +200,7 @@ func TestTreeUpdateOrInsert(t *testing.T) {
 // parityOps is the common surface of Tree and Map for the parity helpers.
 type parityOps[K comparable] interface {
 	Get(K) (int, bool)
-	Len() int
+	All() iter.Seq2[K, int]
 	InsertAll(iter.Seq2[K, int])
 	UpdateRange(b Bounds[K], change func(K, int) int)
 	UpdateAll(change func(K, int) int)
@@ -216,8 +216,8 @@ func checkParityOps[K comparable](t *testing.T, c parityOps[K], key func(int) K)
 			}
 		}
 	})
-	if c.Len() != 1000 {
-		t.Fatalf("InsertAll len %d", c.Len())
+	if seqLen(c.All()) != 1000 {
+		t.Fatalf("InsertAll len %d", seqLen(c.All()))
 	}
 	c.UpdateRange(Between(key(100), key(200)), func(_ K, v int) int { return v + 1000 })
 	c.UpdateAll(func(_ K, v int) int { return v * 2 })

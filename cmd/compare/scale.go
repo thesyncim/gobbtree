@@ -260,7 +260,7 @@ func scale(target any, name string, workers, ops int, queries []uint64, size uin
 		state += scaleState(k, v)
 		count++
 	}
-	if count != int(size) || ordered != nil && ordered.Len() != int(size) {
+	if count != int(size) {
 		panic(fmt.Sprintf("scale %s final count %d, want %d", name, count, size))
 	}
 	if state != want {

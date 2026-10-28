@@ -94,7 +94,10 @@ func TestPublishedRoutesConcurrentRebuild(t *testing.T) {
 			m.Delete(k)
 			m.Insert(k, k^12345)
 		}
-		m.Clear()
+		// Clear is the owner's; readers run, so remove every key instead.
+		for i := 0; i < size; i++ {
+			m.Delete(mixedKey(uint64(i)))
+		}
 		for i := size - 1; i >= 0; i-- {
 			k := mixedKey(uint64(i))
 			m.Insert(k, k^12345)

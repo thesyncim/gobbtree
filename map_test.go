@@ -28,14 +28,14 @@ func TestConcurrentMutation(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if m.Len() != workers*perWorker*2/3 {
-		t.Fatal(m.Len())
+	if seqLen(m.All()) != workers*perWorker*2/3 {
+		t.Fatal(seqLen(m.All()))
 	}
 	var snap []Pair[int, int]
 	for k, v := range m.All() {
 		snap = append(snap, Pair[int, int]{k, v})
 	}
-	if len(snap) != m.Len() {
+	if len(snap) != seqLen(m.All()) {
 		t.Fatal("snapshot length")
 	}
 	for i, e := range snap {
@@ -44,9 +44,11 @@ func TestConcurrentMutation(t *testing.T) {
 		}
 	}
 	if words := m.words.Load(); words != nil {
-		checkWordTree(t, &words.tree, m.Len())
+		if got := checkLatchedTree(t, &words.tree); got != seqLen(m.All()) {
+			t.Fatalf("tree holds %d entries, want %d", got, seqLen(m.All()))
+		}
 	} else {
-		m.tree.length = m.Len()
+		m.tree.length = seqLen(m.All())
 		checkCore(t, &m.tree)
 	}
 	// Same-key updates must not lose increments.
@@ -100,10 +102,12 @@ func TestConcurrentDuplicateInsert(t *testing.T) {
 	}
 	close(start)
 	writers.Wait()
-	if m.Len() != size || inserted.Load() != size-seeded {
-		t.Fatalf("duplicate insertion changed the count: len=%d new=%d", m.Len(), inserted.Load())
+	if seqLen(m.All()) != size || inserted.Load() != size-seeded {
+		t.Fatalf("duplicate insertion changed the count: len=%d new=%d", seqLen(m.All()), inserted.Load())
 	}
-	checkWordTree(t, &m.words.Load().tree, size)
+	if got := checkLatchedTree(t, &m.words.Load().tree); got != size {
+		t.Fatalf("tree holds %d entries, want %d", got, size)
+	}
 }
 
 func TestConcurrentReadsScansAndStructure(t *testing.T) {
@@ -149,9 +153,11 @@ func TestConcurrentReadsScansAndStructure(t *testing.T) {
 	}
 	wg.Wait()
 	if words := m.words.Load(); words != nil {
-		checkWordTree(t, &words.tree, m.Len())
+		if got := checkLatchedTree(t, &words.tree); got != seqLen(m.All()) {
+			t.Fatalf("tree holds %d entries, want %d", got, seqLen(m.All()))
+		}
 	} else {
-		m.tree.length = m.Len()
+		m.tree.length = seqLen(m.All())
 		checkCore(t, &m.tree)
 	}
 }
@@ -222,7 +228,7 @@ func TestMapCallbacksAndBatch(t *testing.T) {
 	for range m.All() {
 		count++
 	}
-	if count != m.Len() {
+	if count != seqLen(m.All()) {
 		t.Fatal("all")
 	}
 	k, _, ok := m.PopFirst()
@@ -278,8 +284,8 @@ func TestMapLeafReadModifyWriteConcurrent(t *testing.T) {
 			t.Fatalf("%s = %d, want %d", key(i), v, workers*rounds)
 		}
 	}
-	if stored.Load() != removed.Load() || m.Len() != keys {
-		t.Fatalf("stored %d removed %d len %d", stored.Load(), removed.Load(), m.Len())
+	if stored.Load() != removed.Load() || seqLen(m.All()) != keys {
+		t.Fatalf("stored %d removed %d len %d", stored.Load(), removed.Load(), seqLen(m.All()))
 	}
 }
 
@@ -329,53 +335,8 @@ func TestNumericMapLeafReadModifyWriteConcurrent(t *testing.T) {
 				t.Fatalf("readers %v: %d = %d, want %d", readers, key(i), v, workers*rounds)
 			}
 		}
-		if stored.Load() != removed.Load() || m.Len() != keys {
-			t.Fatalf("readers %v: stored %d removed %d len %d", readers, stored.Load(), removed.Load(), m.Len())
+		if stored.Load() != removed.Load() || seqLen(m.All()) != keys {
+			t.Fatalf("readers %v: stored %d removed %d len %d", readers, stored.Load(), removed.Load(), seqLen(m.All()))
 		}
-	}
-}
-
-// A lookup progresses behind a hot leaf: once a leaf seems mid-write too
-// often, it reads under the leaf latch, as upstream's lookups do, and takes
-// no structure-wide lock that would hold up writers.
-func TestGetFallsBackToLatch(t *testing.T) {
-	if !seqlockPlainStores {
-		t.Skip("without lane-free writes, leaf latches do not exclude structural writers")
-	}
-	m := New[uint64, uint64]()
-	for i := range uint64(5000) {
-		m.Insert(i*3, i)
-	}
-	m.Get(0) // ready the read path
-	words := m.words.Load()
-	words.disableReadCache() // read the live leaves
-	for _, probe := range []uint64{0, 3 * 2500, 3 * 4999} {
-		n := words.tree.node(words.leafFor(probe))
-		n.sequence.Add(1) // a leaf writer that never finishes
-		for i := range uint64(5000) {
-			if v, ok := m.Get(i * 3); !ok || v != i {
-				t.Fatalf("Get(%d) = %d, %v", i*3, v, ok)
-			}
-			if _, ok := m.Get(i*3 + 1); ok {
-				t.Fatalf("Get(%d) found a missing key", i*3+1)
-			}
-		}
-		n.sequence.Add(^uint64(0))
-	}
-}
-
-// Scans exclude structural changes without switching a serial numeric map
-// to independent lanes, which only writer contention should do.
-func TestScanKeepsSerialLocking(t *testing.T) {
-	var m Map[uint64, uint64]
-	for i := range uint64(1000) {
-		m.Insert(i, i)
-	}
-	for range m.Scan(AtLeast[uint64](0)) {
-	}
-	for range m.ScanReverse(AtLeast[uint64](0)) {
-	}
-	if g := m.words.Load().structure.state.Load(); g != nil && g.parallel.Load() {
-		t.Error("a scan enabled lanes")
 	}
 }

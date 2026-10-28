@@ -238,8 +238,8 @@ func soakMap(t *testing.T, pattern string, duration time.Duration) {
 		for _, model := range models {
 			want += len(model)
 		}
-		if m.Len() != want {
-			fail("%s checkpoint %d: Len %d, models hold %d", pattern, checkpoints, m.Len(), want)
+		if seqLen(m.All()) != want {
+			fail("%s checkpoint %d: Len %d, models hold %d", pattern, checkpoints, seqLen(m.All()), want)
 		}
 		seen, prev, first := 0, uint64(0), true
 		for k, v := range m.All() {
@@ -266,7 +266,7 @@ func soakMap(t *testing.T, pattern string, duration time.Duration) {
 	for f := range failures {
 		t.Error(f)
 	}
-	t.Logf("%s: %d operations, %d checkpoints, %d keys at the end", pattern, ops.Load(), checkpoints, m.Len())
+	t.Logf("%s: %d operations, %d checkpoints, %d keys at the end", pattern, ops.Load(), checkpoints, seqLen(m.All()))
 }
 
 // soakOwner is the writer that owns key: the low byte of its index under

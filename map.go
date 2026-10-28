@@ -33,16 +33,23 @@ type mapCore[K any, V any, O keyOrder[K]] struct {
 // New creates an empty concurrent ordered map.
 func New[K cmp.Ordered, V any]() *Map[K, V] { return new(Map[K, V]) }
 
-// Len returns the number of entries. While other goroutines write, it may
-// count each of their writes as done or not yet done, independently.
-func (m *mapCore[K, V, O]) Len() int      { return int(m.count.Load()) }
-func (m *mapCore[K, V, O]) IsEmpty() bool { return m.count.Load() == 0 }
+// IsEmpty reports whether the map held no entry at some moment during the
+// call, as upstream's is_empty.
+func (m *mapCore[K, V, O]) IsEmpty() bool {
+	if words := m.words.Load(); words != nil {
+		return words.isEmpty()
+	}
+	return m.count.Load() == 0
+}
+
+// Clear removes every entry. As upstream's clear, it is the owner's: no other
+// goroutine may use the map until it returns.
 func (m *mapCore[K, V, O]) Clear() {
-	if m.structure.state.Load() == nil {
+	if words := m.words.Load(); words != nil {
+		words.clear()
 		return
 	}
-	if words := m.numericMap(); words != nil {
-		words.clear()
+	if m.structure.state.Load() == nil {
 		return
 	}
 	m.structure.Lock()
@@ -458,64 +465,6 @@ func (m *mapCore[K, V, O]) GetMany(keys []K, dst []Result[V]) {
 		words = m.initNumericMap()
 	}
 	if words != nil {
-		if view := words.view.Load(); len(keys) > 1 && view != nil && view.leaves != nil {
-			for start := 0; start < len(keys); start += batchLanes {
-				count := min(batchLanes, len(keys)-start)
-				if count < batchLanes {
-					for j := 0; j < count; j++ {
-						v, found := words.get(numericKey[O](keys[start+j]))
-						if checkedMapWordValues {
-							value := v
-							if !found {
-								value = 0
-							}
-							if decoded, ok := any(value).(V); ok {
-								dst[start+j].Value, dst[start+j].OK = decoded, found
-							} else {
-								dst[start+j].Value, dst[start+j].OK = mapWordValue[V](v, found, words.valueKind)
-							}
-						} else if words.valueKind == 1 {
-							value := v
-							if !found {
-								value = 0
-							}
-							dst[start+j].Value, dst[start+j].OK = any(value).(V), found
-						} else {
-							dst[start+j].Value, dst[start+j].OK = mapWordValue[V](v, found, words.valueKind)
-						}
-					}
-					continue
-				}
-				var codes [batchLanes]uint64
-				var values [batchLanes]Result[uint64]
-				for j := 0; j < count; j++ {
-					codes[j] = numericKey[O](keys[start+j])
-				}
-				words.getMany8(&codes, &values)
-				for j := 0; j < count; j++ {
-					if checkedMapWordValues {
-						value := values[j].Value
-						if !values[j].OK {
-							value = 0
-						}
-						if decoded, ok := any(value).(V); ok {
-							dst[start+j].Value, dst[start+j].OK = decoded, values[j].OK
-						} else {
-							dst[start+j].Value, dst[start+j].OK = mapWordValue[V](values[j].Value, values[j].OK, words.valueKind)
-						}
-					} else if words.valueKind == 1 {
-						value := values[j].Value
-						if !values[j].OK {
-							value = 0
-						}
-						dst[start+j].Value, dst[start+j].OK = any(value).(V), values[j].OK
-					} else {
-						dst[start+j].Value, dst[start+j].OK = mapWordValue[V](values[j].Value, values[j].OK, words.valueKind)
-					}
-				}
-			}
-			return
-		}
 		for i, key := range keys {
 			v, found := words.get(numericKey[O](key))
 			if checkedMapWordValues {
@@ -640,6 +589,10 @@ func (m *mapCore[K, V, O]) scan(b *Bounds[K], reverse bool, visit func(K, V) boo
 	}
 	m.walk(b, reverse, visit)
 }
+
+// scanLeaves bounds the leaves a scan copies per latch acquisition, and so
+// how long it can hold back a structural writer.
+const scanLeaves = 4
 
 // walk visits leaf copies of the keys in b. It resumes past the last key it
 // visited.
@@ -782,7 +735,7 @@ func (m *mapCore[K, V, O]) Last() (key K, value V, ok bool) {
 }
 func (m *mapCore[K, V, O]) PopFirst() (K, V, bool) {
 	if words := m.numericMap(); words != nil {
-		k, v, found := words.edge(false, true)
+		k, v, found := words.pop(false)
 		return mapWordEntry[K, V](k, v, found, words)
 	}
 	m.structure.Lock()
@@ -803,7 +756,7 @@ func (m *mapCore[K, V, O]) PopFirst() (K, V, bool) {
 }
 func (m *mapCore[K, V, O]) PopLast() (K, V, bool) {
 	if words := m.numericMap(); words != nil {
-		k, v, found := words.edge(true, true)
+		k, v, found := words.pop(true)
 		return mapWordEntry[K, V](k, v, found, words)
 	}
 	m.structure.Lock()

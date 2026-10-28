@@ -89,8 +89,8 @@ func TestDrain(t *testing.T) {
 			break
 		}
 	}
-	if m.Len() != 0 {
-		t.Fatalf("map kept %d", m.Len())
+	if seqLen(m.All()) != 0 {
+		t.Fatalf("map kept %d", seqLen(m.All()))
 	}
 	if keys := slices.Collect(s.Drain()); len(keys) != 500 || s.Len() != 0 {
 		t.Fatal("set drain")

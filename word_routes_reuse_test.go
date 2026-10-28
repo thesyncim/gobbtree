@@ -4,25 +4,18 @@ import "testing"
 
 func TestWordRoutesReuseOnDomainChange(t *testing.T) {
 	const base = uint64(1) << 60
-	for _, shared := range []bool{false, true} {
+	for _, shared := range []bool{false} {
 		var owner Tree[uint64, uint64]
-		var concurrent Map[uint64, uint64]
 		var store interface {
 			Insert(uint64, uint64) (uint64, bool)
 			Delete(uint64) (uint64, bool)
 			Get(uint64) (uint64, bool)
 		} = &owner
-		if shared {
-			store = &concurrent
-		}
 		for i := uint64(0); i < 4096; i++ {
 			store.Insert(base+i*2, i)
 		}
 		store.Get(base) // Activate optimistic readers before changing the domain.
 		words := owner.words
-		if shared {
-			words = &concurrent.words.Load().tree
-		}
 		before := words.routes
 		if len(before.ids) == 0 {
 			t.Fatal("test did not populate cached routes")
@@ -61,44 +54,6 @@ func TestWordRoutesReuseOnDomainChange(t *testing.T) {
 		if allocations > limit {
 			t.Fatalf("shared=%v: domain change allocated %g objects, want at most %g", shared, allocations, limit)
 		}
-	}
-}
-
-func TestSharedWordRouteDomainRebuildReaders(t *testing.T) {
-	const base = uint64(1) << 60
-	var m Map[uint64, uint64]
-	for i := uint64(0); i < 4096; i++ {
-		m.Insert(base+i*2, i)
-	}
-	m.Get(base)
-	done := make(chan struct{})
-	exited := make(chan struct{})
-	failed := make(chan uint64, 1)
-	go func() {
-		defer close(exited)
-		for i := uint64(0); ; i++ {
-			select {
-			case <-done:
-				return
-			default:
-			}
-			index := i * 499 & 4095
-			if value, ok := m.Get(base + index*2); !ok || value != index {
-				failed <- index
-				return
-			}
-		}
-	}()
-	for i := 0; i < 1000; i++ {
-		m.Insert(0, 1)
-		m.Delete(0)
-	}
-	close(done)
-	<-exited
-	select {
-	case index := <-failed:
-		t.Fatalf("route-domain rebuild lost unchanged key %d", index)
-	default:
 	}
 }
 

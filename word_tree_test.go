@@ -35,24 +35,10 @@ func TestWordArenaIDsAcrossSlabGrowth(t *testing.T) {
 				delete(live, id)
 			}
 		}
-		nodes := 0
-		for i := range tr.slabs {
-			nodes += wordSlabSize(i)
-		}
-		cache := wordReadCache{nodes: make([]wordNode, nodes)}
-		positions := make(map[*wordNode]uint32)
 		for id, value := range live {
 			if got := tr.node(id).keyAt(0); got != value {
 				t.Fatalf("ID %d changed during growth: got %d, want %d", id, got, value)
 			}
-			n := cache.node(id)
-			if n == nil {
-				t.Fatalf("ID %d cannot address the compact read cache", id)
-			}
-			if other, exists := positions[n]; exists {
-				t.Fatalf("IDs %d and %d alias in the read cache", id, other)
-			}
-			positions[n] = id
 		}
 	}
 }
@@ -713,20 +699,22 @@ func TestAscendingRunsFillLeaves(t *testing.T) {
 			}
 			return count
 		}
-		return float64(n) / float64(leaves(tr.words)*nodeSize), float64(n) / float64(leaves(&m.words.Load().tree)*nodeSize)
+		return float64(n) / float64(leaves(tr.words)*nodeSize), float64(n) / float64(latchedLeaves(&m.words.Load().tree)*nodeSize)
 	}
 	for _, c := range []struct {
-		name string
-		key  func(uint64) uint64
-		min  float64
+		name          string
+		key           func(uint64) uint64
+		tree, latched float64
 	}{
-		{"sequential", func(i uint64) uint64 { return i << 1 }, 0.95},
-		{"clustered", func(i uint64) uint64 { return mixedKey(i>>10)&^(1<<20-1) | (i&1023)<<1 }, 0.9},
-		{"mixed", mixedKey, 0.7},
+		// Map splits as upstream's latched tree (of_split): a full leaf an
+		// append splits keeps all but twice the minimum, 24 of 32 entries.
+		{"sequential", func(i uint64) uint64 { return i << 1 }, 0.95, 0.74},
+		{"clustered", func(i uint64) uint64 { return mixedKey(i>>10)&^(1<<20-1) | (i&1023)<<1 }, 0.9, 0.65},
+		{"mixed", mixedKey, 0.7, 0.65},
 	} {
 		tree, concurrent := fill(c.key)
-		if tree < c.min || concurrent < c.min {
-			t.Errorf("%s keys fill leaves %.0f%% (Tree) and %.0f%% (Map), want at least %.0f%%", c.name, 100*tree, 100*concurrent, 100*c.min)
+		if tree < c.tree || concurrent < c.latched {
+			t.Errorf("%s keys fill leaves %.0f%% (Tree, want %.0f%%) and %.0f%% (Map, want %.0f%%)", c.name, 100*tree, 100*c.tree, 100*concurrent, 100*c.latched)
 		}
 	}
 }

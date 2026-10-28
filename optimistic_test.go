@@ -87,7 +87,10 @@ func TestAtomicValueKinds(t *testing.T) {
 	testWordValue(t, true)
 	testWordValue(t, uintptr(17))
 }
-func TestConcurrentClearAndRebuild(t *testing.T) {
+
+// TestConcurrentEmptyAndRebuild empties and refills a map under readers.
+// Clear is the owner's, as upstream's, so the writer removes every key.
+func TestConcurrentEmptyAndRebuild(t *testing.T) {
 	m := New[uint64, uint64]()
 	var wg sync.WaitGroup
 	for i := uint64(0); i < 3000; i++ {
@@ -95,7 +98,9 @@ func TestConcurrentClearAndRebuild(t *testing.T) {
 	}
 	wg.Go(func() {
 		for r := 0; r < 20; r++ {
-			m.Clear()
+			for i := uint64(0); i < 3000; i++ {
+				m.Delete(i)
+			}
 			for i := uint64(0); i < 3000; i++ {
 				m.Insert(i, i)
 			}
@@ -124,8 +129,8 @@ func TestConcurrentClearAndRebuild(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if m.Len() != 3000 {
-		t.Fatal(m.Len())
+	if seqLen(m.All()) != 3000 {
+		t.Fatal(seqLen(m.All()))
 	}
 }
 

@@ -19,7 +19,6 @@ type oracleMap[K any] interface {
 	Insert(K, uint64) (uint64, bool)
 	Delete(K) (uint64, bool)
 	Get(K) (uint64, bool)
-	Len() int
 	Clear()
 	Range(K, K) iter.Seq2[K, uint64]
 	RangeReverse(K, K) iter.Seq2[K, uint64]
@@ -134,11 +133,11 @@ func runUpstreamOracle(t *testing.T, tr oracleMap[uint64]) {
 		}
 		if i%3000 == 2999 {
 			fmt.Fprintln(&input, "L")
-			fmt.Fprintln(&want, tr.Len())
+			fmt.Fprintln(&want, seqLen(tr.All()))
 		}
 	}
 	// Deletion to empty exercises merges and root collapse in both trees.
-	keys := make([]uint64, 0, tr.Len())
+	keys := make([]uint64, 0, seqLen(tr.All()))
 	for k := range tr.All() {
 		keys = append(keys, k)
 	}
@@ -148,7 +147,7 @@ func runUpstreamOracle(t *testing.T, tr oracleMap[uint64]) {
 		result(tr.Delete(k))
 	}
 	fmt.Fprintln(&input, "L\nC\nI 7 9\nG 7")
-	fmt.Fprintln(&want, tr.Len())
+	fmt.Fprintln(&want, seqLen(tr.All()))
 	tr.Clear()
 	fmt.Fprintln(&want, "-")
 	result(tr.Insert(7, 9))

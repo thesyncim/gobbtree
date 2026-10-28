@@ -1,0 +1,423 @@
+package gobbtree
+
+import "sync/atomic"
+
+// What an insert does where the tree holds the key already, upstream's
+// InsertPolicy: replace the value (insert), store merge's result
+// (update_or_insert), or keep it (get_or_insert).
+const (
+	insertReplace = iota
+	insertMerge
+	insertKeep
+)
+
+// insert inserts key and value, or, where the tree holds key, does what
+// policy says; it returns the stored value and whether key was there.
+// As upstream's (tree/latched/insert.rs): an append to the last leaf, if the
+// key goes after every key there and the leaf has room; otherwise a descent
+// to the key's leaf, latched exclusively, which takes the key if it has room;
+// otherwise the leaf splits.
+func (t *latchedTree) insert(key, value uint64, policy int, merge func(key, old, value uint64) uint64) (uint64, bool) {
+	if t.root.Load() == 0 {
+		t.start()
+	}
+	if t.append(key, value) {
+		return 0, false
+	}
+	if old, found, done := t.insertLatched(key, value, policy, merge); done {
+		return old, found
+	}
+	return t.insertSplitting(key, value, policy, merge)
+}
+
+func (t *latchedTree) insertLatched(key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
+	leaf, _, version := t.descend(key, exclusive, nil)
+	defer leaf.unlockExclusive(version)
+	return insertInto(leaf, key, value, policy, merge)
+}
+
+// insertInto inserts into leaf, held exclusively, if it holds key or has
+// room; done is false when the leaf is full and must split.
+func insertInto(leaf *wordNode, key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
+	i := leaf.exactEntry(key)
+	if i < int(leaf.n) && leaf.entries()[i].key == key {
+		old = leaf.entries()[i].value
+		switch policy {
+		case insertReplace:
+			storeValueRacing(leaf, i, value)
+		case insertMerge:
+			storeValueRacing(leaf, i, merge(key, old, value))
+		}
+		return old, true, true
+	}
+	if leaf.n == nodeSize {
+		return 0, false, false
+	}
+	if i == int(leaf.n) && leaf.n > 0 && key < leaf.entries()[leaf.n-1].key {
+		i = leaf.lowerEntry(key)
+	}
+	insertFit(leaf, i, key, value)
+	return 0, false, true
+}
+
+// append is upstream's (tree/latched/append.rs, D45): an insert whose key
+// goes after every key, into a last leaf with room, latches that leaf and
+// inserts there without a descent. Only a thread holding the last leaf
+// exclusively changes the pointer to it, so a leaf the pointer still names
+// once latched is last, and stays so while held.
+func (t *latchedTree) append(key, value uint64) bool {
+	id := t.rightmost.Load()
+	n := t.node(id)
+	if n == nil {
+		return false
+	}
+	// A racing look first, so that a key that doesn't go last takes no latch.
+	count := loadCountRacing(n)
+	if count == 0 || count >= nodeSize || key <= loadEntryKeyRacing(n, count-1) {
+		return false
+	}
+	version := n.lockExclusive()
+	ok := t.rightmost.Load() == id && n.n > 0 && n.n < nodeSize && key > n.entries()[n.n-1].key
+	if ok {
+		insertFit(n, int(n.n), key, value)
+	}
+	n.unlockExclusive(version)
+	return ok
+}
+
+func loadEntryKeyRacing(n *wordNode, i int) uint64 {
+	if seqlockPlainStores {
+		return n.entries()[i&(nodeSize-1)].key
+	}
+	return atomic.LoadUint64(&n.entries()[i&(nodeSize-1)].key)
+}
+
+// insertSplitting is insert where the leaf was full: it searches again,
+// keeping the internal nodes it goes through, and splits, until no other
+// thread holds a node the split needs.
+func (t *latchedTree) insertSplitting(key, value uint64, policy int, merge func(key, old, value uint64) uint64) (uint64, bool) {
+	var b backoff
+	for {
+		var path treePath
+		leaf, leafID, version := t.descend(key, exclusive, &path)
+		old, found, done := insertIntoReleasing(leaf, version, key, value, policy, merge)
+		if done {
+			leaf.unlockExclusive(version)
+			return old, found
+		}
+		if t.split(&path, leaf, leafID, version, key, value) {
+			return 0, false
+		}
+		leaf.unlockExclusive(version)
+		b.spin()
+	}
+}
+
+// insertIntoReleasing is insertInto that lets go of leaf if merge panics.
+func insertIntoReleasing(leaf *wordNode, version, key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
+	finished := false
+	defer func() {
+		if !finished {
+			leaf.unlockExclusive(version)
+		}
+	}()
+	old, found, done = insertInto(leaf, key, value, policy, merge)
+	finished = true
+	return old, found, done
+}
+
+// heldNodes are the nodes an operation takes besides its leaf, upstream's
+// HeldNodes (tree/latched/held.rs): internal nodes by a compare-and-swap at
+// a version, leaves exclusively, all without waiting. They are let go of
+// together, each at its next version.
+type heldNodes struct {
+	nodes    [3*maxDepth + 4]*wordNode
+	versions [3*maxDepth + 4]uint64
+	len      int
+}
+
+func (h *heldNodes) holds(n *wordNode) bool {
+	for i := 0; i < h.len; i++ {
+		if h.nodes[i] == n {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *heldNodes) push(n *wordNode, version uint64) {
+	h.nodes[h.len], h.versions[h.len] = n, version
+	h.len++
+}
+
+// takeAt takes internal node n if it is still at version, the one the caller
+// read it at; false if it changed or another thread holds it.
+func (h *heldNodes) takeAt(n *wordNode, version uint64) bool {
+	if h.holds(n) {
+		return true
+	}
+	if !n.tryLockAt(version) {
+		return false
+	}
+	h.push(n, version)
+	return true
+}
+
+// takeInternal takes internal node n at the version it is at, unless another
+// thread holds it: for a node reached through nodes the caller holds.
+func (h *heldNodes) takeInternal(n *wordNode) bool {
+	if h.holds(n) {
+		return true
+	}
+	version, ok := n.tryReadVersion()
+	return ok && h.takeAt(n, version)
+}
+
+// takeLeaf latches leaf exclusively, unless another thread holds it.
+func (h *heldNodes) takeLeaf(n *wordNode) bool {
+	if h.holds(n) {
+		return true
+	}
+	version, ok := n.tryLockExclusive()
+	if !ok {
+		return false
+	}
+	h.push(n, version)
+	return true
+}
+
+func (h *heldNodes) unlock() {
+	for i := 0; i < h.len; i++ {
+		h.nodes[i].unlockExclusive(h.versions[i])
+	}
+	h.len = 0
+}
+
+// ofSplit is upstream's InsertionSide::of_split (tree/node/mod.rs): where a
+// full node of capacity entries splits for an insertion at index. An append
+// at either end leaves the arriving side twice the minimum, so ordered
+// inserts fill nodes densely; an interior insertion divides the free space
+// evenly. The left half keeps entries [0, cut), the right takes the rest,
+// and the new entry goes left at index when index <= cut, else right at
+// index - cut.
+func ofSplit(capacity, index, minimum int) (cut int, left bool) {
+	arriving := min(2*minimum, capacity/2)
+	switch {
+	case index == 0:
+		cut = arriving - 1
+	case index == capacity:
+		cut = capacity - arriving
+	default:
+		cut = capacity / 2
+	}
+	return cut, index <= cut
+}
+
+// split splits leaf, the full leaf path leads to, held exclusively, and
+// inserts key and value. As upstream's (tree/latched/insert.rs): the lowest
+// node on the path with room takes the separator, and every node below it
+// splits; without one, the root splits, and the tree grows. The split takes
+// those path nodes at the versions the descent read; if another thread holds
+// one or changed it, it changes nothing, lets go of them and reports false.
+// Otherwise it lets go of everything, leaf included.
+func (t *latchedTree) split(path *treePath, leaf *wordNode, leafID uint32, leafVersion, key, value uint64) bool {
+	depth := path.depth
+	room := -1
+	for level := depth - 1; level >= 0; level-- {
+		if path.levels[level].count < nodeSize {
+			room = level
+			break
+		}
+	}
+	top := max(room, 0)
+	var held heldNodes
+	for level := top; level < depth; level++ {
+		if !held.takeAt(path.levels[level].n, path.levels[level].version) {
+			held.unlock()
+			return false
+		}
+	}
+
+	t.pages.mu.Lock()
+	var fresh heldNodes
+	rightID, right, version := t.alloc(true)
+	fresh.push(right, version)
+	index := leaf.lowerEntry(key)
+	cut, left := ofSplit(nodeSize, index, leafMinLen)
+	moveEntries(right, 0, leaf, cut, nodeSize-cut)
+	if left {
+		insertFit(leaf, index, key, value)
+	} else {
+		insertFit(right, index-cut, key, value)
+	}
+	if t.rightmost.Load() == leafID {
+		t.rightmost.Store(rightID)
+	}
+	separator, carried := right.entries()[0].key, rightID
+	for level := depth - 1; level >= top && carried != 0; level-- {
+		n, edge := path.levels[level].n, path.levels[level].edge+1
+		if int(n.n) < nodeSize {
+			insertChildFit(n, edge, separator, carried)
+			carried = 0
+			break
+		}
+		splitID, split, version := t.alloc(false)
+		fresh.push(split, version)
+		cut, left := ofSplit(nodeSize, edge, innerMinLen)
+		moveChildren(split, 0, n, cut, nodeSize-cut)
+		if left {
+			insertChildFit(n, edge, separator, carried)
+		} else {
+			insertChildFit(split, edge-cut, separator, carried)
+		}
+		separator, carried = split.keys[0], splitID
+	}
+	if carried != 0 {
+		// The root split: a new root takes the old one and its new sibling.
+		rootID, root, version := t.alloc(false)
+		fresh.push(root, version)
+		insertChildFit(root, 0, 0, t.root.Load())
+		insertChildFit(root, 1, separator, carried)
+		t.root.Store(rootID)
+	}
+	t.pages.mu.Unlock()
+	held.unlock()
+	leaf.unlockExclusive(leafVersion)
+	fresh.unlock()
+	return true
+}
+
+// Node changes, made with the node held exclusively, in the stores that
+// optimistic readers race with (word_latched.go).
+
+// insertFit inserts an entry at i into leaf n, which has room.
+func insertFit(n *wordNode, i int, key, value uint64) {
+	count := int(n.n)
+	if seqlockPlainStores {
+		entries := n.entries()
+		copy(entries[i+1:count+1], entries[i:count])
+		entries[i] = wordEntry{key, value}
+		copy(n.tags[i+1:count+1], n.tags[i:count])
+		n.tags[i] = uint8(key)
+		n.n++
+		return
+	}
+	entries := n.entries()
+	for j := count; j > i; j-- {
+		storeEntryRacing(n, j, entries[j-1])
+	}
+	storeEntryRacing(n, i, wordEntry{key, value})
+	tags := n.tags
+	copy(tags[i+1:count+1], tags[i:count])
+	tags[i] = uint8(key)
+	storeTagsRacing(n, tags)
+	storeCountRacing(n, count+1)
+}
+
+// removeAt removes leaf n's entry i and returns its value.
+func removeAt(n *wordNode, i int) uint64 {
+	count := int(n.n)
+	entries := n.entries()
+	value := entries[i].value
+	if seqlockPlainStores {
+		copy(entries[i:count-1], entries[i+1:count])
+		entries[count-1] = wordEntry{key: ^uint64(0)}
+		copy(n.tags[i:count-1], n.tags[i+1:count])
+		n.tags[count-1] = 0
+		n.n--
+		return value
+	}
+	for j := i; j < count-1; j++ {
+		storeEntryRacing(n, j, entries[j+1])
+	}
+	storeEntryRacing(n, count-1, wordEntry{key: ^uint64(0)})
+	tags := n.tags
+	copy(tags[i:count-1], tags[i+1:count])
+	tags[count-1] = 0
+	storeTagsRacing(n, tags)
+	storeCountRacing(n, count-1)
+	return value
+}
+
+// moveEntries moves count entries of leaf src from from to the end of leaf
+// dst at at, which has room: src keeps those before from, followed by those
+// after the run.
+func moveEntries(dst *wordNode, at int, src *wordNode, from, count int) {
+	srcCount, dstCount := int(src.n), int(dst.n)
+	se, de := src.entries(), dst.entries()
+	dstTags, srcTags := dst.tags, src.tags
+	// Make room in dst at at.
+	for j := dstCount - 1; j >= at; j-- {
+		storeEntryRacing(dst, j+count, de[j])
+	}
+	copy(dstTags[at+count:dstCount+count], dstTags[at:dstCount])
+	for j := 0; j < count; j++ {
+		storeEntryRacing(dst, at+j, se[from+j])
+		dstTags[at+j] = srcTags[from+j]
+	}
+	// Close the gap in src and pad the slots freed.
+	for j := from; j+count < srcCount; j++ {
+		storeEntryRacing(src, j, se[j+count])
+	}
+	copy(srcTags[from:srcCount-count], srcTags[from+count:srcCount])
+	for j := srcCount - count; j < srcCount; j++ {
+		storeEntryRacing(src, j, wordEntry{key: ^uint64(0)})
+		srcTags[j] = 0
+	}
+	storeTagsRacing(dst, dstTags)
+	storeTagsRacing(src, srcTags)
+	storeCountRacing(dst, dstCount+count)
+	storeCountRacing(src, srcCount-count)
+}
+
+// insertChildFit inserts child, whose keys are at least separator, at i in
+// internal node n, which has room.
+func insertChildFit(n *wordNode, i int, separator uint64, child uint32) {
+	count := int(n.n)
+	children := &n.inner().children
+	for j := count; j > i; j-- {
+		storeKeyRacing(n, j, n.keys[j-1])
+		storeChildRacing(n, j, children[j-1])
+	}
+	storeKeyRacing(n, i, separator)
+	storeChildRacing(n, i, child)
+	storeCountRacing(n, count+1)
+}
+
+// removeChild removes internal node n's child i.
+func removeChild(n *wordNode, i int) {
+	count := int(n.n)
+	children := &n.inner().children
+	for j := i; j < count-1; j++ {
+		storeKeyRacing(n, j, n.keys[j+1])
+		storeChildRacing(n, j, children[j+1])
+	}
+	storeKeyRacing(n, count-1, ^uint64(0))
+	storeChildRacing(n, count-1, 0)
+	storeCountRacing(n, count-1)
+}
+
+// moveChildren moves count children of internal node src from from, with
+// their separators, to dst at at, as moveEntries moves entries.
+func moveChildren(dst *wordNode, at int, src *wordNode, from, count int) {
+	srcCount, dstCount := int(src.n), int(dst.n)
+	sc, dc := &src.inner().children, &dst.inner().children
+	for j := dstCount - 1; j >= at; j-- {
+		storeKeyRacing(dst, j+count, dst.keys[j])
+		storeChildRacing(dst, j+count, dc[j])
+	}
+	for j := 0; j < count; j++ {
+		storeKeyRacing(dst, at+j, src.keys[from+j])
+		storeChildRacing(dst, at+j, sc[from+j])
+	}
+	for j := from; j+count < srcCount; j++ {
+		storeKeyRacing(src, j, src.keys[j+count])
+		storeChildRacing(src, j, sc[j+count])
+	}
+	for j := srcCount - count; j < srcCount; j++ {
+		storeKeyRacing(src, j, ^uint64(0))
+		storeChildRacing(src, j, 0)
+	}
+	storeCountRacing(dst, dstCount+count)
+	storeCountRacing(src, srcCount-count)
+}

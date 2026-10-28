@@ -482,7 +482,11 @@ func main() {
 				}
 			}
 			reportDistinct("map_churn_new_pair", start, sum)
-			if concurrent.Len() != *size {
+			count := 0
+			for range concurrent.All() {
+				count++
+			}
+			if count != *size {
 				panic("distinct churn changed map size")
 			}
 		}

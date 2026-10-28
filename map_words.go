@@ -22,13 +22,10 @@ func (m *mapCore[K, V, O]) initNumericMap() *wordMap {
 		m.wordDisabled.Store(true)
 		return nil
 	}
-	m.structure.Lock()
-	defer m.structure.Unlock()
-	if words := m.words.Load(); words != nil {
-		return words
+	words := &wordMap{keyKind: keyKind, valueKind: valueKind}
+	if !m.words.CompareAndSwap(nil, words) {
+		return m.words.Load()
 	}
-	words := &wordMap{structure: &m.structure, count: &m.count, keyKind: keyKind, valueKind: valueKind, tree: wordTree{shared: true, keyKind: keyKind, valueKind: valueKind}}
-	m.words.Store(words)
 	return words
 }
 func mapWordValue[V any](word uint64, found bool, kind uint8) (V, bool) {

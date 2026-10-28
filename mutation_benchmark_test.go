@@ -28,7 +28,7 @@ func BenchmarkBuild(b *testing.B) {
 				for _, key := range keys {
 					m.Insert(key, key)
 				}
-				benchmarkSink = uint64(m.Len())
+				benchmarkSink = uint64(len(keys))
 			}
 		})
 	}

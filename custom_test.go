@@ -133,8 +133,8 @@ func checkOrdered[K Key[K]](t *testing.T, keys []K, ops int, seed uint64) {
 	if tr.words != nil || m.words.Load() != nil {
 		t.Fatal("custom keys reached a numeric arena")
 	}
-	if tr.Len() != len(ref) || m.Len() != len(ref) {
-		t.Fatalf("len %d/%d, want %d", tr.Len(), m.Len(), len(ref))
+	if seqLen(tr.All()) != len(ref) || seqLen(m.All()) != len(ref) {
+		t.Fatalf("len %d/%d, want %d", seqLen(tr.All()), seqLen(m.All()), len(ref))
 	}
 	got := slices.Collect(tr.Keys())
 	var mgot []K
@@ -315,8 +315,8 @@ func TestCustomMapConcurrent(t *testing.T) {
 		prev = &k
 		n++
 	}
-	if n != m.Len() {
-		t.Fatalf("iterated %d, len %d", n, m.Len())
+	if n != seqLen(m.All()) {
+		t.Fatalf("iterated %d, len %d", n, seqLen(m.All()))
 	}
 }
 
