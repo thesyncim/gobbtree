@@ -92,8 +92,9 @@ func (r *latchedRoutes) fraction(key uint64) uint64 {
 }
 
 // leafFor is the leaf cell c names for key, or 0. A fraction that equals a
-// cut it can't place, where a region's 1024ths are coarser than keys,
-// descends.
+// cut, where a region's 1024ths are coarser than keys, goes to the leaf
+// starting there: a separator is that leaf's first key, which lookups ask
+// for, and the fences turn away any other key.
 func (r *latchedRoutes) leafFor(c *hintCell, key uint64) uint32 {
 	head := c.head
 	if head <= hintDescend {
@@ -107,9 +108,6 @@ func (r *latchedRoutes) leafFor(c *hintCell, key uint64) uint32 {
 	cut1 := head>>58 | (tail>>48&15)<<6
 	cut2 := tail >> 52 & 1023
 	q := r.fraction(key)
-	if r.shift > 10 && (q == cut0 || q == cut1 || q == cut2) {
-		return 0
-	}
 	id := first
 	if q >= cut0 {
 		id = second
@@ -123,45 +121,102 @@ func (r *latchedRoutes) leafFor(c *hintCell, key uint64) uint32 {
 	return uint32(id) | wordLeafID
 }
 
-// fill names in cell c the leaves of parent p that hold key's region, when
-// p's fences hold the region and four leaves cover it, and otherwise marks
-// it to descend. Its reads race writers; a hint is checked where used.
-func (r *latchedRoutes) fill(c *hintCell, key uint64, p *wordNode) {
-	count := min(int(p.n), nodeSize)
+// fill names in cell c the leaves that hold key's region, up to four, and
+// otherwise marks it to descend. They are children of p, key's leaf's
+// parent, and where the region crosses p's fences, of the parent beside it
+// under g, p's parent, which reached p at edge; g is nil at the root. Its
+// reads race writers; a hint is checked where used.
+func (r *latchedRoutes) fill(dir []*wordNode, c *hintCell, key uint64, p, g *wordNode, edge int) {
 	start := r.base + ((key-r.base)>>r.shift)<<r.shift
 	end := start + (uint64(1)<<r.shift - 1)
 	if end < start {
 		end = ^uint64(0)
 	}
+	var span hintSpan
+	low, high := lowFence(p), highFence(p)
+	if start < low && g != nil && edge > 0 {
+		span.add(r, nodeOf(dir, g, edge-1), start, low-1)
+	}
+	span.add(r, p, max(start, low), end)
+	if high != 0 && end >= high && g != nil && edge+1 < min(int(g.n), nodeSize) {
+		span.add(r, nodeOf(dir, g, edge+1), high, end)
+	}
 	head, tail := uint64(hintDescend), uint64(0)
-	if count > 0 && holds(lowFence(p), highFence(p), start) && holds(lowFence(p), highFence(p), end) {
-		children := &p.inner().children
-		first, last := routeCode(&p.keys, count, start), routeCode(&p.keys, count, end)
-		if last-first < 4 {
-			var ids [4]uint64
-			cuts := [3]uint64{1023, 1023, 1023}
-			for i := range ids {
-				child := children[min(first+i, last)&(nodeSize-1)]
-				ids[i] = uint64(child &^ wordLeafID)
-				if child&wordLeafID == 0 || ids[i] == 0 || ids[i] > hintIDMask {
-					ids[0] = 0
-					break
-				}
-				if i < last-first {
-					cuts[i] = r.fraction(p.keys[(first+i+1)&(nodeSize-1)])
-				}
-			}
-			if ids[0] != 0 {
-				head = ids[0] | ids[1]<<24 | cuts[0]<<48 | (cuts[1]&63)<<58
-				tail = ids[2] | ids[3]<<24 | (cuts[1]>>6)<<48 | cuts[2]<<52
-			}
+	if span.n > 0 && span.n <= 4 && span.covers(start, end) {
+		ids, cuts := span.ids, [3]uint64{1023, 1023, 1023}
+		for i := span.n; i < 4; i++ {
+			ids[i] = ids[span.n-1]
 		}
+		for i := 1; i < span.n; i++ {
+			cuts[i-1] = r.fraction(span.starts[i])
+		}
+		head = ids[0] | ids[1]<<24 | cuts[0]<<48 | (cuts[1]&63)<<58
+		tail = ids[2] | ids[3]<<24 | (cuts[1]>>6)<<48 | cuts[2]<<52
 	}
 	// Only a change is written: every core reads the table, so a store of
 	// what is there already costs each of them its line.
 	if c.head != head || c.tail != tail {
 		c.tail, c.head = tail, head
 	}
+}
+
+// nodeOf is internal node g's internal child at edge, read racing, or nil.
+func nodeOf(dir []*wordNode, g *wordNode, edge int) *wordNode {
+	id := g.inner().children[edge&(nodeSize-1)]
+	if id&wordLeafID != 0 {
+		return nil
+	}
+	return nodeIn(dir, id)
+}
+
+// hintSpan gathers, in key order, the leaves that hold a region and where
+// each starts, up to five: one more than a cell holds, to tell it overflowed.
+type hintSpan struct {
+	ids    [5]uint64
+	starts [5]uint64
+	n      int
+	first  uint64
+	last   uint64
+	broken bool
+}
+
+// add appends parent p's leaves that hold [from, to], which p's fences hold.
+func (s *hintSpan) add(r *latchedRoutes, p *wordNode, from, to uint64) {
+	if p == nil || p.leaf || from > to {
+		s.broken = true
+		return
+	}
+	count := min(int(p.n), nodeSize)
+	low, high := lowFence(p), highFence(p)
+	if count == 0 || !holds(low, high, from) || !holds(low, high, to) {
+		s.broken = true
+		return
+	}
+	children := &p.inner().children
+	first, last := routeCode(&p.keys, count, from), routeCode(&p.keys, count, to)
+	if s.n == 0 {
+		s.first = from
+	}
+	s.last = to
+	for i := first; i <= last; i++ {
+		child := children[i&(nodeSize-1)]
+		id := uint64(child &^ wordLeafID)
+		if child&wordLeafID == 0 || id == 0 || id > hintIDMask || s.n == len(s.ids) {
+			s.broken = true
+			return
+		}
+		start := from
+		if i > first {
+			start = p.keys[i&(nodeSize-1)]
+		}
+		s.ids[s.n], s.starts[s.n] = id, start
+		s.n++
+	}
+}
+
+// covers reports that the gathered leaves hold [start, end] whole.
+func (s *hintSpan) covers(start, end uint64) bool {
+	return !s.broken && s.first == start && s.last == end
 }
 
 // refreshRoutes makes a hint table for the current root when there is none,

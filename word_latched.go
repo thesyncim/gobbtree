@@ -563,6 +563,8 @@ restart:
 		if t.root.Load() != id {
 			continue
 		}
+		var g *wordNode
+		edge := 0
 		for depth := 0; depth < maxDepth; depth++ {
 			count := loadCountRacing(n)
 			if count == 0 {
@@ -608,7 +610,7 @@ restart:
 				if cell != nil {
 					// A leaf parent fills the key's hint cell. Hints are
 					// checked where used, so its reads need no check.
-					routes.fill(cell, key, n)
+					routes.fill(dir, cell, key, n, g, edge)
 				}
 				return c, child, version, 0
 			}
@@ -616,6 +618,7 @@ restart:
 			if !n.isUnchanged(v) {
 				continue restart
 			}
+			g, edge = n, i
 			n, v, id = c, cv, child
 		}
 	}
@@ -628,6 +631,9 @@ restart:
 func (t *latchedTree) get(key uint64) (uint64, bool) {
 	if seqlockPlainStores {
 		if value, found, ok := t.getHinted(key); ok {
+			return value, found
+		}
+		if value, found, ok := t.getOrdered(key); ok {
 			return value, found
 		}
 	}

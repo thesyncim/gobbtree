@@ -137,3 +137,71 @@ func (t *latchedTree) upgradeHinted(key uint64) (leaf *wordNode, version uint64,
 	}
 	return n, word, i, true
 }
+
+// getOrdered is get's optimistic descent with plain loads only, as
+// lock coupling requires them ordered: each node's words load after its
+// latch word, by address; its child's latch word loads before its closing
+// check, whose address depends on it; and the root's latch word before the
+// root pointer is checked again. ok is false where a check fails.
+func (t *latchedTree) getOrdered(key uint64) (value uint64, found, ok bool) {
+	d := plainPointer(&t.blocks)
+	if d == nil {
+		return 0, false, false
+	}
+	dir := *d
+	id := *(*uint32)(unsafe.Pointer(&t.root))
+	n := nodeIn(dir, id)
+	if n == nil {
+		return 0, false, false
+	}
+	word := *(*uint64)(unsafe.Pointer(&n.sequence))
+	if *after((*uint32)(unsafe.Pointer(&t.root)), word) != id {
+		return 0, false, false
+	}
+	routes := plainPointer(&t.routes)
+	if routes == nil || routes.root != id {
+		// A tree built by appends alone made no table for this root.
+		routes = t.refreshRoutes(dir)
+	}
+	var g *wordNode
+	edge := 0
+	for depth := 0; depth <= maxDepth; depth++ {
+		if id&wordLeafID != 0 {
+			return readHinted(n, word, key)
+		}
+		if word&latchExclusive != 0 {
+			return 0, false, false
+		}
+		m := after(n, word)
+		count := int(m.n)
+		if count == 0 || count > nodeSize {
+			return 0, false, false
+		}
+		i, acc, proven := routeWindows(m, key, count)
+		if !proven {
+			return 0, false, false
+		}
+		child := m.inner().children[i&(nodeSize-1)]
+		c := nodeIn(dir, child)
+		if c == nil {
+			return 0, false, false
+		}
+		childWord := *after((*uint64)(unsafe.Pointer(&c.sequence)), acc)
+		closing := *after((*uint64)(unsafe.Pointer(&n.sequence)), acc^uint64(child)^uint64(count)^childWord)
+		if closing&^latchSharedMask != word&^latchSharedMask {
+			return 0, false, false
+		}
+		if child&wordLeafID != 0 {
+			// The leaf's parent fills the key's hint cell, as the
+			// descent does; hints are checked where used.
+			if routes != nil {
+				if cell := routes.cell(key); cell != nil {
+					routes.fill(dir, cell, key, m, g, edge)
+				}
+			}
+		}
+		g, edge = m, i
+		n, id, word = c, child, childWord
+	}
+	return 0, false, false
+}
