@@ -48,6 +48,8 @@ func main() {
 	standard := flag.Bool("standard", false, "include standard-library map lookups")
 	threads := flag.Int("threads", 0, "additional parallel lookup workers")
 	pattern := flag.String("keys", "mixed", "key pattern: mixed, sequential, or clustered")
+	scaleMix := flag.String("scale", "", "run only the core-scaling cell read, r90, r50, replace, churn or scan on the Map, with -threads workers")
+	ops := flag.Int("ops", 1<<20, "operations per worker in the core-scaling cell")
 	flag.Parse()
 	if *size <= 0 || *rounds <= 0 {
 		panic("size and rounds must be positive")
@@ -59,6 +61,12 @@ func main() {
 	case "all", "tree", "map", "builtin", "syncmap":
 	default:
 		panic("unknown kind")
+	}
+	if *scaleMix != "" {
+		if _, ok := scaleMixes[*scaleMix]; !ok || *threads <= 0 || *ops <= 0 {
+			panic("scale needs a known mix, positive threads and positive ops")
+		}
+		*kind = "map"
 	}
 	switch *pattern {
 	case "mixed", "sequential", "clustered":
@@ -102,6 +110,13 @@ func main() {
 	runtime.GC()
 	queries := make([]uint64, *queryCount)
 	queryMask := len(queries) - 1
+	if *scaleMix != "" {
+		for i := range queries {
+			queries[i] = keyAt(mix(uint64(i+17)) % uint64(*size))
+		}
+		scale(concurrent, *scaleMix, *threads, *ops, queries, uint64(*size), keyAt)
+		return
+	}
 	report := func(name string, start time.Time, sum uint64) {
 		fmt.Printf("%s %.3f ns/op checksum=%d\n", name, float64(time.Since(start).Nanoseconds())/float64(*rounds*len(queries)), sum)
 	}
@@ -396,17 +411,7 @@ func main() {
 		other := make([]uint64, count)
 		// mix is a permutation: these two index domains produce unique,
 		// disjoint key sets. A coprime stride samples the full insertion domain.
-		step := uint64(0x9e3779b97f4a7c15) % uint64(*size)
-		for {
-			a, b := step, uint64(*size)
-			for b != 0 {
-				a, b = b, a%b
-			}
-			if a == 1 {
-				break
-			}
-			step++
-		}
+		step := coprimeStep(uint64(*size))
 		x := uint64(17) % uint64(*size)
 		for i := range queries {
 			queries[i], other[i] = keyAt(x), keyAt(x+uint64(*size))
@@ -485,9 +490,14 @@ func verifyReplacements(name string, queries []uint64, rounds int, get func(uint
 	}
 }
 
+func parallel(name string, workers, operations int, work func(int) uint64) {
+	elapsed, sum := runParallel(workers, work)
+	fmt.Printf("%s %.3f ns/op checksum=%d\n", name, float64(elapsed.Nanoseconds())/float64(workers*operations), sum)
+}
+
 // The callback runs once per worker, outside the per-operation dispatch.
 // Worker creation, final checksum reduction and previous-case GC are untimed.
-func parallel(name string, workers, operations int, work func(int) uint64) {
+func runParallel(workers int, work func(int) uint64) (time.Duration, uint64) {
 	runtime.GC()
 	sums := make([]uint64, workers)
 	var ready, done sync.WaitGroup
@@ -511,5 +521,5 @@ func parallel(name string, workers, operations int, work func(int) uint64) {
 	for _, v := range sums {
 		sum += v
 	}
-	fmt.Printf("%s %.3f ns/op checksum=%d\n", name, float64(elapsed.Nanoseconds())/float64(workers*operations), sum)
+	return elapsed, sum
 }

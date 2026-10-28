@@ -46,6 +46,52 @@ fn verify_replacements(queries: &[u64], rounds: usize, get: impl Fn(&u64) -> Opt
         );
     }
 }
+// The callback runs once per worker, outside the per-operation dispatch.
+// Worker creation and final checksum reduction are untimed. Returns the
+// elapsed nanoseconds and the wrapping sum of the workers' results.
+fn parallel(threads: usize, work: impl Fn(usize) -> u64 + Sync) -> (f64, u64) {
+    let ready = std::sync::Barrier::new(threads + 1);
+    let barrier = std::sync::Barrier::new(threads + 1);
+    let done = std::sync::Barrier::new(threads + 1);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for worker in 0..threads {
+            let (ready, barrier, done, work) = (&ready, &barrier, &done, &work);
+            handles.push(scope.spawn(move || {
+                ready.wait();
+                barrier.wait();
+                let sum = work(worker);
+                done.wait();
+                sum
+            }));
+        }
+        ready.wait();
+        let start = Instant::now();
+        barrier.wait();
+        done.wait();
+        let elapsed = start.elapsed().as_nanos() as f64;
+        let mut sum = 0_u64;
+        for handle in handles {
+            sum = sum.wrapping_add(handle.join().unwrap());
+        }
+        (elapsed, sum)
+    })
+}
+// The first step at or above a golden-ratio fraction of n that is coprime to
+// n, matching coprimeStep in cmd/compare.
+fn coprime_step(n: u64) -> u64 {
+    let mut step = 0x9e3779b97f4a7c15_u64 % n;
+    loop {
+        let (mut a, mut b) = (step, n);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        if a == 1 {
+            return step;
+        }
+        step += 1;
+    }
+}
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let size: u64 = args.get(1).map_or(262144, |v| v.parse().unwrap());
@@ -60,6 +106,13 @@ fn main() {
         .unwrap_or("mixed");
     assert!(matches!(pattern, "mixed" | "sequential" | "clustered"));
     let key = |x: u64| key_of(x, size, pattern);
+    let scale_mix = args.iter().find_map(|arg| arg.strip_prefix("scale="));
+    let ops: usize = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("ops="))
+        .map_or(1 << 20, |v| v.parse().unwrap());
+    // A core-scaling cell builds only the concurrent map.
+    let kind = if scale_mix.is_some() { "map" } else { kind };
     let do_tree = kind == "all" || kind == "tree";
     let do_map = kind == "all" || kind == "map";
     let mut tree = unsync::BBTreeMap::<u64, u64>::new();
@@ -75,6 +128,18 @@ fn main() {
     }
     println!("upstream 1c72bd2 allocator={ALLOCATOR_NAME} n={size} rounds={rounds} queries={query_count} kind={kind} keys={pattern}");
     let mut queries = vec![0_u64; query_count];
+    if let Some(name) = scale_mix {
+        let threads: usize = args.get(3).map_or(0, |v| v.parse().unwrap());
+        assert!(
+            threads > 0 && ops > 0,
+            "scale needs positive threads and ops"
+        );
+        for (i, q) in queries.iter_mut().enumerate() {
+            *q = key(mix(i as u64 + 17) % size);
+        }
+        scale(&concurrent, name, threads, ops, &queries, size, &key);
+        return;
+    }
     for hit in [true, false] {
         let label = if hit { "hit" } else { "miss" };
         for (i, q) in queries.iter_mut().enumerate() {
@@ -259,17 +324,7 @@ fn main() {
         let churn_rounds = rounds * (query_count / count);
         queries.truncate(count);
         let mut other = vec![0_u64; count];
-        let mut step = 0x9e3779b97f4a7c15_u64 % size;
-        loop {
-            let (mut a, mut b) = (step, size);
-            while b != 0 {
-                (a, b) = (b, a % b);
-            }
-            if a == 1 {
-                break;
-            }
-            step += 1;
-        }
+        let step = coprime_step(size);
         let mut x = 17 % size;
         for (i, q) in queries.iter_mut().enumerate() {
             *q = key(x);
@@ -325,4 +380,177 @@ fn main() {
             assert_eq!(concurrent.range_cloned::<u64, _>(..).count(), size as usize);
         }
     }
+}
+
+// The period of owner writes among a scaling worker's operations, matching
+// scaleMixes in cmd/compare: 0 reads only, 1 writes only.
+fn scale_write_every(name: &str) -> usize {
+    match name {
+        "read" => 0,
+        "r90" | "scan" => 10,
+        "r50" => 2,
+        "replace" | "churn" => 1,
+        _ => panic!("unknown scale mix {name}"),
+    }
+}
+// How many entries each scan operation visits.
+const SCAN_LENGTH: usize = 100;
+// The keys worker owns, in its visit order, and the fresh key paired with
+// each, matching ownedKeys in cmd/compare.
+fn owned_keys(
+    worker: usize,
+    workers: usize,
+    size: u64,
+    key: &impl Fn(u64) -> u64,
+) -> (Vec<u64>, Vec<u64>) {
+    let owned = (size - worker as u64).div_ceil(workers as u64);
+    let (step, mut slot) = (coprime_step(owned), mix(worker as u64 + 1) % owned);
+    let mut stored = Vec::with_capacity(owned as usize);
+    let mut fresh = Vec::with_capacity(owned as usize);
+    for _ in 0..owned {
+        let x = worker as u64 + slot * workers as u64;
+        stored.push(key(x));
+        fresh.push(key(x + size));
+        slot = (slot + step) % owned;
+    }
+    (stored, fresh)
+}
+// A final entry's contribution to the state checksum.
+fn scale_state(key: u64, value: u64) -> u64 {
+    mix(key) ^ value
+}
+// The final state checksum derived from one worker's write schedule,
+// independently of the map, matching expectedScaleState in cmd/compare.
+fn expected_scale_state(name: &str, stored: &[u64], fresh: &[u64], writes: usize) -> u64 {
+    let owned = stored.len();
+    let (passes, partial) = (writes / owned, writes % owned);
+    let mut state = 0_u64;
+    if name != "churn" {
+        for (t, &k) in stored.iter().enumerate() {
+            let touches = passes + usize::from(t < partial);
+            state = state.wrapping_add(scale_state(k, k ^ (touches & 1) as u64));
+        }
+        return state;
+    }
+    // After whole passes one key set is present; the partial pass deleted a
+    // prefix of it and inserted the other set from half an orbit ahead.
+    let (present, absent) = if passes & 1 == 0 {
+        (stored, fresh)
+    } else {
+        (fresh, stored)
+    };
+    for &k in present {
+        state = state.wrapping_add(scale_state(k, k));
+    }
+    for t in 0..partial {
+        let k = absent[(t + owned / 2) % owned];
+        state = state
+            .wrapping_add(scale_state(k, k))
+            .wrapping_sub(scale_state(present[t], present[t]));
+    }
+    state
+}
+// One core-scaling cell, matching scale in cmd/compare: workers run ops
+// operations each, writing only keys they own and reading the shared queries
+// buffer from per-worker offsets. Building keys, starting workers, reducing
+// checksums and verifying the final state are untimed.
+//
+// The scan cell uses range_cloned(k..).take(100): Go's Map.Scan has
+// range_cloned's contract (entries are copied and no latch is held while the
+// caller's loop body runs), whereas upstream's scan runs its closure under
+// each leaf's read latch.
+fn scale(
+    map: &BBTreeMap<u64, u64>,
+    name: &str,
+    workers: usize,
+    ops: usize,
+    queries: &[u64],
+    size: u64,
+    key: &(impl Fn(u64) -> u64 + Sync),
+) {
+    let write_every = scale_write_every(name);
+    assert!(
+        size >= workers as u64,
+        "scale needs at least one key per worker"
+    );
+    let owned: Vec<(Vec<u64>, Vec<u64>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| scope.spawn(move || owned_keys(worker, workers, size, key)))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let (mask, scan, churn) = (queries.len() - 1, name == "scan", name == "churn");
+    let (elapsed, sum) = parallel(workers, |worker| {
+        let mut sum = 0_u64;
+        let (stored, fresh) = (&owned[worker].0, &owned[worker].1);
+        let offset = worker * queries.len() / workers;
+        let (mut t, mut flip) = (0, 1_u64);
+        if churn {
+            // Each pass deletes every key of one set in visit order and inserts
+            // the other set's, then the sets swap roles.
+            let (mut remove, mut add) = (stored, fresh);
+            let mut u = stored.len() / 2;
+            for _ in 0..ops {
+                let q = remove[t];
+                let v = map.remove(&q).expect("churn must delete an existing key");
+                assert_eq!(v, q);
+                sum = sum.wrapping_add(v);
+                assert!(
+                    map.insert(add[u], add[u]).unwrap().is_none(),
+                    "churn must insert a new key"
+                );
+                u += 1;
+                if u == add.len() {
+                    u = 0;
+                }
+                t += 1;
+                if t == remove.len() {
+                    (t, remove, add) = (0, add, remove);
+                }
+            }
+            return sum;
+        }
+        let queries = black_box(queries);
+        for j in 0..ops {
+            if write_every != 0 && j % write_every == 0 {
+                let k = stored[t];
+                sum = sum.wrapping_add(map.insert(k, k ^ flip).unwrap().unwrap_or(0));
+                t += 1;
+                if t == stored.len() {
+                    (t, flip) = (0, flip ^ 1);
+                }
+                continue;
+            }
+            let q = queries[(j + offset) & mask];
+            if scan {
+                for (_, v) in map.range_cloned::<u64, _>(q..).take(SCAN_LENGTH) {
+                    sum = sum.wrapping_add(v & !1);
+                }
+                continue;
+            }
+            sum = sum.wrapping_add(map.get_copied(&q).unwrap_or(0) & !1);
+        }
+        sum
+    });
+    let writes = if write_every == 0 {
+        0
+    } else {
+        ops.div_ceil(write_every)
+    };
+    let mut want = 0_u64;
+    for (stored, fresh) in &owned {
+        want = want.wrapping_add(expected_scale_state(name, stored, fresh, writes));
+    }
+    let (mut state, mut count) = (0_u64, 0_u64);
+    for (k, v) in map.range_cloned::<u64, _>(..) {
+        state = state.wrapping_add(scale_state(k, v));
+        count += 1;
+    }
+    assert_eq!(count, size, "scale {name} final count");
+    assert_eq!(state, want, "scale {name} final state");
+    let elapsed = elapsed / (workers * ops) as f64;
+    println!(
+        "scale_{name}_w{workers} {elapsed:.3} ns/op checksum={} state={state} count={count}",
+        black_box(sum)
+    );
 }
