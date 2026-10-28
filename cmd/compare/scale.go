@@ -18,25 +18,12 @@ var scaleMixes = map[string]int{
 	"scan":    10,
 }
 
+// main runs a core-scaling cell through runScale, so main.go also builds
+// against libraries older than this file's API.
+func init() { runScale = scale }
+
 // scanLength is how many entries each scan operation visits.
 const scanLength = 100
-
-// coprimeStep returns the first step at or above a golden-ratio fraction of n
-// that is coprime to n, so stepping by it visits all of [0, n) in scattered
-// order.
-func coprimeStep(n uint64) uint64 {
-	step := uint64(0x9e3779b97f4a7c15) % n
-	for {
-		a, b := step, n
-		for b != 0 {
-			a, b = b, a%b
-		}
-		if a == 1 {
-			return step
-		}
-		step++
-	}
-}
 
 // ownedKeys returns the keys worker owns, indexes congruent to worker modulo
 // workers, in the order it visits them, and the fresh key paired with each.

@@ -63,8 +63,8 @@ func main() {
 		panic("unknown kind")
 	}
 	if *scaleMix != "" {
-		if _, ok := scaleMixes[*scaleMix]; !ok || *threads <= 0 || *ops <= 0 {
-			panic("scale needs a known mix, positive threads and positive ops")
+		if runScale == nil || *threads <= 0 || *ops <= 0 {
+			panic("scale needs scale.go, positive threads and positive ops")
 		}
 		*kind = "map"
 	}
@@ -114,7 +114,7 @@ func main() {
 		for i := range queries {
 			queries[i] = keyAt(mix(uint64(i+17)) % uint64(*size))
 		}
-		scale(concurrent, *scaleMix, *threads, *ops, queries, uint64(*size), keyAt)
+		runScale(concurrent, *scaleMix, *threads, *ops, queries, uint64(*size), keyAt)
 		return
 	}
 	report := func(name string, start time.Time, sum uint64) {
@@ -487,6 +487,27 @@ func verifyReplacements(name string, queries []uint64, rounds int, get func(uint
 		if got, ok := get(q); !ok || got != q^mask {
 			panic(fmt.Sprintf("%s replacement final value for key %d: got %d present=%v want %d", name, q, got, ok, q^mask))
 		}
+	}
+}
+
+// runScale runs one core-scaling cell (scale.go); scale panics on an unknown
+// mix.
+var runScale func(m *gobbtree.Map[uint64, uint64], name string, workers, ops int, queries []uint64, size uint64, keyAt func(uint64) uint64)
+
+// coprimeStep returns the first step at or above a golden-ratio fraction of n
+// that is coprime to n, so stepping by it visits all of [0, n) in scattered
+// order.
+func coprimeStep(n uint64) uint64 {
+	step := uint64(0x9e3779b97f4a7c15) % n
+	for {
+		a, b := step, n
+		for b != 0 {
+			a, b = b, a%b
+		}
+		if a == 1 {
+			return step
+		}
+		step++
 	}
 }
 
