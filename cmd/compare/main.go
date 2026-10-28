@@ -48,7 +48,7 @@ func main() {
 	standard := flag.Bool("standard", false, "include standard-library map lookups")
 	threads := flag.Int("threads", 0, "additional parallel lookup workers")
 	pattern := flag.String("keys", "mixed", "key pattern: mixed, sequential, or clustered")
-	scaleMix := flag.String("scale", "", "run only the core-scaling cell read, r90, r50, replace, churn or scan on the Map, with -threads workers")
+	scaleMix := flag.String("scale", "", "run only the core-scaling cell read, r90, r50, replace, churn or scan, with -threads workers, on -kind map (the default), syncmap, or builtin behind a sync.RWMutex")
 	ops := flag.Int("ops", 1<<20, "operations per worker in the core-scaling cell")
 	flag.Parse()
 	if *size <= 0 || *rounds <= 0 {
@@ -66,7 +66,10 @@ func main() {
 		if runScale == nil || *threads <= 0 || *ops <= 0 {
 			panic("scale needs scale.go, positive threads and positive ops")
 		}
-		*kind = "map"
+		if *kind == "all" || *kind == "tree" {
+			*kind = "map"
+		}
+		*standard = false
 	}
 	switch *pattern {
 	case "mixed", "sequential", "clustered":
@@ -114,7 +117,14 @@ func main() {
 		for i := range queries {
 			queries[i] = keyAt(mix(uint64(i+17)) % uint64(*size))
 		}
-		runScale(concurrent, *scaleMix, *threads, *ops, queries, uint64(*size), keyAt)
+		var target any = concurrent
+		switch *kind {
+		case "builtin":
+			target = builtin
+		case "syncmap":
+			target = &synced
+		}
+		runScale(target, *scaleMix, *threads, *ops, queries, uint64(*size), keyAt)
 		return
 	}
 	report := func(name string, start time.Time, sum uint64) {
@@ -490,9 +500,9 @@ func verifyReplacements(name string, queries []uint64, rounds int, get func(uint
 	}
 }
 
-// runScale runs one core-scaling cell (scale.go); scale panics on an unknown
-// mix.
-var runScale func(m *gobbtree.Map[uint64, uint64], name string, workers, ops int, queries []uint64, size uint64, keyAt func(uint64) uint64)
+// runScale runs one core-scaling cell (scale.go) on a *gobbtree.Map, a
+// *sync.Map or a built-in map; scale panics on an unknown mix.
+var runScale func(m any, name string, workers, ops int, queries []uint64, size uint64, keyAt func(uint64) uint64)
 
 // coprimeStep returns the first step at or above a golden-ratio fraction of n
 // that is coprime to n, so stepping by it visits all of [0, n) in scattered

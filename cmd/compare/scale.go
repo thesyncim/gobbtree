@@ -2,10 +2,85 @@ package main
 
 import (
 	"fmt"
+	"iter"
 	"sync"
 
 	"github.com/thesyncim/gobbtree"
 )
+
+// scaleMap is what a core-scaling cell needs from a concurrent map.
+type scaleMap interface {
+	Get(uint64) (uint64, bool)
+	Insert(uint64, uint64) (uint64, bool)
+	Delete(uint64) (uint64, bool)
+	All() iter.Seq2[uint64, uint64]
+}
+
+// syncScale is a sync.Map, as Go programs use it for concurrent access.
+type syncScale struct{ m *sync.Map }
+
+func (s syncScale) Get(k uint64) (uint64, bool) {
+	v, ok := s.m.Load(k)
+	if !ok {
+		return 0, false
+	}
+	return v.(uint64), true
+}
+func (s syncScale) Insert(k, v uint64) (uint64, bool) {
+	old, ok := s.m.Swap(k, v)
+	if !ok {
+		return 0, false
+	}
+	return old.(uint64), true
+}
+func (s syncScale) Delete(k uint64) (uint64, bool) {
+	v, ok := s.m.LoadAndDelete(k)
+	if !ok {
+		return 0, false
+	}
+	return v.(uint64), true
+}
+func (s syncScale) All() iter.Seq2[uint64, uint64] {
+	return func(yield func(uint64, uint64) bool) {
+		s.m.Range(func(k, v any) bool { return yield(k.(uint64), v.(uint64)) })
+	}
+}
+
+// lockedScale is a built-in map behind a sync.RWMutex.
+type lockedScale struct {
+	mu sync.RWMutex
+	m  map[uint64]uint64
+}
+
+func (s *lockedScale) Get(k uint64) (uint64, bool) {
+	s.mu.RLock()
+	v, ok := s.m[k]
+	s.mu.RUnlock()
+	return v, ok
+}
+func (s *lockedScale) Insert(k, v uint64) (uint64, bool) {
+	s.mu.Lock()
+	old, ok := s.m[k]
+	s.m[k] = v
+	s.mu.Unlock()
+	return old, ok
+}
+func (s *lockedScale) Delete(k uint64) (uint64, bool) {
+	s.mu.Lock()
+	v, ok := s.m[k]
+	delete(s.m, k)
+	s.mu.Unlock()
+	return v, ok
+}
+func (s *lockedScale) All() iter.Seq2[uint64, uint64] {
+	return func(yield func(uint64, uint64) bool) {
+		for k, v := range s.m {
+			if !yield(k, v) {
+				return
+			}
+		}
+	}
+}
 
 // scaleMixes lists the core-scaling cells. writeEvery is the period of owner
 // writes among a worker's operations: 0 reads only, 1 writes only.
@@ -84,7 +159,19 @@ func expectedScaleState(name string, stored, fresh []uint64, writes int) uint64 
 // an owned key and an insert of a fresh owned key half an orbit away, in
 // another leaf. Building the keys, starting workers, reducing checksums and
 // verifying the final state are untimed.
-func scale(m *gobbtree.Map[uint64, uint64], name string, workers, ops int, queries []uint64, size uint64, keyAt func(uint64) uint64) {
+func scale(target any, name string, workers, ops int, queries []uint64, size uint64, keyAt func(uint64) uint64) {
+	var m scaleMap
+	ordered, _ := target.(*gobbtree.Map[uint64, uint64])
+	switch target := target.(type) {
+	case *gobbtree.Map[uint64, uint64]:
+		m = target
+	case *sync.Map:
+		m = syncScale{target}
+	case map[uint64]uint64:
+		m = &lockedScale{m: target}
+	default:
+		panic("unknown scale backend")
+	}
 	writeEvery, ok := scaleMixes[name]
 	if !ok {
 		panic("unknown scale mix")
@@ -99,6 +186,9 @@ func scale(m *gobbtree.Map[uint64, uint64], name string, workers, ops int, queri
 	}
 	build.Wait()
 	mask, scan, churn := len(queries)-1, name == "scan", name == "churn"
+	if scan && ordered == nil {
+		panic("scan needs an ordered map")
+	}
 	elapsed, sum := runParallel(workers, func(worker int) uint64 {
 		var sum uint64
 		stored, fresh := stored[worker], fresh[worker]
@@ -143,7 +233,7 @@ func scale(m *gobbtree.Map[uint64, uint64], name string, workers, ops int, queri
 				// Scan has range_cloned's contract, so the Rust driver
 				// takes 100 entries from range_cloned(q..).
 				n := 0
-				for _, v := range m.Scan(gobbtree.AtLeast(q)) {
+				for _, v := range ordered.Scan(gobbtree.AtLeast(q)) {
 					sum += v &^ 1
 					if n++; n == scanLength {
 						break
@@ -170,8 +260,8 @@ func scale(m *gobbtree.Map[uint64, uint64], name string, workers, ops int, queri
 		state += scaleState(k, v)
 		count++
 	}
-	if count != int(size) || m.Len() != int(size) {
-		panic(fmt.Sprintf("scale %s final count %d, Len %d, want %d", name, count, m.Len(), size))
+	if count != int(size) || ordered != nil && ordered.Len() != int(size) {
+		panic(fmt.Sprintf("scale %s final count %d, want %d", name, count, size))
 	}
 	if state != want {
 		panic(fmt.Sprintf("scale %s final state %d, want %d", name, state, want))
