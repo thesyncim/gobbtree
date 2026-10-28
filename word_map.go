@@ -95,11 +95,18 @@ func (m *wordMap) get(key uint64) (uint64, bool) {
 	attempts := 0
 retry:
 	for {
-		// Readers don't starve behind a hot leaf or a structural change:
-		// after a few failed validations the lookup takes the leaf latch,
-		// as upstream's does after one.
+		// Readers don't starve behind a hot leaf: after a few failed
+		// validations the lookup takes the leaf latch, as upstream's does
+		// after one. Like upstream's, it takes no structure-wide lock, so a
+		// reader never holds up writers; when routing keeps meeting
+		// structural changes, or writes are not lane-free, it yields and
+		// tries optimistically again.
 		if attempts++; attempts > optimisticAttempts {
-			return m.getLatched(key)
+			if value, found, ok := m.getLatched(key); ok {
+				return value, found
+			}
+			attempts = 0
+			runtime.Gosched()
 		}
 		version := m.version.Load()
 		if version&1 != 0 {
@@ -593,9 +600,18 @@ func (m *wordMap) read(key uint64, visit func(uint64, uint64)) bool {
 	visit(n.entries()[i].key, n.entries()[i].value)
 	return true
 }
-func (m *wordMap) getLatched(key uint64) (value uint64, found bool) {
-	m.read(key, func(_, v uint64) { value, found = v, true })
-	return value, found
+// getLatched looks key up under its leaf latch alone. ok is false when the
+// leaf could not be latched with the structure unchanged.
+func (m *wordMap) getLatched(key uint64) (value uint64, found, ok bool) {
+	n, _, _, ok := m.lockLeafIfLaneFree(key)
+	if !ok {
+		return 0, false, false
+	}
+	if i := n.exactEntry(key); i < int(n.n) && n.entries()[i].key == key {
+		value, found = n.entries()[i].value, true
+	}
+	n.mu.Unlock()
+	return value, found, true
 }
 func (m *wordMap) update(key uint64, change func(key, value uint64) uint64) (uint64, bool) {
 	n, id, _, ok := m.lockLeafIfLaneFree(key)

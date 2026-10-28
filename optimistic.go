@@ -307,15 +307,9 @@ func (m *mapCore[K, V, O]) structuralEnd(held [3]*node[K, V, O]) {
 }
 
 // optimisticAttempts is how many failed validations a lookup tolerates before
-// it takes the leaf latch instead.
+// it reads under the leaf latch instead. Like upstream's, the latched read
+// takes no structure-wide lock, so a reader never holds up writers.
 const optimisticAttempts = 4
-
-// getLatched finds key under its structural lane and leaf latch, the way a
-// lookup that keeps failing validation makes progress.
-func (m *mapCore[K, V, O]) getLatched(key K) (value V, found bool) {
-	m.Read(key, func(_ K, v V) { value, found = v, true })
-	return value, found
-}
 
 func (m *mapCore[K, V, O]) optimisticGet(key K) (V, bool) {
 	var zero V
@@ -324,8 +318,11 @@ func (m *mapCore[K, V, O]) optimisticGet(key K) (V, bool) {
 	attempts := 0
 retry:
 	for {
-		if attempts++; attempts > optimisticAttempts {
-			return m.getLatched(key)
+		// Past the bound, a seqlock leaf is read under its latch, so the
+		// lookup progresses behind a hot leaf; other leaves always are.
+		latched := attempts >= optimisticAttempts
+		if attempts++; latched {
+			runtime.Gosched()
 		}
 		version := m.version.Load()
 		if version&1 != 0 {
@@ -375,7 +372,7 @@ retry:
 		var value V
 		var found bool
 		if n := image.node; n != nil {
-			if words := n.leaf.words; words != nil && seqlockPlainStores && search.direct {
+			if words := n.leaf.words; words != nil && seqlockPlainStores && search.direct && !latched {
 				if word, found, ok := n.optimisticWord(&search, words, &m.version, version); ok {
 					if found {
 						value = unpackWord[V](word, n.leaf.wordKind)

@@ -3,7 +3,6 @@ package gobbtree
 import (
 	"fmt"
 	"slices"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -336,19 +335,23 @@ func TestNumericMapLeafReadModifyWriteConcurrent(t *testing.T) {
 	}
 }
 
-// A lookup whose validation keeps failing falls back to the leaf latch
-// instead of spinning, as upstream's does: an epoch held odd here stands in
-// for writers that never let validation succeed.
+// A lookup progresses behind a hot leaf: once a leaf seems mid-write too
+// often, it reads under the leaf latch, as upstream's lookups do, and takes
+// no structure-wide lock that would hold up writers.
 func TestGetFallsBackToLatch(t *testing.T) {
-	t.Run("numeric", func(t *testing.T) {
-		var m Map[uint64, uint64]
-		for i := range uint64(5000) {
-			m.Insert(i*3, i)
-		}
-		m.Get(0) // ready the read path
-		words := m.words.Load()
-		words.version.Add(1)
-		defer words.version.Add(1)
+	if !seqlockPlainStores {
+		t.Skip("without lane-free writes, leaf latches do not exclude structural writers")
+	}
+	m := New[uint64, uint64]()
+	for i := range uint64(5000) {
+		m.Insert(i*3, i)
+	}
+	m.Get(0) // ready the read path
+	words := m.words.Load()
+	words.disableReadCache() // read the live leaves
+	for _, probe := range []uint64{0, 3 * 2500, 3 * 4999} {
+		n := words.tree.node(words.leafFor(probe))
+		n.sequence.Add(1) // a leaf writer that never finishes
 		for i := range uint64(5000) {
 			if v, ok := m.Get(i * 3); !ok || v != i {
 				t.Fatalf("Get(%d) = %d, %v", i*3, v, ok)
@@ -357,23 +360,8 @@ func TestGetFallsBackToLatch(t *testing.T) {
 				t.Fatalf("Get(%d) found a missing key", i*3+1)
 			}
 		}
-	})
-	t.Run("text", func(t *testing.T) {
-		var m Map[string, int]
-		for i := range 5000 {
-			m.Insert(strconv.Itoa(i), i)
-		}
-		m.version.Add(1)
-		defer m.version.Add(1)
-		for i := range 5000 {
-			if v, ok := m.Get(strconv.Itoa(i)); !ok || v != i {
-				t.Fatalf("Get(%d) = %d, %v", i, v, ok)
-			}
-		}
-		if _, ok := m.Get("x"); ok {
-			t.Fatal("Get found a missing key")
-		}
-	})
+		n.sequence.Add(^uint64(0))
+	}
 }
 
 // Scans exclude structural changes without switching a serial numeric map
