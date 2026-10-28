@@ -465,7 +465,20 @@ func (m *mapCore[K, V, O]) GetMany(keys []K, dst []Result[V]) {
 		words = m.initNumericMap()
 	}
 	if words != nil {
-		for i, key := range keys {
+		// Whole groups of eight go through the batched lookup.
+		var codes [batchLanes]uint64
+		var values [batchLanes]Result[uint64]
+		for start := 0; start+batchLanes <= len(keys); start += batchLanes {
+			for j := range codes {
+				codes[j] = numericKey[O](keys[start+j])
+			}
+			words.getMany8(&codes, &values)
+			for j, r := range values {
+				dst[start+j].Value, dst[start+j].OK = mapWordValue[V](r.Value, r.OK, words.valueKind)
+			}
+		}
+		for i := len(keys) &^ (batchLanes - 1); i < len(keys); i++ {
+			key := keys[i]
 			v, found := words.get(numericKey[O](key))
 			if checkedMapWordValues {
 				value := v

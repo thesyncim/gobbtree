@@ -8,6 +8,9 @@ type wordMap struct {
 }
 
 func (m *wordMap) get(key uint64) (uint64, bool) { return m.tree.get(key) }
+func (m *wordMap) getMany8(keys *[batchLanes]uint64, dst *[batchLanes]Result[uint64]) {
+	m.tree.getMany8(keys, dst)
+}
 func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	return m.tree.insert(key, value, insertReplace, nil)
 }

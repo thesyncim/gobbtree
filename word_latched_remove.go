@@ -62,13 +62,20 @@ func (t *latchedTree) removeLatched(which int, key uint64, condition func(key, v
 	var version uint64
 	var i int
 	var ok bool
-	if seqlockPlainStores {
+	held := false
+	if which == removeKey {
+		// A hinted leaf is never the root: hints need levels above it.
+		leaf, version, i, held = t.upgradeHinted(key)
+		ok = held && i < int(leaf.n) && leaf.entries()[i].key == key
+	}
+	if !held && seqlockPlainStores {
 		// Search optimistically, then take the leaf at the version read, as
 		// insert's upgrade does.
 		leaf, leafID, version = t.descend(descentKey(which, key), optimistic, nil)
 		i, ok = target(leaf, which, key)
+		held = leaf.tryLockAt(version)
 	}
-	if leaf == nil || !leaf.tryLockAt(version) {
+	if !held {
 		// Changed or held since read: latch it the waiting way.
 		leaf, leafID, version = t.descend(descentKey(which, key), exclusive, nil)
 		i, ok = target(leaf, which, key)

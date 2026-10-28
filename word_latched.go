@@ -522,22 +522,18 @@ restart:
 			path.depth = 0
 		}
 		dir := t.dir()
-		var n *wordNode
-		var v, carry uint64
-		var id uint32
-		var bucket *uint32
+		var cell *hintCell
 		var routes *latchedRoutes
-		jumped := false
 		if seqlockPlainStores && path == nil {
 			// A descent that keeps no path may start at a hinted leaf
-			// parent (word_latched_routes.go).
+			// (word_latched_routes.go).
 			routes = t.routes.Load()
 			if routes == nil || routes.root != t.root.Load() {
 				routes = t.refreshRoutes(dir)
 			}
 			if routes != nil {
-				if bucket = routes.bucket(key); bucket != nil {
-					if hint := *bucket; hint&wordLeafID != 0 {
+				if cell = routes.cell(key); cell != nil {
+					if hint := routes.leafFor(cell, key); hint != 0 {
 						if c := nodeIn(dir, hint); c != nil {
 							version = latchLeaf(c, mode)
 							count, low, high := uint64(c.n), lowFence(c), highFence(c)
@@ -546,52 +542,41 @@ restart:
 							}
 							unlatchLeaf(c, mode, version)
 						}
-					} else if hint != 0 {
-						if n, v, carry, jumped = jump(dir, hint, key); jumped {
-							id = hint
-						}
 					}
 				}
 			}
 		}
-		if !jumped {
-			id = t.root.Load()
-			n = nodeIn(dir, id)
-			if n == nil {
-				continue
-			}
-			if id&wordLeafID != 0 {
-				version = latchLeaf(n, mode)
-				if t.root.Load() != id {
-					unlatchLeaf(n, mode, version)
-					continue
-				}
-				return n, id, version, 0
-			}
-			v = n.readVersion()
+		id := t.root.Load()
+		n := nodeIn(dir, id)
+		if n == nil {
+			continue
+		}
+		if id&wordLeafID != 0 {
+			version = latchLeaf(n, mode)
 			if t.root.Load() != id {
+				unlatchLeaf(n, mode, version)
 				continue
 			}
+			return n, id, version, 0
+		}
+		v := n.readVersion()
+		if t.root.Load() != id {
+			continue
 		}
 		for depth := 0; depth < maxDepth; depth++ {
 			count := loadCountRacing(n)
 			if count == 0 {
 				continue restart
 			}
-			if depth == 0 && routes != nil && !jumped && count >= 2*routes.rootCount {
+			if depth == 0 && routes != nil && count >= 2*routes.rootCount {
 				// The root doubled its children: the hints get finer.
-				routes = nil
-				if r := t.refreshRoutes(dir); r != nil {
-					t.routes.Store(r)
-				}
-				bucket = nil
+				routes, cell = nil, nil
+				t.refreshRoutes(dir)
 			}
 			i, acc, proven := routeRacing(n, key, count)
 			if !proven {
 				continue restart
 			}
-			acc ^= carry
-			carry = 0
 			child := loadChildRacing(n, i)
 			var low, high uint64
 			if path != nil {
@@ -603,10 +588,6 @@ restart:
 				}
 				acc ^= low ^ high
 			}
-			// A leaf parent fills the hints, for its leaf if it holds the
-			// key's bucket whole, or else for itself if reached from the
-			// root. Hints are checked where used, so these reads need none.
-			fill := bucket != nil && child&wordLeafID != 0
 			if !n.isUnchangedAfter(v, acc^uint64(child)) {
 				continue restart
 			}
@@ -624,8 +605,10 @@ restart:
 					unlatchLeaf(c, mode, version)
 					continue restart
 				}
-				if fill && !routes.fillLeaf(child, key, lowFence(c), highFence(c)) && !jumped {
-					routes.fill(id, key, lowFence(n), highFence(n))
+				if cell != nil {
+					// A leaf parent fills the key's hint cell. Hints are
+					// checked where used, so its reads need no check.
+					routes.fill(cell, key, n)
 				}
 				return c, child, version, 0
 			}
@@ -643,6 +626,11 @@ restart:
 // meanwhile sends the lookup the latched way, which waits for a writer
 // rather than race it again.
 func (t *latchedTree) get(key uint64) (uint64, bool) {
+	if seqlockPlainStores {
+		if value, found, ok := t.getHinted(key); ok {
+			return value, found
+		}
+	}
 	if t.root.Load() == 0 {
 		return 0, false
 	}

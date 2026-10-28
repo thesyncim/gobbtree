@@ -18,6 +18,13 @@ const (
 // to the key's leaf, latched exclusively, which takes the key if it has room;
 // otherwise the leaf splits.
 func (t *latchedTree) insert(key, value uint64, policy int, merge func(key, old, value uint64) uint64) (uint64, bool) {
+	if leaf, version, i, ok := t.upgradeHinted(key); ok {
+		// A hint settles most keys; only a key no hint names may append.
+		if old, found, done := insertHeld(leaf, version, i, key, value, policy, merge); done {
+			return old, found
+		}
+		return t.insertSplitting(key, value, policy, merge)
+	}
 	if t.root.Load() == 0 {
 		t.start()
 	}
@@ -30,14 +37,20 @@ func (t *latchedTree) insert(key, value uint64, policy int, merge func(key, old,
 	return t.insertSplitting(key, value, policy, merge)
 }
 
+// insertHeld is insertIntoAt on leaf, held exclusively from version, which
+// it lets go of.
+func insertHeld(leaf *wordNode, version uint64, i int, key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
+	defer leaf.unlockExclusive(version)
+	return insertIntoAt(leaf, i, key, value, policy, merge)
+}
+
 func (t *latchedTree) insertLatched(key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
 	leaf, version, i, ok := t.upgrade(key)
 	if !ok {
 		leaf, _, version = t.descend(key, exclusive, nil)
 		i = leaf.exactEntry(key)
 	}
-	defer leaf.unlockExclusive(version)
-	return insertIntoAt(leaf, i, key, value, policy, merge)
+	return insertHeld(leaf, version, i, key, value, policy, merge)
 }
 
 // upgrade reads key's leaf optimistically, searches it, and then takes it
