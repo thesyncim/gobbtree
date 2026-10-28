@@ -461,7 +461,9 @@ func (t *wordTree) insertNew(n *wordNode, i int, key, value uint64) (uint64, boo
 		if i == int(n.n) && n.n > 0 && key < n.entries()[n.n-1].key {
 			i = n.lowerEntry(key)
 		}
-		if i > 0 {
+		// Separators are lower bounds: only a new minimum of the leftmost
+		// leaf changes one.
+		if i > 0 || n.prev != 0 {
 			t.insertLeaf(n, i, key, value)
 			return 0, false
 		}
@@ -607,6 +609,7 @@ func (t *wordTree) insertChild(n *wordNode, i int, child uint32) {
 	n.n++
 	t.refit(n)
 }
+
 // Separators bound their subtrees' keys from below; an inner node's first
 // separator is its own. Leaf writers may remove a leaf's minimum, or insert
 // a new one above its separator, without touching any other node, so
@@ -639,9 +642,10 @@ func (t *wordTree) deleteOwner(key uint64) (uint64, bool) {
 	if i == int(n.n) || n.entries()[i].key != key {
 		return 0, false
 	}
-	// A nonminimum entry in a leaf above minimum occupancy can be removed
-	// without changing any ancestor.
-	if i > 0 && n.n > minNodeSize {
+	// An entry in a leaf above minimum occupancy can be removed without
+	// changing any ancestor: separators are lower bounds. The leftmost
+	// leaf's minimum is the tree's, which stays exact.
+	if (i > 0 || n.prev != 0) && n.n > minNodeSize {
 		value := t.removeLeaf(n, i)
 		t.deletedLeaf, t.deletedKey, t.deletedIndex = n, key, i
 		return value, true
@@ -685,6 +689,7 @@ func (t *wordTree) delete(key uint64) (uint64, bool) {
 	}
 	return value, true
 }
+
 // remove deletes key from subtree id. leftmost reports that the subtree's
 // first separator is the tree's minimum, which stays exact: route tables span
 // from it.
