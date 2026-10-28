@@ -587,10 +587,11 @@ func (m *mapCore[K, V, O]) Ascend(from K) iter.Seq2[K, V] { return m.Scan(AtLeas
 // Descend iterates the entries with keys at or below from, descending.
 func (m *mapCore[K, V, O]) Descend(from K) iter.Seq2[K, V] { return m.ScanReverse(AtMost(from)) }
 
-// Scan iterates the entries with keys in b, ascending, as upstream's scan and
-// range_cloned do: a few leaves are copied under their latches, or validated
-// without latches for numeric maps, and visited with no latch held, so the
-// loop body may use the map. It is not a snapshot: an entry present
+// Scan iterates the entries with keys in b, ascending, as upstream's scan
+// does, with range_cloned's contract: a few leaves are copied under their
+// latches, or validated without latches for numeric maps, and visited with
+// no latch held, so the loop body may use the map. (Upstream's scan runs its
+// closure under each leaf's read latch.) It is not a snapshot: an entry present
 // throughout is visited exactly once; entries inserted or removed meanwhile
 // may or may not be. Iterating it panics on bounds upstream rejects (see
 // Bounds).
@@ -667,8 +668,9 @@ func (m *mapCore[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V) boo
 // from the first that holds any in range and past last when resumed. done reports that no later
 // leaf can hold more.
 func (m *mapCore[K, V, O]) copyLeaf(b *Bounds[K], last *K, resumed, reverse bool, keys *[scanLeaves * nodeSize]K, values *[scanLeaves * nodeSize]V, chain **node[K, V, O], epoch *uint64) (count int, done bool) {
-	m.structure.RLock()
-	defer m.structure.RUnlock()
+	// A scan excludes structural changes only, without enabling lanes.
+	guard := m.structure.acquire(0)
+	defer guard.unlock()
 	if m.tree.root == nil {
 		return 0, true
 	}

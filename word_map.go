@@ -92,8 +92,15 @@ func (m *wordMap) enableReads() {
 	}
 }
 func (m *wordMap) get(key uint64) (uint64, bool) {
+	attempts := 0
 retry:
 	for {
+		// Readers don't starve behind a hot leaf or a structural change:
+		// after a few failed validations the lookup takes the leaf latch,
+		// as upstream's does after one.
+		if attempts++; attempts > optimisticAttempts {
+			return m.getLatched(key)
+		}
 		version := m.version.Load()
 		if version&1 != 0 {
 			runtime.Gosched()
@@ -108,6 +115,7 @@ retry:
 		}
 		if !view.ready {
 			m.enableReads()
+			attempts--
 			continue
 		}
 		if view.cache != nil {
@@ -585,6 +593,10 @@ func (m *wordMap) read(key uint64, visit func(uint64, uint64)) bool {
 	visit(n.entries()[i].key, n.entries()[i].value)
 	return true
 }
+func (m *wordMap) getLatched(key uint64) (value uint64, found bool) {
+	m.read(key, func(_, v uint64) { value, found = v, true })
+	return value, found
+}
 func (m *wordMap) update(key uint64, change func(key, value uint64) uint64) (uint64, bool) {
 	n, id, _, ok := m.lockLeafIfLaneFree(key)
 	if !ok {
@@ -798,7 +810,7 @@ func (m *wordMap) deleteLeafIf(key uint64, predicate func(key, value uint64) boo
 
 // walk visits entries in key order, a leaf at a time. Each leaf is copied
 // under its latches, which are released before visit runs: as in upstream's
-// scan, visit holds no latch, writers wait at most for one leaf's copy, and
+// range_cloned, visit holds no latch, writers wait at most for one leaf's copy, and
 // the walk is not a snapshot. An entry present throughout is visited once;
 // a walk resumes just past the last key it visited.
 func (m *wordMap) walk(lower, upper uint64, reverse, bounded bool, visit func(uint64, uint64) bool) {
@@ -854,8 +866,9 @@ const scanLeaves = 4
 // limited), and inside [lower, upper) when bounded. done reports that no
 // later leaf can hold more.
 func (m *wordMap) copyLeaf(low, high uint64, limited, reverse, bounded bool, buf *[scanLeaves * nodeSize]wordEntry, next *uint32, epoch *uint64) (count int, done bool) {
-	m.structure.RLock()
-	defer m.structure.RUnlock()
+	// A scan excludes structural changes only, without enabling lanes.
+	guard := m.structure.acquire(0)
+	defer guard.unlock()
 	if m.tree.root == 0 {
 		return 0, true
 	}

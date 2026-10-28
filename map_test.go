@@ -3,6 +3,7 @@ package gobbtree
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -332,5 +333,61 @@ func TestNumericMapLeafReadModifyWriteConcurrent(t *testing.T) {
 		if stored.Load() != removed.Load() || m.Len() != keys {
 			t.Fatalf("readers %v: stored %d removed %d len %d", readers, stored.Load(), removed.Load(), m.Len())
 		}
+	}
+}
+
+// A lookup whose validation keeps failing falls back to the leaf latch
+// instead of spinning, as upstream's does: an epoch held odd here stands in
+// for writers that never let validation succeed.
+func TestGetFallsBackToLatch(t *testing.T) {
+	t.Run("numeric", func(t *testing.T) {
+		var m Map[uint64, uint64]
+		for i := range uint64(5000) {
+			m.Insert(i*3, i)
+		}
+		m.Get(0) // ready the read path
+		words := m.words.Load()
+		words.version.Add(1)
+		defer words.version.Add(1)
+		for i := range uint64(5000) {
+			if v, ok := m.Get(i * 3); !ok || v != i {
+				t.Fatalf("Get(%d) = %d, %v", i*3, v, ok)
+			}
+			if _, ok := m.Get(i*3 + 1); ok {
+				t.Fatalf("Get(%d) found a missing key", i*3+1)
+			}
+		}
+	})
+	t.Run("text", func(t *testing.T) {
+		var m Map[string, int]
+		for i := range 5000 {
+			m.Insert(strconv.Itoa(i), i)
+		}
+		m.version.Add(1)
+		defer m.version.Add(1)
+		for i := range 5000 {
+			if v, ok := m.Get(strconv.Itoa(i)); !ok || v != i {
+				t.Fatalf("Get(%d) = %d, %v", i, v, ok)
+			}
+		}
+		if _, ok := m.Get("x"); ok {
+			t.Fatal("Get found a missing key")
+		}
+	})
+}
+
+// Scans exclude structural changes without switching a serial numeric map
+// to independent lanes, which only writer contention should do.
+func TestScanKeepsSerialLocking(t *testing.T) {
+	var m Map[uint64, uint64]
+	for i := range uint64(1000) {
+		m.Insert(i, i)
+	}
+	for range m.Scan(AtLeast[uint64](0)) {
+	}
+	for range m.ScanReverse(AtLeast[uint64](0)) {
+	}
+	if g := m.words.Load().structure.state.Load(); g != nil && g.parallel.Load() {
+		t.Error("a scan enabled lanes")
 	}
 }

@@ -246,8 +246,8 @@ func TestReaderActivationInvalidatesUncachedValueRead(t *testing.T) {
 	// With one key, the root is the leaf addressed by both published views.
 	leaf := wordSlabNode(view.uncached.blocks[0].Load(), 0)
 	func() {
-		words.structure.RLock()
-		defer words.structure.RUnlock()
+		guard := words.structure.acquire(0)
+		defer guard.unlock()
 		leaf.mu.Lock()
 		defer leaf.mu.Unlock()
 		// Stage storeValue between its live and cached value stores, retaining

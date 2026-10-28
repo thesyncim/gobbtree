@@ -137,9 +137,6 @@ func (g structuralGuard) unlock() {
 	}
 }
 
-func (s *structuralLock) RLock()   { s.lane(0).RLock() }
-func (s *structuralLock) RUnlock() { s.lane(0).RUnlock() }
-
 func (s *structuralLock) Lock() {
 	g := s.gates()
 	g.writer.Lock()

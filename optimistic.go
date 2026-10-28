@@ -306,12 +306,27 @@ func (m *mapCore[K, V, O]) structuralEnd(held [3]*node[K, V, O]) {
 	}
 }
 
+// optimisticAttempts is how many failed validations a lookup tolerates before
+// it takes the leaf latch instead.
+const optimisticAttempts = 4
+
+// getLatched finds key under its structural lane and leaf latch, the way a
+// lookup that keeps failing validation makes progress.
+func (m *mapCore[K, V, O]) getLatched(key K) (value V, found bool) {
+	m.Read(key, func(_ K, v V) { value, found = v, true })
+	return value, found
+}
+
 func (m *mapCore[K, V, O]) optimisticGet(key K) (V, bool) {
 	var zero V
 	search := newKeySearch[O](key)
 	code := search.numeric()
+	attempts := 0
 retry:
 	for {
+		if attempts++; attempts > optimisticAttempts {
+			return m.getLatched(key)
+		}
 		version := m.version.Load()
 		if version&1 != 0 {
 			runtime.Gosched()
