@@ -119,19 +119,6 @@ func firstTag(tags *[nodeSize]uint8, n int, key uint64) int {
 	return min(i, n)
 }
 
-func upperTag(tags *[nodeSize]uint8, n int, key uint8) int {
-	if simd.Emulated() {
-		return upperTagScalar(tags, n, key)
-	}
-	target := archsimd.BroadcastUint8x16(uint8(key))
-	a := target.Less(archsimd.LoadUint8x16(tags[:16])).ToInt8x16().ToBits()
-	b := target.Less(archsimd.LoadUint8x16(tags[16:])).ToInt8x16().ToBits()
-	pa := archsimd.LoadUint8x16(tagPositions[:16]).OrNot(a)
-	pb := archsimd.LoadUint8x16(tagPositions[16:]).OrNot(b)
-	i := int(pa.Min(pb).ReduceMin())
-	return min(i, n)
-}
-
 // Each source word is atomic. Constructing vectors in registers avoids a
 // stack snapshot and does not issue vector loads against mutable shared data.
 func sharedTagVectors(words *[4]uint64) (archsimd.Uint8x16, archsimd.Uint8x16) {
@@ -151,18 +138,4 @@ func firstSharedTag(words *[4]uint64, n int, key uint64) int {
 	pa := archsimd.LoadUint8x16(tagPositions[:16]).OrNot(am)
 	pb := archsimd.LoadUint8x16(tagPositions[16:]).OrNot(bm)
 	return min(int(pa.Min(pb).ReduceMin()), n)
-}
-func upperSharedTag(words *[4]uint64, n int, key uint8) (int, bool) {
-	if simd.Emulated() {
-		return upperSharedTagFallback(words, n, key)
-	}
-	a, b := sharedTagVectors(words)
-	target := archsimd.BroadcastUint8x16(key)
-	am := target.Less(a).ToInt8x16().ToBits()
-	bm := target.Less(b).ToInt8x16().ToBits()
-	pa := archsimd.LoadUint8x16(tagPositions[:16]).OrNot(am)
-	pb := archsimd.LoadUint8x16(tagPositions[16:]).OrNot(bm)
-	equal := a.Equal(target).ToInt8x16().ToBits().Or(b.Equal(target).ToInt8x16().ToBits())
-	// Padding can make mayEqual true, which only adds a full-key check.
-	return min(int(pa.Min(pb).ReduceMin()), n), equal.ReduceMax() != 0
 }

@@ -83,7 +83,6 @@ func (m *wordMap) cacheNode(cache *wordReadCache, id uint32) *wordNode {
 		defer source.mu.Unlock()
 	}
 	image.n, image.leaf = source.n, source.leaf
-	image.level = uint8(source.sequence.Load() >> 7 & 63)
 	image.prev, image.next = source.prev, source.next
 	image.tags, image.keys, image.payload = source.tags, source.keys, source.payload
 	image.sequence.Store(1)

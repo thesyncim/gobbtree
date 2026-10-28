@@ -183,20 +183,7 @@ retry:
 					}
 					return value, found
 				}
-				shift := uint(n.level)
-				prefix := *n.prefixWord() >> shift
-				projection := key >> shift
-				var i int
-				if projection < prefix {
-					i = 0
-				} else if projection > prefix|255 {
-					i = int(n.n) - 1
-				} else {
-					i = max(0, upperTag(&n.tags, int(n.n), uint8(projection))-1)
-					for i > 0 && n.tags[i] == uint8(projection) && n.keys[i] > key {
-						i--
-					}
-				}
+				i := routeCode(&n.keys, int(n.n), key)
 				if i > 0 {
 					low = n.keys[i]
 				}
@@ -284,21 +271,7 @@ retry:
 			if count == 0 {
 				continue retry
 			}
-			shift := uint(sequence >> 7 & 63)
-			prefix := atomic.LoadUint64(n.prefixWord()) >> shift
-			projection := key >> shift
-			var i int
-			if projection < prefix {
-				i = 0
-			} else if projection > prefix|255 {
-				i = count - 1
-			} else {
-				upper, mayEqual := upperSharedTag(n.tagWords(), count, uint8(projection))
-				i = max(0, upper-1)
-				for mayEqual && i > 0 && atomic.LoadUint64(&n.keys[i]) > key {
-					i--
-				}
-			}
+			i := routeAtomic(n, key, count)
 			child := atomic.LoadUint32(&n.inner().children[i])
 			if fill {
 				if child&wordLeafID != 0 {

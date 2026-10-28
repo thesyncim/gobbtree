@@ -2,6 +2,7 @@ package gobbtree
 
 import (
 	"runtime"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -68,18 +69,13 @@ func (m *wordMap) getOrdered(view *wordReadView, key, version uint64) (value uin
 			// The guarded words load after the opening sequence.
 			leaf := after(n, sequence)
 			entries := leaf.entries()
-			i := firstTag(&leaf.tags, count, key)
-			var candidate uint64
-			if i < count {
-				candidate = entries[i].key
-				if candidate < key {
-					i = leaf.lowerEntry(key)
-					if i < count {
-						candidate = entries[i].key
-					}
-				}
+			tags := leaf.tagWords()
+			acc ^= tags[0] ^ tags[1] ^ tags[2] ^ tags[3]
+			i, candidate, read, proven := leaf.findOrdered(key, count)
+			if !proven {
+				return 0, false, false
 			}
-			acc ^= candidate ^ uint64(i)
+			acc ^= candidate ^ read ^ uint64(i)
 			found = i < count && candidate == key
 			if found {
 				value = entries[i].value
@@ -95,33 +91,86 @@ func (m *wordMap) getOrdered(view *wordReadView, key, version uint64) (value uin
 		if count == 0 {
 			return 0, false, false
 		}
-		shift := uint(sequence >> 7 & 63)
-		prefix := *n.prefixWord() >> shift
-		acc ^= prefix
-		projection := key >> shift
-		var i int
-		if projection < prefix {
-			i = 0
-		} else if projection > prefix|255 {
-			i = count - 1
-		} else {
-			upper := upperTag(&n.tags, count, uint8(projection))
-			i = max(0, upper-1)
-			if upper > 0 && n.tags[upper-1] == uint8(projection) {
-				for i > 0 {
-					separator := n.keys[i]
-					acc ^= separator
-					if separator <= key {
-						break
-					}
-					i--
-				}
-			}
+		i, read, proven := routeOrdered(n, key, count)
+		if !proven {
+			return 0, false, false
 		}
-		acc ^= uint64(i)
+		acc ^= read
 		id = n.inner().children[i]
 	}
 	return 0, false, false
+}
+
+// routeOrdered routes key through a shared internal node with count
+// children, with plain loads, to the last separator at most key. A search's
+// result may depend on the words it read only through branches, which order
+// nothing on arm64, so the separators that bracket key are loaded again and
+// returned in acc: in the validated snapshot they prove the route, whatever
+// the search read. proven is false when they do not bracket key.
+func routeOrdered(n *wordNode, key uint64, count int) (i int, acc uint64, proven bool) {
+	i = routeCode(&n.keys, count, key)
+	acc = uint64(i)
+	if i > 0 {
+		low := n.keys[i&(nodeSize-1)]
+		acc ^= low
+		if low > key {
+			return i, acc, false
+		}
+	}
+	if i+1 < count {
+		high := n.keys[(i+1)&(nodeSize-1)]
+		acc ^= high
+		if high <= key {
+			return i, acc, false
+		}
+	}
+	return i, acc, true
+}
+
+// findOrdered finds key among a shared leaf's count entries with plain loads,
+// for a caller that folds the leaf's tag words into its validation. It
+// returns key's slot, or the slot a miss stops at, the key loaded there, and
+// in acc every other word it decided by. Like routeOrdered it proves a miss
+// by loads the caller validates: no tag matches, the first matching slot
+// holds a greater key, or the key below the lower bound is less. proven is
+// false when those loads disagree.
+func (n *wordNode) findOrdered(key uint64, count int) (i int, candidate, acc uint64, proven bool) {
+	entries := n.entries()
+	i = firstTag(&n.tags, count, key)
+	if i >= count {
+		return i, 0, 0, true
+	}
+	candidate = entries[i&(nodeSize-1)].key
+	if candidate >= key {
+		return i, candidate, 0, true
+	}
+	i = n.lowerEntry(key)
+	if i > 0 {
+		acc = entries[(i-1)&(nodeSize-1)].key
+		if acc >= key {
+			return i, candidate, acc, false
+		}
+	}
+	if i < count {
+		candidate = entries[i&(nodeSize-1)].key
+		if candidate < key {
+			return i, candidate, acc, false
+		}
+	}
+	return i, candidate, acc, true
+}
+
+// routeAtomic is routeOrdered with atomic loads.
+func routeAtomic(n *wordNode, key uint64, count int) int {
+	// Only the count separators load; padding sorts above every key.
+	var keys [nodeSize]uint64
+	for i := range keys {
+		keys[i] = ^uint64(0)
+		if i < count {
+			keys[i] = atomic.LoadUint64(&n.keys[i])
+		}
+	}
+	return routeCode(&keys, count, key)
 }
 
 // lookupOrdered is lookup with plain loads; acc carries the words it read.
@@ -212,23 +261,33 @@ func (m *wordMap) getMany8Ordered(view *wordReadView, keys *[batchLanes]uint64, 
 		}
 		i, size := positions[j], int(sequences[j]>>1&63)
 		entries := n.entries()
+		// Misses are proven as in findOrdered.
+		tags := n.tagWords()
+		read := lanes[j] ^ sequences[j] ^ tags[0] ^ tags[1] ^ tags[2] ^ tags[3]
+		proven := true
 		var key, value uint64
 		if i < size {
-			key = entries[i].key
+			key = entries[i&(nodeSize-1)].key
 			if key < keys[j] {
 				i = n.lowerEntry(keys[j])
+				if i > 0 {
+					below := entries[(i-1)&(nodeSize-1)].key
+					read ^= below
+					proven = below < keys[j]
+				}
 				if i < size {
-					key = entries[i].key
+					key = entries[i&(nodeSize-1)].key
+					proven = proven && key >= keys[j]
 				}
 			}
-			if i < size && key == keys[j] {
-				value = entries[i].value
+			if proven && i < size && key == keys[j] {
+				value = entries[i&(nodeSize-1)].value
 				dst[j] = Result[uint64]{value, true}
 			}
 		}
-		read := lanes[j] ^ sequences[j] ^ key ^ value ^ uint64(i)
+		read ^= key ^ value ^ uint64(i)
 		closing := *after((*uint64)(unsafe.Pointer(&n.sequence)), read)
-		ok[j] = closing == sequences[j]
+		ok[j] = proven && closing == sequences[j]
 		acc ^= read
 	}
 	return acc
@@ -282,30 +341,11 @@ func (m *wordMap) leafOrdered(view *wordReadView, key uint64) (id uint32, acc ui
 		if count == 0 {
 			return 0, 0, false
 		}
-		shift := uint(sequence >> 7 & 63)
-		prefix := *n.prefixWord() >> shift
-		acc ^= prefix
-		projection := key >> shift
-		var i int
-		if projection < prefix {
-			i = 0
-		} else if projection > prefix|255 {
-			i = count - 1
-		} else {
-			upper := upperTag(&n.tags, count, uint8(projection))
-			i = max(0, upper-1)
-			if upper > 0 && n.tags[upper-1] == uint8(projection) {
-				for i > 0 {
-					separator := n.keys[i]
-					acc ^= separator
-					if separator <= key {
-						break
-					}
-					i--
-				}
-			}
+		i, read, proven := routeOrdered(n, key, count)
+		if !proven {
+			return 0, 0, false
 		}
-		acc ^= uint64(i)
+		acc ^= read
 		id = n.inner().children[i]
 	}
 	return 0, 0, false
@@ -333,15 +373,19 @@ func (m *wordMap) copyOrdered(low, high uint64, limited, reverse, bounded bool, 
 	// Only a leaf reached by descent holds keys outside the range still to
 	// visit; a chained leaf starts past everything already visited.
 	searched := false
+	routed := true
 	switch {
 	case *next != 0 && *epoch == version:
 		id = *next
 	case !reverse:
-		id, _, _ = m.leafOrdered(view, low)
+		id, _, routed = m.leafOrdered(view, low)
 	case limited:
-		id, _, _ = m.leafOrdered(view, high)
+		id, _, routed = m.leafOrdered(view, high)
 	default:
-		id, _, _ = m.leafOrdered(view, ^uint64(0))
+		id, _, routed = m.leafOrdered(view, ^uint64(0))
+	}
+	if !routed {
+		return 0, false, false
 	}
 	searched = *next == 0 || *epoch != version
 	var leaves [scanLeaves]*wordNode
@@ -451,7 +495,10 @@ func (m *wordMap) lockLeafIfLaneFree(key uint64) (n *wordNode, id uint32, view *
 			id = view.cache.routes.lookupAtomic(key)
 		}
 		if id == 0 {
-			id, _, _ = m.leafOrdered(view, key)
+			var routed bool
+			if id, _, routed = m.leafOrdered(view, key); !routed {
+				continue
+			}
 		}
 		if n = view.slabNode(id); n == nil || id&wordLeafID == 0 {
 			continue

@@ -2,9 +2,12 @@ package gobbtree
 
 import (
 	"fmt"
+	"maps"
 	"math"
+	"math/rand/v2"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,30 +15,18 @@ import (
 	"unsafe"
 )
 
-func TestUpperTagBoundaries(t *testing.T) {
+func TestSharedTagBoundaries(t *testing.T) {
 	for seed := uint64(0); seed < 8; seed++ {
 		var tags [nodeSize]uint8
 		for i := range tags {
 			tags[i] = uint8(mixedKey(uint64(i) + seed*71))
 		}
-		slices.Sort(tags[:])
 		for count := 0; count <= nodeSize; count++ {
 			for key := 0; key < 256; key++ {
-				want := 0
-				for want < count && tags[want] <= uint8(key) {
-					want++
-				}
 				var node wordNode
 				node.storeTags(tags)
-				got, mayEqual := upperSharedTag(node.tagWords(), count, uint8(key))
-				if got != want || (want > 0 && tags[want-1] == uint8(key) && !mayEqual) {
-					t.Fatalf("atomic upper tags count=%d key=%d", count, key)
-				}
 				if firstSharedTag(node.tagWords(), count, uint64(key)) != firstTagScalar(&tags, count, uint8(key)) {
 					t.Fatal("atomic first tags")
-				}
-				if got := upperTag(&tags, count, uint8(key)); got != want {
-					t.Fatalf("seed=%d count=%d key=%d got=%d want=%d", seed, count, key, got, want)
 				}
 			}
 		}
@@ -559,4 +550,85 @@ func TestOptimisticTextReadsDuringLeafShifts(t *testing.T) {
 	readers.Wait()
 	close(stop)
 	writers.Wait()
+}
+
+// Shared readers route internal nodes as wordTree.route does: to the last
+// separator at most the key, with clustered separators that tie in the
+// writer's 16-bit column and spans from a few keys to the whole key space.
+func TestSharedInternalRouting(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	for trial := range 4000 {
+		count := 1 + rng.IntN(nodeSize)
+		base, spread := rng.Uint64(), uint64(1)<<rng.IntN(64)
+		if trial%3 == 0 {
+			spread = uint64(1 + rng.IntN(4096))
+		}
+		var keys [nodeSize]uint64
+		for i := range count {
+			keys[i] = base + rng.Uint64N(spread)
+		}
+		slices.Sort(keys[:count])
+		for i := count; i < nodeSize; i++ {
+			keys[i] = ^uint64(0)
+		}
+		tree := wordTree{shared: true, atomicWrites: trial%2 == 0}
+		var n wordNode
+		n.keys, n.n = keys, uint8(count)
+		tree.refit(&n)
+		for q := range 64 {
+			key := keys[rng.IntN(count)] + uint64(rng.IntN(5)) - 2
+			if q%8 == 0 {
+				key = rng.Uint64()
+			}
+			want := max(0, sort.Search(count, func(i int) bool { return keys[i] > key })-1)
+			if got, _, proven := routeOrdered(&n, key, count); got != want || !proven {
+				t.Fatalf("routeOrdered(%x) = %d, %v, want %d (keys %x)", key, got, proven, want, keys[:count])
+			}
+			if got := routeAtomic(&n, key, count); got != want {
+				t.Fatalf("routeAtomic(%x) = %d, want %d", key, got, want)
+			}
+			if got := tree.route(&n, key); got != want {
+				t.Fatalf("route(%x) = %d, want %d", key, got, want)
+			}
+		}
+	}
+}
+
+// Plain-load leaf searches return what a sorted search does and prove it,
+// with keys whose low bytes collide so tag matches miss.
+func TestSharedLeafFind(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 4))
+	for trial := range 4000 {
+		count := rng.IntN(nodeSize + 1)
+		base, spread := rng.Uint64(), uint64(1)<<(7+rng.IntN(57))
+		if trial%2 == 0 {
+			spread = uint64(256 * (1 + rng.IntN(64)))
+		}
+		var n wordNode
+		n.leaf, n.n = true, uint8(count)
+		set := map[uint64]bool{}
+		for len(set) < count {
+			set[base+rng.Uint64N(spread)&^1] = true
+		}
+		keys := slices.Sorted(maps.Keys(set))
+		entries := n.entries()
+		for i := range entries {
+			entries[i] = wordEntry{key: ^uint64(0)}
+			if i < count {
+				entries[i] = wordEntry{key: keys[i], value: keys[i] * 3}
+			}
+		}
+		n.publishNumeric(false)
+		for q := range 64 {
+			key := base + rng.Uint64N(spread)
+			if count > 0 && q%2 == 0 {
+				key = keys[rng.IntN(count)] + uint64(rng.IntN(3)) - 1
+			}
+			want, hit := slices.BinarySearch(keys, key)
+			i, candidate, _, proven := n.findOrdered(key, count)
+			if !proven || (i < count && candidate == key) != hit || hit && i != want {
+				t.Fatalf("findOrdered(%x) = %d, %x, %v; want %d, %v (keys %x)", key, i, candidate, proven, want, hit, keys)
+			}
+		}
+	}
 }

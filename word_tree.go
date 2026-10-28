@@ -250,10 +250,6 @@ func (t *wordTree) refitSeparators(n *wordNode, first, last int) {
 	if n.directory != 0 {
 		refillDirectory(&t.directories[n.directory-1], &n.keys, first, last)
 	}
-	if t.shared {
-		t.refitSharedSeparators(n, first, last)
-		return
-	}
 	inner := n.inner()
 	for i := first; i <= last; i++ {
 		inner.inline[i] = uint16(n.keys[i] >> n.shift)
@@ -298,8 +294,9 @@ func (t *wordTree) refit(n *wordNode) {
 		}
 		return
 	}
-	// Internal routing reads the key, inline and directory columns; only shared
-	// readers also use internal tags, which publishNumeric derives.
+	// Internal routing reads the key, inline and directory columns. Only the
+	// writer routes this way in a shared tree; its optimistic readers search
+	// the keys.
 	if t.atomicWrites {
 		for i := count; i < nodeSize; i++ {
 			t.storeKey(n, i, ^uint64(0))
@@ -310,17 +307,15 @@ func (t *wordTree) refit(n *wordNode) {
 		}
 	}
 
-	inner := n.inner()
 	n.shift = 0
 	if count > 0 {
 		n.shift = uint8(max(0, bits.Len64(n.keys[0]^n.keys[count-1])-16))
 	}
+	inner := n.inner()
 	for i, k := range n.keys {
 		inner.inline[i] = uint16(k >> n.shift)
 	}
-	if !t.shared {
-		*n.prefixWord() = n.keys[0]
-	}
+	*n.prefixWord() = n.keys[0]
 	if count >= 4 && n.keys[count-1]>>56-n.keys[0]>>56 >= uint64(2*count) {
 		if n.directory == 0 {
 			if end := len(t.freeDirectories); end > 0 {

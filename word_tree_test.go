@@ -200,22 +200,20 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 			if i > 0 && n.keyAt(i-1) >= n.keyAt(i) {
 				t.Fatal("unordered numeric node")
 			}
-			// Unshared internal nodes route by key, inline and directory
-			// columns; their tags are unused and not maintained.
-			tag := uint8(n.keyAt(i))
-			if tr.shared && !n.leaf {
-				tag = uint8(n.keyAt(i) >> uint(n.sequence.Load()>>7&63))
-			}
-			if (tr.shared || n.leaf) && n.tags[i] != tag {
+			// Internal nodes route by key, inline and directory columns;
+			// their tags are unused and not maintained.
+			if n.leaf && n.tags[i] != uint8(n.keyAt(i)) {
 				t.Fatal("stale numeric tag")
 			}
+			if !n.leaf && n.inner().inline[i] != uint16(n.keyAt(i)>>n.shift) {
+				t.Fatal("stale numeric routing column")
+			}
+		}
+		if tr.shared && n.sequence.Load()>>1&63 != uint64(n.n) {
+			t.Fatal("stale shared count")
 		}
 		for i := int(n.n); i < nodeSize; i++ {
-			padding := uint8(0)
-			if tr.shared && !n.leaf {
-				padding = 255
-			}
-			if n.keyAt(i) != math.MaxUint64 || (tr.shared || n.leaf) && n.tags[i] != padding {
+			if n.keyAt(i) != math.MaxUint64 || n.leaf && n.tags[i] != 0 {
 				t.Fatal("invalid numeric padding")
 			}
 		}

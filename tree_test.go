@@ -428,10 +428,6 @@ func TestKernelsMatchScalar(t *testing.T) {
 				if a, b := upperWordInline(&inline, n, uint16(q)), upperWordInlineScalar(&inline, n, uint16(q)); a != want || b != want {
 					t.Fatalf("n=%d key=%d inline=%d scalar=%d want=%d", n, q, a, b, want)
 				}
-				want = sort.Search(n, func(i int) bool { return uint64(tags[i]) > q })
-				if a, b := upperTag(&tags, n, uint8(q)), upperTagScalar(&tags, n, uint8(q)); a != want || b != want {
-					t.Fatalf("n=%d key=%d upperTag=%d scalar=%d want=%d", n, q, a, b, want)
-				}
 				want = n
 				if i := slices.Index(tags[:n], uint8(q)); i >= 0 {
 					want = i

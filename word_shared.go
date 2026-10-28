@@ -1,7 +1,6 @@
 package gobbtree
 
 import (
-	"math/bits"
 	"sync/atomic"
 	"unsafe"
 )
@@ -39,66 +38,29 @@ func (n *wordNode) storeTags(tags [nodeSize]uint8) {
 	atomic.StoreUint64(&dst[3], src[3])
 }
 
-// The structural writer excludes other internal-node writers. Optimistic
-// readers validate its global epoch, and every tag word they load stays atomic.
-func (t *wordTree) refitSharedSeparators(n *wordNode, first, last int) {
-	shift := uint(n.sequence.Load() >> 7 & 63)
-	inner := n.inner()
-	if !t.atomicWrites {
-		for i := first; i <= last; i++ {
-			n.tags[i] = uint8(n.keys[i] >> shift)
-			inner.inline[i] = uint16(n.keys[i] >> n.shift)
-		}
-		return
-	}
-	tags := n.tags
-	for i := first; i <= last; i++ {
-		tags[i] = uint8(n.keys[i] >> shift)
-		inner.inline[i] = uint16(n.keys[i] >> n.shift)
-	}
-	// Native word views preserve byte order and the existing aligned atomic
-	// tag representation. An adjacent pair touches only one or two words.
-	src := (*[4]uint64)(unsafe.Pointer(&tags))
-	dst := n.tagWords()
-	firstWord, lastWord := first>>3, last>>3
-	atomic.StoreUint64(&dst[firstWord], src[firstWord])
-	if lastWord != firstWord {
-		atomic.StoreUint64(&dst[lastWord], src[lastWord])
-	}
-}
-
 func loadSharedTags(src *[4]uint64) [nodeSize]uint8 {
 	words := [4]uint64{atomic.LoadUint64(&src[0]), atomic.LoadUint64(&src[1]), atomic.LoadUint64(&src[2]), atomic.LoadUint64(&src[3])}
 	return *(*[nodeSize]uint8)(unsafe.Pointer(&words))
 }
 func (n *wordNode) loadTags() [nodeSize]uint8 { return loadSharedTags(n.tagWords()) }
+
+// publishNumeric publishes a node's count for optimistic readers in its
+// sequence word and, for a leaf, the byte tags they search. Readers route
+// internal nodes by their separators alone.
 func (n *wordNode) publishNumeric(atomicWrites bool) {
-	var tags [nodeSize]uint8
-	shift := 0
-	if !n.leaf && n.n > 0 {
-		shift = max(0, bits.Len64(n.keys[0]^n.keys[n.n-1])-8)
-		prefix := n.keys[0] & (^uint64(0) << uint(shift+8))
+	if n.leaf {
+		var tags [nodeSize]uint8
+		for i := 0; i < int(n.n); i++ {
+			tags[i] = uint8(n.keyAt(i))
+		}
 		if atomicWrites {
-			atomic.StoreUint64(n.prefixWord(), prefix)
+			n.storeTags(tags)
 		} else {
-			*n.prefixWord() = prefix
+			n.tags = tags
 		}
-	}
-	for i := 0; i < int(n.n); i++ {
-		tags[i] = uint8(n.keyAt(i) >> shift)
-	}
-	if !n.leaf {
-		for i := int(n.n); i < nodeSize; i++ {
-			tags[i] = 255
-		}
-	}
-	if atomicWrites {
-		n.storeTags(tags)
-	} else {
-		n.tags = tags
 	}
 	sequence := n.sequence.Load()
-	n.sequence.Store(sequence&^(wordSequenceStep-2) | uint64(n.n)<<1 | uint64(shift)<<7)
+	n.sequence.Store(sequence&^(wordSequenceStep-2) | uint64(n.n)<<1)
 }
 
 // The leaf or structural lock excludes other writers while tags are copied.
