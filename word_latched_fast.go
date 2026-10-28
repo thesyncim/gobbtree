@@ -138,6 +138,7 @@ func (t *latchedTree) upgradeHinted(key uint64) (leaf *wordNode, version uint64,
 	return n, word, i, true
 }
 
+
 // getOrdered is get's optimistic descent with plain loads only, as
 // lock coupling requires them ordered: each node's words load after its
 // latch word, by address; its child's latch word loads before its closing

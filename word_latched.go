@@ -58,7 +58,9 @@ const (
 // kind, linked through the directory field, which readers never read.
 // Only splits and merges take its lock, to take or give a page.
 type latchedPages struct {
-	mu                sync.Mutex
+	// A spin lock, as upstream's free lists': held only to take or give a
+	// page, it never parks a goroutine.
+	mu                storeLock
 	slabs             []*wordNode
 	used              int
 	freeLeaf          uint32
