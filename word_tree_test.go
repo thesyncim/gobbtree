@@ -246,8 +246,10 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 			}
 			child := n.inner().children[i]
 			walk(child, level+1)
-			if n.keyAt(i) != tr.node(child).keyAt(0) {
-				t.Fatal("stale numeric minimum")
+			// Separators bound their subtrees from below; an inner
+			// node's first separator is its own.
+			if c := tr.node(child); n.keyAt(i) > c.keyAt(0) || !c.leaf && n.keyAt(i) != c.keyAt(0) {
+				t.Fatal("numeric separator above its subtree")
 			}
 		}
 	}

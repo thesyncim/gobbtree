@@ -576,7 +576,9 @@ func (m *wordMap) insertInLeaf(n *wordNode, id uint32, view *wordReadView, key, 
 	if i == int(n.n) && n.n > 0 && key < n.entries()[n.n-1].key {
 		i = n.lowerEntry(key)
 	}
-	if i == 0 {
+	if i == 0 && n.prev == 0 {
+		// Separators bound their subtrees' keys from below, so a new
+		// minimum changes none, except below the leftmost leaf.
 		return 0, false, false
 	}
 	m.disableReadCache()
@@ -594,7 +596,9 @@ func (m *wordMap) deleteInLeaf(n *wordNode, key uint64) (value uint64, found, do
 	if i == int(n.n) || n.entries()[i].key != key {
 		return 0, false, true
 	}
-	if n.n <= minNodeSize || i == 0 {
+	if n.n <= minNodeSize || i == 0 && n.prev == 0 {
+		// Removing a leaf's minimum leaves its separator a lower bound;
+		// the tree's minimum stays exact.
 		return 0, false, false
 	}
 	m.disableReadCache()

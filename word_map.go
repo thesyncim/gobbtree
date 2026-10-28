@@ -403,7 +403,9 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 			if i == int(n.n) && n.n > 0 && key < n.entries()[n.n-1].key {
 				i = n.lowerEntry(key)
 			}
-			if i > 0 {
+			// Separators are lower bounds: only a new minimum of the
+			// leftmost leaf changes one.
+			if i > 0 || n.prev != 0 {
 				if m.tree.atomicWrites {
 					m.disableReadCache()
 					n.beginLeafWrite()
@@ -507,7 +509,7 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 		guard.unlock()
 		return 0, false
 	}
-	if n.n > minNodeSize && i > 0 {
+	if n.n > minNodeSize && (i > 0 || n.prev != 0) {
 		if m.tree.atomicWrites {
 			m.disableReadCache()
 			n.beginLeafWrite()

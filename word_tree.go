@@ -539,7 +539,7 @@ func (t *wordTree) insertAtParent(parent *wordNode, index int, leaf *wordNode, k
 			return false
 		}
 		t.insertLeaf(leaf, 0, key, value)
-		t.storeKey(parent, index, key)
+		t.lowerKey(parent, index, key)
 		t.refitSeparators(parent, index, index)
 	}
 	if t.routesDirty {
@@ -570,8 +570,8 @@ func (t *wordTree) insertAbsent(id uint32, key, value uint64) {
 		}
 	}
 	t.insertAbsent(child, key, value)
-	if n.keys[i] != t.node(child).keyAt(0) {
-		t.storeKey(n, i, t.node(child).keyAt(0))
+	if minimum := t.node(child).keyAt(0); minimum < n.keys[i] {
+		t.storeKey(n, i, minimum)
 		t.refit(n)
 	}
 }
@@ -607,6 +607,18 @@ func (t *wordTree) insertChild(n *wordNode, i int, child uint32) {
 	n.n++
 	t.refit(n)
 }
+// Separators bound their subtrees' keys from below; an inner node's first
+// separator is its own. Leaf writers may remove a leaf's minimum, or insert
+// a new one above its separator, without touching any other node, so
+// separators are never raised except where entries cross a boundary, and
+// only where the leaves on both sides are locked. lowerKey lowers separator
+// i to key, for a subtree whose minimum may only have dropped.
+func (t *wordTree) lowerKey(n *wordNode, i int, key uint64) {
+	if key < n.keys[i] {
+		t.storeKey(n, i, key)
+	}
+}
+
 func (t *wordTree) removeChild(n *wordNode, i int) {
 	count := int(n.n)
 	t.moveKeys(n, i, i+1, count-i-1)
@@ -644,7 +656,7 @@ func (t *wordTree) delete(key uint64) (uint64, bool) {
 	if t.root == 0 {
 		return 0, false
 	}
-	value, ok := t.remove(t.root, key)
+	value, ok := t.remove(t.root, key, true)
 	if !ok {
 		return value, false
 	}
@@ -673,7 +685,10 @@ func (t *wordTree) delete(key uint64) (uint64, bool) {
 	}
 	return value, true
 }
-func (t *wordTree) remove(id uint32, key uint64) (uint64, bool) {
+// remove deletes key from subtree id. leftmost reports that the subtree's
+// first separator is the tree's minimum, which stays exact: route tables span
+// from it.
+func (t *wordTree) remove(id uint32, key uint64, leftmost bool) (uint64, bool) {
 	n := t.node(id)
 	if n.leaf {
 		i := n.exactEntry(key)
@@ -686,18 +701,22 @@ func (t *wordTree) remove(id uint32, key uint64) (uint64, bool) {
 
 	i := t.route(n, key)
 	child := n.inner().children[i]
-	value, ok := t.remove(child, key)
+	value, ok := t.remove(child, key, leftmost && i == 0)
 	if !ok {
 		return value, false
 	}
+	changed := false
 	if t.node(child).n < minNodeSize {
 		t.rebalance(n, i)
-		for j := 0; j < int(n.n); j++ {
-			t.storeKey(n, j, t.node(n.inner().children[j]).keyAt(0))
+		changed = true
+	}
+	if leftmost && i == 0 {
+		if minimum := t.node(n.inner().children[0]).keyAt(0); minimum != n.keys[0] {
+			t.storeKey(n, 0, minimum)
+			changed = true
 		}
-		t.refit(n)
-	} else if n.keys[i] != t.node(child).keyAt(0) {
-		t.storeKey(n, i, t.node(child).keyAt(0))
+	}
+	if changed {
 		t.refit(n)
 	}
 	return value, true
@@ -749,6 +768,7 @@ func (t *wordTree) rebalance(parent *wordNode, i int) {
 		child.n++
 		t.refit(left)
 		t.refit(child)
+		t.storeKey(parent, i, child.keyAt(0))
 		return
 	}
 	if i+1 < int(parent.n) && t.node(children[i+1]).n > minNodeSize {
@@ -767,6 +787,7 @@ func (t *wordTree) rebalance(parent *wordNode, i int) {
 		child.n++
 		t.refit(right)
 		t.refit(child)
+		t.storeKey(parent, i+1, right.keyAt(0))
 		return
 	}
 	if i > 0 {
@@ -975,7 +996,7 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 		t.refit(left)
 		t.refit(right)
 	}
-	t.storeKey(parent, leftIndex, left.keyAt(0))
+	t.lowerKey(parent, leftIndex, left.keyAt(0))
 	t.storeKey(parent, leftIndex+1, right.keyAt(0))
 	if borrowedOuter {
 		// Borrowing can also change the outer sibling's separator.
@@ -1145,7 +1166,12 @@ func (t *wordTree) borrowOuterLeaf(parent *wordNode, index int) int {
 	}
 	outer.n += uint8(moved)
 	t.refit(outer)
-	t.storeKey(parent, outside, outer.keyAt(0))
+	if outside < index {
+		// The middle leaf's first entries moved out to the outer leaf.
+		t.storeKey(parent, index-1, middle.keyAt(0))
+	} else {
+		t.storeKey(parent, outside, outer.keyAt(0))
+	}
 	return pair
 }
 
@@ -1195,7 +1221,7 @@ func (t *wordTree) splitLeafPair(parent *wordNode, index int, key, value uint64)
 		t.settleLeafPlain(right, rightCount)
 		t.settleLeafPlain(extra, 0)
 	}
-	t.storeKey(parent, index, left.keyAt(0))
+	t.lowerKey(parent, index, left.keyAt(0))
 	t.storeKey(parent, index+1, right.keyAt(0))
 	t.insertChild(parent, index+2, extraID)
 }
