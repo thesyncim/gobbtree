@@ -38,6 +38,15 @@ func checkLatchedTree(t testing.TB, tr *latchedTree) int {
 			t.Fatalf("node %#x still held: %#x", id, word)
 		}
 		count := int(n.n)
+		if seqlockPlainStores {
+			wantHigh := uint64(0)
+			if bounded {
+				wantHigh = high
+			}
+			if lowFence(n) != low || highFence(n) != wantHigh {
+				t.Fatalf("node %#x fences [%d, %d), routed [%d, %d)", id, lowFence(n), highFence(n), low, wantHigh)
+			}
+		}
 		if id&wordLeafID != 0 {
 			if !n.leaf || count > nodeSize || !isRoot && count < leafMinLen {
 				t.Fatalf("leaf %#x: %d entries", id, count)

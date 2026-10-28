@@ -2,6 +2,7 @@ package gobbtree
 
 import (
 	"encoding/binary"
+	"math/bits"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -35,6 +36,7 @@ type latchedTree struct {
 	root      atomic.Uint32
 	rightmost atomic.Uint32
 	blocks    atomic.Pointer[[]*wordNode]
+	routes    atomic.Pointer[latchedRoutes]
 	pages     latchedPages
 }
 
@@ -118,12 +120,17 @@ func (t *latchedTree) alloc(leaf bool) (uint32, *wordNode, uint64) {
 	n := t.node(id)
 	version := n.lockExclusive()
 	n.directory = 0
-	n.leaf = leaf
+	// A page keeps its kind for life: only a fresh one takes it, as no
+	// reader reaches it yet.
+	if n.leaf != leaf {
+		n.leaf = leaf
+	}
 	if leaf {
 		for i := range n.entries() {
 			storeEntryRacing(n, i, wordEntry{key: ^uint64(0)})
 		}
 		storeTagsRacing(n, [nodeSize]uint8{})
+		setLeafFences(n, 0, 0)
 	} else {
 		for i := range n.keys {
 			storeKeyRacing(n, i, ^uint64(0))
@@ -131,6 +138,10 @@ func (t *latchedTree) alloc(leaf bool) (uint32, *wordNode, uint64) {
 		}
 	}
 	storeCountRacing(n, 0)
+	if !leaf {
+		setHighFence(n, 0)
+		refitWindows(n)
+	}
 	return id, n, version
 }
 
@@ -263,9 +274,73 @@ func loadChildRacing(n *wordNode, i int) uint32 {
 // carries the words that prove it; proven is false when they don't.
 func routeRacing(n *wordNode, key uint64, count int) (i int, acc uint64, proven bool) {
 	if seqlockPlainStores {
-		return routeOrdered(n, key, count)
+		return routeWindows(n, key, count)
 	}
 	return routeAtomic(n, key, count), 0, true
+}
+
+// routeWindows routes key by an internal node's 16-bit windows of its
+// separators, as upstream's u64 nodes route by 2-byte inline keys: one line
+// of windows instead of four of keys. Every separator shares the bits above
+// shift+16 with the node's first (the prefix); a key outside that prefix
+// goes to the first child or the last. Inside, the windows that bracket the
+// key's are loaded again into acc, which proves the route in the validated
+// snapshot however the search found it. A window equal to the key's leaves
+// the full keys to decide (routeOrdered), as upstream's ties go to heads.
+func routeWindows(n *wordNode, key uint64, count int) (i int, acc uint64, proven bool) {
+	shift := uint(n.shift) & 63
+	prefix := *n.prefixWord()
+	acc = prefix ^ uint64(shift)
+	projection := key >> shift
+	low := (prefix >> shift) &^ 0xffff
+	switch {
+	case projection < low:
+		return 0, acc, true
+	case projection > low|0xffff:
+		return count - 1, acc, true
+	}
+	window := uint16(projection)
+	inline := &n.inner().inline
+	i = max(0, upperWordInline(inline, count, window)-1)
+	if i > 0 {
+		below := inline[i&(nodeSize-1)]
+		acc ^= uint64(below)
+		if below >= window {
+			if below > window {
+				return i, acc, false
+			}
+			j, more, ok := routeOrdered(n, key, count)
+			return j, acc ^ more, ok
+		}
+	}
+	if i+1 < count {
+		above := inline[(i+1)&(nodeSize-1)]
+		acc ^= uint64(above)
+		if above <= window {
+			return i, acc, false
+		}
+	}
+	return i, acc ^ uint64(i), true
+}
+
+// refitWindows derives internal node n's routing windows from its
+// separators, while the node is held exclusively. Only plain-store builds
+// route by them; elsewhere readers search the keys atomically.
+func refitWindows(n *wordNode) {
+	if !seqlockPlainStores {
+		return
+	}
+	count := int(n.n)
+	shift := 0
+	if count > 0 {
+		shift = max(0, bits.Len64(n.keys[0]^n.keys[count-1])-16)
+	}
+	n.shift = uint8(shift)
+	*n.prefixWord() = n.keys[0]
+	inline := &n.inner().inline
+	for i, k := range n.keys {
+		inline[i] = uint16(k >> shift)
+	}
 }
 
 // routeOrdered routes key through an internal node with count children,
@@ -421,38 +496,89 @@ type treePath struct {
 // over from the root. path, if not nil, keeps the internal nodes. The tree
 // has a root.
 func (t *latchedTree) descend(key uint64, mode int, path *treePath) (leaf *wordNode, leafID uint32, version uint64) {
+	leaf, leafID, version, _ = t.descendCarrying(key, mode, path)
+	return leaf, leafID, version
+}
+
+// descendCarrying is descend, also returning the words an optimistic
+// reader must fold into its leaf's check: the fences of a hinted leaf.
+func (t *latchedTree) descendCarrying(key uint64, mode int, path *treePath) (leaf *wordNode, leafID uint32, version, carried uint64) {
 restart:
 	for {
 		if path != nil {
 			path.depth = 0
 		}
 		dir := t.dir()
-		id := t.root.Load()
-		n := nodeIn(dir, id)
-		if n == nil {
-			continue
+		var n *wordNode
+		var v, carry uint64
+		var id uint32
+		var bucket *uint32
+		var routes *latchedRoutes
+		jumped := false
+		if seqlockPlainStores && path == nil {
+			// A descent that keeps no path may start at a hinted leaf
+			// parent (word_latched_routes.go).
+			routes = t.routes.Load()
+			if routes == nil || routes.root != t.root.Load() {
+				routes = t.refreshRoutes(dir)
+			}
+			if routes != nil {
+				if bucket = routes.bucket(key); bucket != nil {
+					if hint := *bucket; hint&wordLeafID != 0 {
+						if c := nodeIn(dir, hint); c != nil {
+							version = latchLeaf(c, mode)
+							count, low, high := uint64(c.n), lowFence(c), highFence(c)
+							if count != 0 && holds(low, high, key) {
+								return c, hint, version, count ^ low ^ high
+							}
+							unlatchLeaf(c, mode, version)
+						}
+					} else if hint != 0 {
+						if n, v, carry, jumped = jump(dir, hint, key); jumped {
+							id = hint
+						}
+					}
+				}
+			}
 		}
-		if id&wordLeafID != 0 {
-			version = latchLeaf(n, mode)
-			if t.root.Load() != id {
-				unlatchLeaf(n, mode, version)
+		if !jumped {
+			id = t.root.Load()
+			n = nodeIn(dir, id)
+			if n == nil {
 				continue
 			}
-			return n, id, version
-		}
-		v := n.readVersion()
-		if t.root.Load() != id {
-			continue
+			if id&wordLeafID != 0 {
+				version = latchLeaf(n, mode)
+				if t.root.Load() != id {
+					unlatchLeaf(n, mode, version)
+					continue
+				}
+				return n, id, version, 0
+			}
+			v = n.readVersion()
+			if t.root.Load() != id {
+				continue
+			}
 		}
 		for depth := 0; depth < maxDepth; depth++ {
 			count := loadCountRacing(n)
 			if count == 0 {
 				continue restart
 			}
+			if depth == 0 && routes != nil && !jumped && count >= 2*routes.rootCount {
+				// The root doubled its children: the hints get finer.
+				routes = nil
+				if r := t.refreshRoutes(dir); r != nil {
+					t.routes.Store(r)
+				}
+				bucket = nil
+			}
 			i, acc, proven := routeRacing(n, key, count)
 			if !proven {
 				continue restart
 			}
+			acc ^= carry
+			carry = 0
 			child := loadChildRacing(n, i)
 			var low, high uint64
 			if path != nil {
@@ -464,6 +590,10 @@ restart:
 				}
 				acc ^= low ^ high
 			}
+			// A leaf parent fills the hints, for its leaf if it holds the
+			// key's bucket whole, or else for itself if reached from the
+			// root. Hints are checked where used, so these reads need none.
+			fill := bucket != nil && child&wordLeafID != 0
 			if !n.isUnchangedAfter(v, acc^uint64(child)) {
 				continue restart
 			}
@@ -481,7 +611,10 @@ restart:
 					unlatchLeaf(c, mode, version)
 					continue restart
 				}
-				return c, child, version
+				if fill && !routes.fillLeaf(child, key, lowFence(c), highFence(c)) && !jumped {
+					routes.fill(id, key, lowFence(n), highFence(n))
+				}
+				return c, child, version, 0
 			}
 			cv := c.readVersion()
 			if !n.isUnchanged(v) {
@@ -500,13 +633,13 @@ func (t *latchedTree) get(key uint64) (uint64, bool) {
 	if t.root.Load() == 0 {
 		return 0, false
 	}
-	leaf, _, version := t.descend(key, optimistic, nil)
+	leaf, _, version, carried := t.descendCarrying(key, optimistic, nil)
 	count := loadCountRacing(leaf)
 	if seqlockPlainStores {
 		// The guarded words load after the leaf's version.
 		n := after(leaf, version)
 		tags := n.tagWords()
-		acc := tags[0] ^ tags[1] ^ tags[2] ^ tags[3] ^ uint64(count)
+		acc := tags[0] ^ tags[1] ^ tags[2] ^ tags[3] ^ uint64(count) ^ carried
 		i, candidate, read, proven := n.findOrdered(key, count)
 		if proven && count <= nodeSize {
 			acc ^= candidate ^ read ^ uint64(i)

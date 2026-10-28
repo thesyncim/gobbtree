@@ -31,15 +31,38 @@ func (t *latchedTree) insert(key, value uint64, policy int, merge func(key, old,
 }
 
 func (t *latchedTree) insertLatched(key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
-	leaf, _, version := t.descend(key, exclusive, nil)
+	leaf, version, i, ok := t.upgrade(key)
+	if !ok {
+		leaf, _, version = t.descend(key, exclusive, nil)
+		i = leaf.exactEntry(key)
+	}
 	defer leaf.unlockExclusive(version)
-	return insertInto(leaf, key, value, policy, merge)
+	return insertIntoAt(leaf, i, key, value, policy, merge)
+}
+
+// upgrade reads key's leaf optimistically, searches it, and then takes it
+// exclusively at the version it read, by a compare-and-swap, as a split
+// takes internal nodes: the search then holds, and its loads overlapped
+// the latch's instead of following it. ok is false if a thread changed or
+// held the leaf meanwhile.
+func (t *latchedTree) upgrade(key uint64) (leaf *wordNode, version uint64, i int, ok bool) {
+	if !seqlockPlainStores {
+		// Racing plain searches need plain-store builds.
+		return nil, 0, 0, false
+	}
+	leaf, _, version = t.descend(key, optimistic, nil)
+	i = leaf.exactEntry(key)
+	return leaf, version, i, leaf.tryLockAt(version)
 }
 
 // insertInto inserts into leaf, held exclusively, if it holds key or has
 // room; done is false when the leaf is full and must split.
 func insertInto(leaf *wordNode, key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
-	i := leaf.exactEntry(key)
+	return insertIntoAt(leaf, leaf.exactEntry(key), key, value, policy, merge)
+}
+
+// insertIntoAt is insertInto given i, leaf.exactEntry(key).
+func insertIntoAt(leaf *wordNode, i int, key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
 	if i < int(leaf.n) && leaf.entries()[i].key == key {
 		old = leaf.entries()[i].value
 		switch policy {
@@ -254,6 +277,8 @@ func (t *latchedTree) split(path *treePath, leaf *wordNode, leafID uint32, leafV
 		t.rightmost.Store(rightID)
 	}
 	separator, carried := right.entries()[0].key, rightID
+	setLeafFences(right, separator, highFence(leaf))
+	setHighFence(leaf, separator)
 	for level := depth - 1; level >= top && carried != 0; level-- {
 		n, edge := path.levels[level].n, path.levels[level].edge+1
 		if int(n.n) < nodeSize {
@@ -263,8 +288,11 @@ func (t *latchedTree) split(path *treePath, leaf *wordNode, leafID uint32, leafV
 		}
 		splitID, split, version := t.alloc(false)
 		fresh.push(split, version)
+		split.level = n.level
 		cut, left := ofSplit(nodeSize, edge, innerMinLen)
 		moveChildren(split, 0, n, cut, nodeSize-cut)
+		setHighFence(split, highFence(n))
+		setHighFence(n, split.keys[0])
 		if left {
 			insertChildFit(n, edge, separator, carried)
 		} else {
@@ -276,6 +304,10 @@ func (t *latchedTree) split(path *treePath, leaf *wordNode, leafID uint32, leafV
 		// The root split: a new root takes the old one and its new sibling.
 		rootID, root, version := t.alloc(false)
 		fresh.push(root, version)
+		root.level = 1
+		if old := t.node(t.root.Load()); !old.leaf {
+			root.level = old.level + 1
+		}
 		insertChildFit(root, 0, 0, t.root.Load())
 		insertChildFit(root, 1, separator, carried)
 		t.root.Store(rootID)
@@ -382,6 +414,7 @@ func insertChildFit(n *wordNode, i int, separator uint64, child uint32) {
 	storeKeyRacing(n, i, separator)
 	storeChildRacing(n, i, child)
 	storeCountRacing(n, count+1)
+	refitWindows(n)
 }
 
 // removeChild removes internal node n's child i.
@@ -395,6 +428,7 @@ func removeChild(n *wordNode, i int) {
 	storeKeyRacing(n, count-1, ^uint64(0))
 	storeChildRacing(n, count-1, 0)
 	storeCountRacing(n, count-1)
+	refitWindows(n)
 }
 
 // moveChildren moves count children of internal node src from from, with
@@ -420,4 +454,6 @@ func moveChildren(dst *wordNode, at int, src *wordNode, from, count int) {
 	}
 	storeCountRacing(dst, dstCount+count)
 	storeCountRacing(src, srcCount-count)
+	refitWindows(dst)
+	refitWindows(src)
 }

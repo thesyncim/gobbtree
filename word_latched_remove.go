@@ -57,9 +57,23 @@ func descentKey(which int, key uint64) uint64 {
 }
 
 func (t *latchedTree) removeLatched(which int, key uint64, condition func(key, value uint64) bool) (k, v uint64, removed, done bool) {
-	leaf, leafID, version := t.descend(descentKey(which, key), exclusive, nil)
+	var leaf *wordNode
+	var leafID uint32
+	var version uint64
+	var i int
+	var ok bool
+	if seqlockPlainStores {
+		// Search optimistically, then take the leaf at the version read, as
+		// insert's upgrade does.
+		leaf, leafID, version = t.descend(descentKey(which, key), optimistic, nil)
+		i, ok = target(leaf, which, key)
+	}
+	if leaf == nil || !leaf.tryLockAt(version) {
+		// Changed or held since read: latch it the waiting way.
+		leaf, leafID, version = t.descend(descentKey(which, key), exclusive, nil)
+		i, ok = target(leaf, which, key)
+	}
 	defer leaf.unlockExclusive(version)
-	i, ok := target(leaf, which, key)
 	if !ok {
 		return 0, 0, false, true
 	}
@@ -117,6 +131,9 @@ func (t *latchedTree) removeRebalancing(which int, key uint64, condition func(ke
 		// The root lost a separator; one without any is popped.
 		if root := path.levels[0].n; root.n == 1 {
 			t.root.Store(root.inner().children[0])
+			// A freed node holds no children, so that a route that
+			// reaches it through a stale hint starts over.
+			storeCountRacing(root, 0)
 			t.free(path.levels[0].id)
 		}
 	}
@@ -192,11 +209,13 @@ func (t *latchedTree) fixUnderfullChild(parent *wordNode, index int, leaves bool
 		l, r := t.node(leftID), t.node(rightID)
 		if leaves {
 			moveEntries(l, int(l.n), r, 0, int(r.n))
+			setHighFence(l, highFence(r))
 			if t.rightmost.Load() == rightID {
 				t.rightmost.Store(leftID)
 			}
 		} else {
 			moveChildren(l, int(l.n), r, 0, int(r.n))
+			setHighFence(l, highFence(r))
 		}
 		removeChild(parent, right)
 		t.free(rightID)
@@ -206,14 +225,21 @@ func (t *latchedTree) fixUnderfullChild(parent *wordNode, index int, leaves bool
 	case sibling < index && leaves:
 		moveEntries(child, 0, other, int(other.n)-1, 1)
 		storeKeyRacing(parent, index, child.entries()[0].key)
+		setLeafFences(child, child.entries()[0].key, highFence(child))
+		setHighFence(other, child.entries()[0].key)
 	case sibling < index:
 		moveChildren(child, 0, other, int(other.n)-1, 1)
 		storeKeyRacing(parent, index, child.keys[0])
+		setHighFence(other, child.keys[0])
 	case leaves:
 		moveEntries(child, int(child.n), other, 0, 1)
 		storeKeyRacing(parent, sibling, other.entries()[0].key)
+		setLeafFences(other, other.entries()[0].key, highFence(other))
+		setHighFence(child, other.entries()[0].key)
 	default:
 		moveChildren(child, int(child.n), other, 0, 1)
 		storeKeyRacing(parent, sibling, other.keys[0])
+		setHighFence(child, other.keys[0])
 	}
+	refitWindows(parent)
 }
