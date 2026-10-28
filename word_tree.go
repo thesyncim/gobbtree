@@ -17,8 +17,11 @@ type wordNode struct {
 	tags                  [nodeSize]uint8
 	sequence              atomic.Uint64
 	mu                    storeLock
-	payload               [nodeSize]uint64
-	keys                  [nodeSize]uint64
+	// A shared leaf's last insertion position plus one, which only its
+	// writers use: an insert just past it continues an ascending run.
+	run     uint8
+	payload [nodeSize]uint64
+	keys    [nodeSize]uint64
 }
 
 type wordEntry struct{ key, value uint64 }
@@ -101,25 +104,28 @@ type wordTree struct {
 	deletedKey   uint64
 	deletedIndex int
 	// The last key inserted. A full leaf whose insertion point follows it
-	// is in an ascending run. Shared trees' leaf writers set it concurrently;
-	// a stale key only changes how a leaf splits.
-	inserted       uint64
-	insertedShared atomic.Uint64
+	// is in an ascending run. Shared trees keep a position per leaf instead
+	// (wordNode.run): leaf writers on every core would contend for a key
+	// here. A stale hint only changes how a leaf splits.
+	inserted uint64
 }
 
-// noteInsert records key as the last key inserted.
-func (t *wordTree) noteInsert(key uint64) {
+// noteInsert records that key was inserted at position i of leaf n.
+func (t *wordTree) noteInsert(n *wordNode, i int, key uint64) {
 	if !t.shared {
 		t.inserted = key
 	} else {
-		t.insertedShared.Store(key)
+		n.run = uint8(i + 1)
 	}
 }
-func (t *wordTree) lastInserted() uint64 {
+
+// continuesRun reports that inserting at position i of full leaf n follows
+// the last insertion, as an ascending run does.
+func (t *wordTree) continuesRun(n *wordNode, i int) bool {
 	if !t.shared {
-		return t.inserted
+		return n.entries()[i-1].key == t.inserted
 	}
-	return t.insertedShared.Load()
+	return int(n.run) == i
 }
 
 func (t *wordTree) node(id uint32) *wordNode {
@@ -401,7 +407,7 @@ func (n *wordNode) appendLeafPlain(key, value uint64) {
 }
 
 func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
-	t.noteInsert(key)
+	t.noteInsert(n, i, key)
 	if !t.atomicWrites {
 		n.insertLeafPlain(i, key, value)
 		if t.shared {
@@ -940,7 +946,7 @@ func (t *wordTree) getMany(keys []uint64, dst []Result[uint64]) {
 func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) {
 	children := &parent.inner().children
 	if leaf := t.node(children[index]); leaf.n == nodeSize {
-		if i := leaf.lowerEntry(key); i > 0 && leaf.entries()[i-1].key == t.lastInserted() {
+		if i := leaf.lowerEntry(key); i > 0 && t.continuesRun(leaf, i) {
 			t.splitRun(parent, index, i, key, value)
 			return
 		}
@@ -1052,7 +1058,11 @@ func (t *wordTree) splitRun(parent *wordNode, index, i int, key, value uint64) {
 		t.settleLeafPlain(extra, 0)
 	}
 	t.insertChild(parent, index+1, extraID)
-	t.noteInsert(key)
+	if i == nodeSize {
+		t.noteInsert(extra, 0, key)
+	} else {
+		t.noteInsert(leaf, i, key)
+	}
 }
 
 // appendFull appends key past the largest, which full rightmost leaf tail

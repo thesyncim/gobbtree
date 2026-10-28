@@ -601,7 +601,7 @@ func (m *wordMap) insertInLeaf(n *wordNode, id uint32, view *wordReadView, key, 
 	m.disableReadCache()
 	n.beginLeafWrite()
 	m.tree.insertLeaf(n, i, key, value)
-	m.addCount(1, false)
+	m.addLeafCount(1)
 	n.endLeafWrite()
 	return 0, false, true
 }
@@ -621,7 +621,7 @@ func (m *wordMap) deleteInLeaf(n *wordNode, key uint64) (value uint64, found, do
 	m.disableReadCache()
 	n.beginLeafWrite()
 	value = m.tree.removeLeaf(n, i)
-	m.addCount(-1, false)
+	m.addLeafCount(-1)
 	n.endLeafWrite()
 	return value, true, true
 }

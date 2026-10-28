@@ -27,13 +27,14 @@ type mapCore[K any, V any, O keyOrder[K]] struct {
 	_         [28]byte
 	structure structuralLock
 	tree      treeCore[K, V, O]
-	count     atomic.Int64
+	count     counter
 }
 
 // New creates an empty concurrent ordered map.
 func New[K cmp.Ordered, V any]() *Map[K, V] { return new(Map[K, V]) }
 
-// Len returns the number of entries at an instant during the call.
+// Len returns the number of entries. While other goroutines write, it may
+// count each of their writes as done or not yet done, independently.
 func (m *mapCore[K, V, O]) Len() int      { return int(m.count.Load()) }
 func (m *mapCore[K, V, O]) IsEmpty() bool { return m.count.Load() == 0 }
 func (m *mapCore[K, V, O]) Clear() {

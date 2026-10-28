@@ -4,7 +4,6 @@ import (
 	"math/bits"
 	"runtime"
 	"sync/atomic"
-	"unsafe"
 )
 
 type wordReadView struct {
@@ -23,7 +22,7 @@ type wordMap struct {
 	keyKind, valueKind uint8
 	_                  [46]byte
 	structure          *structuralLock
-	count              *atomic.Int64
+	count              *counter
 	tree               wordTree
 	// held is what lockWindow locked, for the structural writer that took it.
 	held [5]*wordNode
@@ -293,12 +292,22 @@ retry:
 	}
 }
 
-// addCount adjusts the count. An exclusive writer, serial or structural,
-// stores it where stores stay ordered: an atomic add is a full barrier. Once
-// writes are lane-free, leaf writers add concurrently, so nothing is.
-func (m *wordMap) addCount(delta int64, exclusive bool) {
-	if exclusive && orderedStores && !m.laneFree() {
-		*(*int64)(unsafe.Pointer(m.count)) = m.count.Load() + delta
+// addCount adjusts the count for an exclusive writer, serial or structural,
+// which stores it where stores stay ordered: an atomic add is a full
+// barrier. Writers holding only a leaf call addLeafCount.
+func (m *wordMap) addCount(delta int64) {
+	if orderedStores && !m.laneFree() {
+		m.count.storeAdd(delta)
+		return
+	}
+	m.count.Add(delta)
+}
+
+// addLeafCount is addCount for a leaf writer: contending leaf writers spread
+// the count over cells.
+func (m *wordMap) addLeafCount(delta int64) {
+	if g := m.structure.state.Load(); g != nil && g.parallel.Load() {
+		m.count.addSpread(delta)
 		return
 	}
 	m.count.Add(delta)
@@ -355,7 +364,7 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 				old, replaced = m.tree.insert(key, value)
 			}
 			if !replaced {
-				m.addCount(1, true)
+				m.addCount(1)
 			}
 		})
 		return old, replaced
@@ -375,14 +384,14 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	plain := serial && !m.tree.atomicWrites
 	if n := m.tree.tail; plain && n != nil && n.next == 0 && n.n > 0 && key > n.entries()[n.n-1].key {
 		if n.n < nodeSize {
-			m.tree.insertedShared.Store(key)
+			m.tree.noteInsert(n, int(n.n), key)
 			n.appendLeafPlain(key, value)
 			n.sequence.Store(uint64(n.n) << 1)
 		} else if !m.tree.appendFull(n, key, value) {
 			n = nil
 		}
 		if n != nil {
-			m.addCount(1, true)
+			m.addCount(1)
 			guard.unlock()
 			return 0, false
 		}
@@ -419,7 +428,11 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 					m.tree.tail = n
 				}
 				m.tree.insertLeaf(n, i, key, value)
-				m.addCount(1, serial)
+				if serial {
+					m.addCount(1)
+				} else {
+					m.addLeafCount(1)
+				}
 				if m.tree.atomicWrites {
 					n.endLeafWrite()
 				}
@@ -447,14 +460,14 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 	// A serial writer never released the writer lock, so the located parent
 	// still holds the absent key's leaf at index.
 	if serial && parent != nil && m.tree.insertAtParent(parent, index, leaf, key, value) {
-		m.addCount(1, true)
+		m.addCount(1)
 		return 0, false
 	}
 	if !m.tree.insertSharedAtRoute(key, value) {
 		old, replaced = m.tree.insert(key, value)
 	}
 	if !replaced {
-		m.addCount(1, true)
+		m.addCount(1)
 	}
 	return old, replaced
 }
@@ -489,7 +502,7 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 		}
 		m.structural(key, func() {
 			if value, found = m.tree.delete(key); found {
-				m.addCount(-1, true)
+				m.addCount(-1)
 			}
 		})
 		return value, found
@@ -527,7 +540,11 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 			n.beginLeafWrite()
 		}
 		value := m.tree.removeLeaf(n, i)
-		m.addCount(-1, serial)
+		if serial {
+			m.addCount(-1)
+		} else {
+			m.addLeafCount(-1)
+		}
 		if m.tree.atomicWrites {
 			n.endLeafWrite()
 		}
@@ -550,7 +567,7 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 	defer m.endStructure(guard)
 	value, found := m.tree.delete(key)
 	if found {
-		m.addCount(-1, true)
+		m.addCount(-1)
 	}
 	return value, found
 }
@@ -657,7 +674,7 @@ func (m *wordMap) updateOrInsert(key, value uint64, merge func(key, old, value u
 	m.version.Add(1)
 	defer m.finishStructure()
 	m.tree.insert(key, value)
-	m.addCount(1, true)
+	m.addCount(1)
 	return 0, false
 }
 func (m *wordMap) loadOrStore(key, value uint64) (uint64, bool) {
@@ -679,7 +696,7 @@ func (m *wordMap) loadOrStore(key, value uint64) (uint64, bool) {
 	m.version.Add(1)
 	defer m.finishStructure()
 	m.tree.insert(key, value)
-	m.addCount(1, true)
+	m.addCount(1)
 	return value, false
 }
 func (m *wordMap) deleteIf(key uint64, predicate func(key, value uint64) bool) (uint64, bool) {
@@ -699,7 +716,7 @@ func (m *wordMap) deleteIf(key uint64, predicate func(key, value uint64) bool) (
 	m.version.Add(1)
 	defer m.finishStructure()
 	m.tree.delete(key)
-	m.addCount(-1, true)
+	m.addCount(-1)
 	return old, true
 }
 
@@ -764,7 +781,11 @@ func (m *wordMap) upsertLeaf(key, value uint64, merge func(key, old, value uint6
 		n.beginLeafWrite()
 	}
 	m.tree.insertLeaf(n, i, key, value)
-	m.addCount(1, serial)
+	if serial {
+		m.addCount(1)
+	} else {
+		m.addLeafCount(1)
+	}
 	if m.tree.atomicWrites {
 		n.endLeafWrite()
 	}
@@ -817,7 +838,11 @@ func (m *wordMap) deleteLeafIf(key uint64, predicate func(key, value uint64) boo
 		n.beginLeafWrite()
 	}
 	value = m.tree.removeLeaf(n, i)
-	m.addCount(-1, serial)
+	if serial {
+		m.addCount(-1)
+	} else {
+		m.addLeafCount(-1)
+	}
 	if m.tree.atomicWrites {
 		n.endLeafWrite()
 	}
@@ -957,7 +982,7 @@ func (m *wordMap) edge(last, pop bool) (uint64, uint64, bool) {
 		m.version.Add(1)
 		defer m.finishStructure()
 		m.tree.delete(entry.key)
-		m.addCount(-1, true)
+		m.addCount(-1)
 	}
 	return entry.key, entry.value, true
 }
