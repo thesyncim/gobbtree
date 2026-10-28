@@ -361,6 +361,12 @@ func (m *wordMap) insert(key, value uint64) (uint64, bool) {
 		return old, replaced
 	}
 	guard := m.structure.acquire(key)
+	if guard.lane != nil {
+		var retry bool
+		if guard, retry = m.contended(guard, key); retry {
+			return m.insert(key, value)
+		}
+	}
 	// Once readers are active, lane-free writers may share any leaf, so this
 	// writer holds its leaf too.
 	serial := guard.lane == nil && !m.laneFree()
@@ -489,6 +495,12 @@ func (m *wordMap) delete(key uint64) (uint64, bool) {
 		return value, found
 	}
 	guard := m.structure.acquire(key)
+	if guard.lane != nil {
+		var retry bool
+		if guard, retry = m.contended(guard, key); retry {
+			return m.delete(key)
+		}
+	}
 	// Once readers are active, lane-free writers may share any leaf, so this
 	// writer holds its leaf too.
 	serial := guard.lane == nil && !m.laneFree()
@@ -575,6 +587,7 @@ func (m *wordMap) read(key uint64, visit func(uint64, uint64)) bool {
 	visit(n.entries()[i].key, n.entries()[i].value)
 	return true
 }
+
 // getLatched looks key up under its leaf latch alone. ok is false when the
 // leaf could not be latched with the structure unchanged.
 func (m *wordMap) getLatched(key uint64) (value uint64, found, ok bool) {
@@ -710,6 +723,12 @@ func (m *wordMap) upsertLeaf(key, value uint64, merge func(key, old, value uint6
 		}
 	}
 	guard := m.structure.acquire(key)
+	if guard.lane != nil {
+		var retry bool
+		if guard, retry = m.contended(guard, key); retry {
+			return m.upsertLeaf(key, value, merge)
+		}
+	}
 	defer guard.unlock()
 	// Once readers are active, lane-free writers may share any leaf, so this
 	// writer holds its leaf too.
@@ -769,6 +788,12 @@ func (m *wordMap) deleteLeafIf(key uint64, predicate func(key, value uint64) boo
 		}
 	}
 	guard := m.structure.acquire(key)
+	if guard.lane != nil {
+		var retry bool
+		if guard, retry = m.contended(guard, key); retry {
+			return m.deleteLeafIf(key, predicate)
+		}
+	}
 	defer guard.unlock()
 	serial := guard.lane == nil && !m.laneFree()
 	id := m.leafFor(key)

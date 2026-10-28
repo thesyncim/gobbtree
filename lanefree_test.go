@@ -8,17 +8,26 @@ import (
 // Lane-free writers share leaves with each other and with structural
 // writers. Each writer owns its keys, so the final contents and length are
 // exactly the union of what the writers believe they hold.
+// Without readers, writer contention itself makes writes lane-free, while
+// writers that started in lanes are still writing.
 func TestLaneFreeWritersMatchOwners(t *testing.T) {
+	t.Run("readers", func(t *testing.T) { laneFreeWritersMatchOwners(t, 2) })
+	t.Run("writers", func(t *testing.T) { laneFreeWritersMatchOwners(t, 0) })
+}
+
+func laneFreeWritersMatchOwners(t *testing.T, readerCount int) {
 	const writers, span = 8, 1 << 12
 	var m Map[uint64, uint64]
 	for i := uint64(0); i < writers*span; i += 3 {
 		m.Insert(i, i)
 	}
-	m.Get(0) // activate readers: writes are lane-free from here on
+	if readerCount > 0 {
+		m.Get(0) // activate readers: writes are lane-free from here on
+	}
 	owned := make([]map[uint64]bool, writers)
 	stop := make(chan struct{})
 	var readers sync.WaitGroup
-	for r := 0; r < 2; r++ {
+	for r := 0; r < readerCount; r++ {
 		readers.Go(func() {
 			for i := uint64(r); ; i += 7 {
 				select {
@@ -70,6 +79,9 @@ func TestLaneFreeWritersMatchOwners(t *testing.T) {
 	wg.Wait()
 	close(stop)
 	readers.Wait()
+	if readerCount == 0 && seqlockPlainStores && !m.words.Load().laneFree() {
+		t.Error("contending writers stayed in lanes")
+	}
 	want := 0
 	for w := range writers {
 		want += len(owned[w])

@@ -472,6 +472,23 @@ func (m *wordMap) laneFree() bool {
 	return view != nil && view.ready
 }
 
+// contended is called with a lane guard: writers contend. It makes writes
+// lane-free, as a first reader does, and reports true for the caller to
+// retry, having released the guard: in lanes, every split or merge stops all
+// writers. Otherwise it returns the guard to use; a map with no tree to
+// publish stays in lanes.
+func (m *wordMap) contended(guard structuralGuard, key uint64) (structuralGuard, bool) {
+	if !seqlockPlainStores || m.laneFree() {
+		return guard, false
+	}
+	guard.unlock()
+	m.enableReads()
+	if m.laneFree() {
+		return structuralGuard{}, true
+	}
+	return m.structure.acquire(key), false
+}
+
 // lockLeafIfLaneFree routes key to its leaf and locks it when writes are
 // lane-free, with the epoch unchanged since routing. ok is false when the map
 // is not ready for lane-free writes, or routing keeps meeting structure.
