@@ -1,6 +1,7 @@
 package gobbtree
 
 import (
+	"cmp"
 	"fmt"
 	"math/rand/v2"
 	"reflect"
@@ -77,32 +78,66 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 			p := checkPrefix(h, count > 0, func() []string {
 				var keys []string
 				for i := 0; i < count; i++ {
-					keys = append(keys, textView(&n.keys[i]))
+					keys = append(keys, textView(new(tree.key(n, i))))
 				}
 				return keys
 			})
 			for i := 0; i < count; i++ {
-				inside(n.keys[i])
-				if prefixed[O, K]() && !strings.HasPrefix(textView(&n.keys[i]), tree.sharedText()) {
-					t.Fatalf("key %q lacks the shared prefix %q", textView(&n.keys[i]), tree.sharedText())
+				key := tree.key(n, i)
+				inside(key)
+				if prefixed[O, K]() {
+					// A text key's bytes lie in its leaf's buffer, among those
+					// written.
+					c := n.text()
+					if ref := c.refs[i]; ref>>32+uint64(uint32(ref)) > uint64(c.used) || c.used > c.size || uint32(ref) > 0 && c.buf == nil {
+						t.Fatalf("leaf key %d at %#x past the %d bytes of %d its buffer holds", i, ref, c.used, c.size)
+					}
+					if s := tree.keyText(n, i); !strings.HasPrefix(s, tree.sharedText()) {
+						t.Fatalf("key %q lacks the shared prefix %q", s, tree.sharedText())
+					}
 				}
-				if n.codes[i] != windowKey[O](n.keys[i], p) {
+				if n.codes[i] != windowKey[O](key, p) {
 					t.Fatalf("leaf code %d is stale", i)
 				}
 				if prefixed[O, K]() {
-					if k := probeText(textView(&n.keys[i]), p); n.text().tails[i] != k.tail || n.text().lens[i] != k.len {
+					if k := probeText(tree.keyText(n, i), p); n.text().tails[i] != k.tail || n.text().lens[i] != k.len {
 						t.Fatalf("leaf tail or length %d is stale", i)
 					}
 				}
-				if i > 0 && compareKeys[O](n.keys[i-1], n.keys[i]) >= 0 {
+				if i > 0 && compareKeys[O](tree.key(n, i-1), key) >= 0 {
 					t.Fatalf("leaf keys out of order at %d", i)
 				}
 			}
-			for i := count; i < nodeSize; i++ {
-				if prefixed[O, K]() && (n.text().tails[i] != 0 || n.text().lens[i] != 0) {
-					t.Fatalf("leaf slot %d past count %d keeps a tail", i, count)
+			if prefixed[O, K]() {
+				// Each key's bytes are its own, and a hole's no key's.
+				c := n.text()
+				spans := [][2]uint64{}
+				for i := 0; i < count; i++ {
+					if r := c.refs[i]; uint32(r) > 0 {
+						spans = append(spans, [2]uint64{r >> 32, r>>32 + uint64(uint32(r))})
+					}
 				}
-				if n.codes[i] != codePad || !reflect.ValueOf(&n.keys[i]).Elem().IsZero() || !reflect.ValueOf(&n.values[i]).Elem().IsZero() {
+				if h := c.hole; uint32(h) > 0 {
+					if h>>32+uint64(uint32(h)) > uint64(c.used) {
+						t.Fatalf("leaf hole %#x past the %d bytes written", h, c.used)
+					}
+					spans = append(spans, [2]uint64{h >> 32, h>>32 + uint64(uint32(h))})
+				}
+				slices.SortFunc(spans, func(a, b [2]uint64) int { return cmp.Compare(a[0], b[0]) })
+				for i := 1; i < len(spans); i++ {
+					if spans[i][0] < spans[i-1][1] {
+						t.Fatalf("leaf keys' bytes overlap: %v", spans)
+					}
+				}
+			}
+			for i := count; i < nodeSize; i++ {
+				if prefixed[O, K]() && (n.text().tails[i] != 0 || n.text().lens[i] != 0 || n.text().refs[i] != 0) {
+					t.Fatalf("leaf slot %d past count %d keeps a tail or key", i, count)
+				}
+				if !prefixed[O, K]() && !reflect.ValueOf(&n.keyed()[i]).Elem().IsZero() {
+					t.Fatalf("leaf slot %d past count %d keeps a key", i, count)
+				}
+				if n.codes[i] != codePad || !reflect.ValueOf(&n.values[i]).Elem().IsZero() {
 					t.Fatalf("leaf slot %d past count %d holds an entry", i, count)
 				}
 			}
@@ -659,8 +694,13 @@ func TestRefitColumns(t *testing.T) {
 		}
 		build := func() *gleaf[string, uint64] {
 			n := newGLeaf[string, uint64](true)
+			total := 0
+			for _, k := range keys {
+				total += len(k)
+			}
+			tr.reserveKeys(n, total)
 			for i, k := range keys {
-				n.keys[i] = k
+				n.text().refs[i] = tr.appendKey(n, k)
 				n.codes[i], n.text().tails[i], n.text().lens[i] = stringCode(k, q), stringCode(k, q+8), textLen(k)
 			}
 			n.count.Store(int32(count))
@@ -680,5 +720,99 @@ func TestRefitColumns(t *testing.T) {
 				t.Fatalf("%q at %d: key %d windows %x %x, want %x %x", keys, q, i, a.codes[i], a.text().tails[i], b.codes[i], b.text().tails[i])
 			}
 		}
+	}
+}
+
+// Keys the tree hands out read its leaves' buffers, whose bytes are written
+// once: through churn that splits, merges and refills leaves, every key
+// taken, popped, found or walked keeps its bytes.
+func TestHandedOutKeysKeepTheirBytes(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 5))
+	keyOf := func(i int) string {
+		switch i % 7 {
+		case 0:
+			return ""
+		case 1:
+			return strings.Repeat("\x00", i%5)
+		case 2:
+			return fmt.Sprintf("long:%0300d", i)
+		}
+		return fmt.Sprintf("user:%016x", mixedKey(uint64(i)))
+	}
+	type kept struct{ got, want string }
+	var keep []kept
+	var keepBytes []struct {
+		got  Bytes
+		want string
+	}
+	tr := NewTree[string, int]()
+	var tb TreeOf[Bytes, int]
+	m := New[string, int]()
+	const n = 6000
+	for round := 0; round < 6; round++ {
+		for i := range n {
+			k := keyOf(rng.IntN(3 * n))
+			tr.Insert(k, i)
+			tb.Insert(Bytes(k), i)
+			m.Insert(k, i)
+		}
+		for i := range n {
+			k := keyOf(rng.IntN(3 * n))
+			if got, _, ok := tr.Take(k); ok {
+				keep = append(keep, kept{got, k})
+			}
+			if got, _, ok := tb.Take(Bytes(k)); ok {
+				keepBytes = append(keepBytes, struct {
+					got  Bytes
+					want string
+				}{got, k})
+			}
+			if got, _, ok := m.Take(k); ok {
+				keep = append(keep, kept{got, k})
+			}
+			if i%50 == 0 {
+				if got, _, ok := tr.PopFirst(); ok {
+					keep = append(keep, kept{got, strings.Clone(got)})
+				}
+				if got, _, ok := tr.LowerBound(k); ok {
+					keep = append(keep, kept{got, strings.Clone(got)})
+				}
+				if got, _, ok := m.PopLast(); ok {
+					keep = append(keep, kept{got, strings.Clone(got)})
+				}
+			}
+		}
+		// Deletes hand out no key: an owner's buffers may then reuse
+		// bytes, but none a key handed out before reads.
+		for i := range 3 * n {
+			k := keyOf(rng.IntN(3 * n))
+			tr.Delete(k)
+			tb.Delete(Bytes(k))
+			if i%3 != 0 {
+				tr.Insert(keyOf(rng.IntN(3*n)), i)
+				tb.Insert(Bytes(keyOf(rng.IntN(3*n))), i)
+			}
+		}
+		count := 0
+		for k := range tr.All() {
+			if count++; count%17 == 0 {
+				keep = append(keep, kept{k, strings.Clone(k)})
+			}
+		}
+		checkCore(t, &tr.treeCore)
+		checkCore(t, &tb.treeCore)
+	}
+	for _, k := range keep {
+		if k.got != k.want {
+			t.Fatalf("handed-out key changed: %q, want %q", k.got, k.want)
+		}
+	}
+	for _, k := range keepBytes {
+		if string(k.got) != k.want || cap(k.got) != len(k.got) {
+			t.Fatalf("handed-out Bytes key changed: %q (cap %d), want %q", k.got, cap(k.got), k.want)
+		}
+	}
+	if len(keep) < 1000 || len(keepBytes) < 1000 {
+		t.Fatalf("kept %d and %d keys", len(keep), len(keepBytes))
 	}
 }

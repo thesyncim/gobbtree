@@ -1,6 +1,10 @@
 package gobbtree
 
-import "strings"
+import (
+	"math"
+	"strings"
+	"unsafe"
+)
 
 // latchSet is the nodes an operation takes besides its leaf, upstream's
 // HeldNodes, for the generic tree: internal nodes by a compare-and-swap at
@@ -184,7 +188,7 @@ func (t *genericTree[K, V, O]) insertInto(n *gleaf[K, V], key K, code uint64, va
 	if int(n.count.Load()) == nodeSize {
 		return old, false, false
 	}
-	t.insertEntry(n, i, ownKey[O](key), value, false)
+	t.insertEntry(n, i, key, value, false)
 	return old, false, true
 }
 
@@ -275,9 +279,9 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 	cut, left := ofSplit(nodeSize, index, minimum)
 	t.moveLeafEntries(right, 0, leaf, cut, nodeSize-cut)
 	if left {
-		t.insertEntry(leaf, index, ownKey[O](key), value, false)
+		t.insertEntry(leaf, index, key, value, false)
 	} else {
-		t.insertEntry(right, index-cut, ownKey[O](key), value, false)
+		t.insertEntry(right, index-cut, key, value, false)
 	}
 	separator := t.separator(right)
 	carried := &right.gheader
@@ -321,9 +325,10 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 // internal nodes read only words that can't tear, atomically; readers of
 // leaves read them latched, or racing where a version check covers them.
 
-// insertEntry inserts an entry at i into leaf n, which has room; a key
-// without the leaf's prefix shortens it. shares is true where the key is
-// known to begin with the prefix, as a lookup that fit its windows found.
+// insertEntry inserts an entry at i into leaf n, which has room, a keyed
+// leaf's key owned, a text leaf's copied into its buffer; a key without the
+// leaf's prefix shortens it. shares is true where the key is known to begin
+// with the prefix, as a lookup that fit its windows found.
 func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V, shares bool) {
 	p, refit := 0, false
 	if prefixed[O, K]() {
@@ -332,43 +337,174 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 	}
 	count := int(n.count.Load())
 	copy(n.codes[i+1:count+1], n.codes[i:count])
-	copy(n.keys[i+1:count+1], n.keys[i:count])
 	copy(n.values[i+1:count+1], n.values[i:count])
 	if prefixed[O, K]() {
-		n.codes[i] = stringCode(textView(&key), p)
+		// The key's bytes go in first: making room repacks the refs, which
+		// must be the leaf's count, unshifted.
+		s, c := textView(&key), n.text()
+		ref := t.placeKey(n, s)
+		copy(c.tails[i+1:count+1], c.tails[i:count])
+		copy(c.lens[i+1:count+1], c.lens[i:count])
+		copy(c.refs[i+1:count+1], c.refs[i:count])
+		n.codes[i] = stringCode(s, p)
+		c.tails[i], c.lens[i], c.refs[i] = stringCode(s, p+8), textLen(s), ref
 	} else {
-		n.codes[i] = windowKey[O](key, p)
+		keys := n.keyed()
+		copy(keys[i+1:count+1], keys[i:count])
+		keys[i], n.codes[i] = ownKey[O](key), windowKey[O](key, p)
 	}
-	n.keys[i], n.values[i] = key, value
-	if prefixed[O, K]() {
-		copy(n.text().tails[i+1:count+1], n.text().tails[i:count])
-		copy(n.text().lens[i+1:count+1], n.text().lens[i:count])
-		s := textView(&key)
-		n.text().tails[i], n.text().lens[i] = stringCode(s, p+8), textLen(s)
-	}
+	n.values[i] = value
 	n.count.Store(int32(count + 1))
 	if refit {
 		t.refitLeaf(n)
 	}
 }
 
+// reserveKeys makes room in text leaf n's buffer for extra more bytes.
+func (t *genericTree[K, V, O]) reserveKeys(n *gleaf[K, V], extra int) {
+	if c := n.text(); extra > int(c.size-c.used) {
+		t.growKeys(n, extra)
+	}
+}
+
+// growKeys makes room in text leaf n's buffer for extra more bytes, with
+// as much room again: a reusable buffer that then fits them packs its live
+// keys in place; otherwise n takes a new buffer, of its live keys in slot
+// order, and the old keeps its bytes for the keys handed out over them.
+func (t *genericTree[K, V, O]) growKeys(n *gleaf[K, V], extra int) {
+	c := n.text()
+	count, live := int(n.count.Load()), extra
+	for i := 0; i < count; i++ {
+		live += int(uint32(c.refs[i]))
+	}
+	c.hole = 0
+	if 2*live <= int(c.size) && t.reusable(n) {
+		t.packKeys(n)
+		return
+	}
+	size := max(2*live, 64)
+	if uint64(size) > math.MaxUint32 {
+		panic("gobbtree: a leaf's keys passed 4 GiB")
+	}
+	buf, used := keyBuffer(size), 0
+	for i := 0; i < count; i++ {
+		s := keyAt(c.buf, c.refs[i])
+		copy(buf[used:], s)
+		c.refs[i] = keyRef(used, len(s))
+		used += len(s)
+	}
+	c.buf, c.used, c.size = unsafe.Pointer(unsafe.SliceData(buf)), uint32(used), uint32(cap(buf))
+	// A new generation where keys of the last were handed out.
+	if t.handed.Load() >= t.epoch {
+		t.epoch++
+	}
+	c.epoch = t.epoch
+}
+
+// packKeys moves text leaf n's live keys to the front of its buffer, in
+// the order they lie there, so that each moves down, over bytes no key
+// reads.
+func (t *genericTree[K, V, O]) packKeys(n *gleaf[K, V]) {
+	c := n.text()
+	count := int(n.count.Load())
+	var order [nodeSize]uint8
+	for i := 0; i < count; i++ {
+		j := i
+		for ; j > 0 && c.refs[order[j-1]]>>32 > c.refs[i]>>32; j-- {
+			order[j] = order[j-1]
+		}
+		order[j] = uint8(i)
+	}
+	used := 0
+	for _, i := range order[:count] {
+		ref := c.refs[i]
+		length := int(uint32(ref))
+		if length == 0 {
+			continue
+		}
+		if from := int(ref >> 32); from != used {
+			copy(unsafe.Slice((*byte)(unsafe.Add(c.buf, used)), length), unsafe.Slice((*byte)(unsafe.Add(c.buf, from)), length))
+		}
+		c.refs[i] = keyRef(used, length)
+		used += length
+	}
+	c.used = uint32(used)
+}
+
+// keyBuffer is a buffer of at least size bytes for a leaf's keys, its
+// whole capacity, which holds no pointers. Its bytes aren't cleared: a
+// leaf writes each before a ref reads it, so Builder's allocation, which
+// leaves them as they were, serves.
+func keyBuffer(size int) []byte {
+	var b strings.Builder
+	b.Grow(size)
+	b.WriteByte(0)
+	s := b.String()
+	return unsafe.Slice(unsafe.StringData(s), b.Cap())
+}
+
+// placeKey writes text s into text leaf n's buffer and returns its ref: in
+// the hole a removal left, where the buffer may be reused and s fits it,
+// otherwise past the bytes written, room made for it.
+func (t *genericTree[K, V, O]) placeKey(n *gleaf[K, V], s string) uint64 {
+	c := n.text()
+	if hole := c.hole; hole != 0 && len(s) <= int(uint32(hole)) && t.reusable(n) {
+		c.hole = 0
+		if len(s) == 0 {
+			return keyRef(0, 0)
+		}
+		copy(unsafe.Slice((*byte)(unsafe.Add(c.buf, hole>>32)), len(s)), s)
+		return keyRef(int(hole>>32), len(s))
+	}
+	t.reserveKeys(n, len(s))
+	return t.appendKey(n, s)
+}
+
+// appendKey writes text s past the bytes text leaf n's buffer holds, which
+// has room for it, and returns its ref.
+func (t *genericTree[K, V, O]) appendKey(n *gleaf[K, V], s string) uint64 {
+	if len(s) == 0 {
+		return keyRef(0, 0)
+	}
+	c := n.text()
+	copy(unsafe.Slice((*byte)(unsafe.Add(c.buf, c.used)), len(s)), s)
+	ref := keyRef(int(c.used), len(s))
+	c.used += uint32(len(s))
+	return ref
+}
+
 // removeEntry removes leaf n's entry i, clearing the slot it frees so that
 // the collector can take what it held. An emptied leaf has no prefix: no key
-// is left to share one.
-func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int) (K, V) {
+// is left to share one; a text leaf lets go of its buffer, which the key
+// removed may still read. handOut is false where the caller drops the key
+// returned: an owner's reusable buffer then keeps its bytes for the next.
+func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int, handOut bool) (K, V) {
 	count := int(n.count.Load())
-	key, value := n.keys[i], n.values[i]
+	var key K
+	if handOut || !prefixed[O, K]() {
+		key = t.key(n, i)
+	} else if t.reusable(n) {
+		n.text().hole = n.text().refs[i&(nodeSize-1)]
+	}
+	value := n.values[i]
 	copy(n.codes[i:count-1], n.codes[i+1:count])
-	copy(n.keys[i:count-1], n.keys[i+1:count])
 	copy(n.values[i:count-1], n.values[i+1:count])
-	var zk K
 	var zv V
-	n.codes[count-1], n.keys[count-1], n.values[count-1] = codePad, zk, zv
+	n.codes[count-1], n.values[count-1] = codePad, zv
 	if prefixed[O, K]() {
 		c := n.text()
 		copy(c.tails[i:count-1], c.tails[i+1:count])
 		copy(c.lens[i:count-1], c.lens[i+1:count])
-		c.tails[count-1], c.lens[count-1] = 0, 0
+		copy(c.refs[i:count-1], c.refs[i+1:count])
+		c.tails[count-1], c.lens[count-1], c.refs[count-1] = 0, 0, 0
+		if count == 1 {
+			c.buf, c.used, c.size, c.hole = nil, 0, 0, 0
+		}
+	} else {
+		keys := n.keyed()
+		copy(keys[i:count-1], keys[i+1:count])
+		var zk K
+		keys[count-1] = zk
 	}
 	n.count.Store(int32(count - 1))
 	if count == 1 {
@@ -377,8 +513,9 @@ func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int) (K, V) {
 	return key, value
 }
 
-// moveLeafEntries moves count entries of src from from to dst at at, which
-// has room, closing src's gap and clearing the slots it frees.
+// moveLeafEntries moves count entries of src from from to dst at at,
+// shifting dst's entries up and src's down, and refits both; a text leaf's
+// keys are copied into dst's buffer, room made for them first.
 func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gleaf[K, V], from, count int) {
 	srcCount, dstCount := int(src.count.Load()), int(dst.count.Load())
 	if prefixed[O, K]() && dstCount == 0 {
@@ -387,25 +524,39 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 		t.splitLeafEntries(dst, src, from, count)
 		return
 	}
+	if prefixed[O, K]() {
+		sc, dc := src.text(), dst.text()
+		moved := 0
+		for j := from; j < from+count; j++ {
+			moved += int(uint32(sc.refs[j]))
+		}
+		t.reserveKeys(dst, moved)
+		copy(dc.refs[at+count:dstCount+count], dc.refs[at:dstCount])
+		for j := 0; j < count; j++ {
+			dc.refs[at+j] = t.appendKey(dst, keyAt(sc.buf, sc.refs[from+j]))
+		}
+		copy(sc.refs[from:srcCount-count], sc.refs[from+count:srcCount])
+		// Tails and lengths follow the prefixes the refits below set; the
+		// freed slots hold none.
+		clear(sc.refs[srcCount-count : srcCount])
+		clear(sc.tails[srcCount-count : srcCount])
+		clear(sc.lens[srcCount-count : srcCount])
+	} else {
+		dk, sk := dst.keyed(), src.keyed()
+		copy(dk[at+count:dstCount+count], dk[at:dstCount])
+		copy(dk[at:at+count], sk[from:from+count])
+		copy(sk[from:srcCount-count], sk[from+count:srcCount])
+		clear(sk[srcCount-count : srcCount])
+	}
 	copy(dst.codes[at+count:dstCount+count], dst.codes[at:dstCount])
-	copy(dst.keys[at+count:dstCount+count], dst.keys[at:dstCount])
 	copy(dst.values[at+count:dstCount+count], dst.values[at:dstCount])
 	copy(dst.codes[at:at+count], src.codes[from:from+count])
-	copy(dst.keys[at:at+count], src.keys[from:from+count])
 	copy(dst.values[at:at+count], src.values[from:from+count])
 	copy(src.codes[from:srcCount-count], src.codes[from+count:srcCount])
-	copy(src.keys[from:srcCount-count], src.keys[from+count:srcCount])
 	copy(src.values[from:srcCount-count], src.values[from+count:srcCount])
 	for j := srcCount - count; j < srcCount; j++ {
 		src.codes[j] = codePad
 	}
-	if prefixed[O, K]() {
-		// Text leaves' tails and lengths follow their prefixes, which the
-		// refits below set; the freed slots hold none.
-		clear(src.text().tails[srcCount-count : srcCount])
-		clear(src.text().lens[srcCount-count : srcCount])
-	}
-	clear(src.keys[srcCount-count : srcCount])
 	clear(src.values[srcCount-count : srcCount])
 	dst.count.Store(int32(dstCount + count))
 	src.count.Store(int32(srcCount - count))
@@ -414,27 +565,35 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 }
 
 // splitLeafEntries is moveLeafEntries into dst, empty, for text leaves: the
-// entries move with their windows, dst takes src's prefix, and each leaf
-// refits from its columns where they tell it how.
+// entries move with their windows, their keys into a buffer of dst's own,
+// dst takes src's prefix, and each leaf refits from its columns where they
+// tell it how.
 func (t *genericTree[K, V, O]) splitLeafEntries(dst, src *gleaf[K, V], from, count int) {
 	srcCount := int(src.count.Load())
 	sc, dc := src.text(), dst.text()
+	moved := 0
+	for j := from; j < from+count; j++ {
+		moved += int(uint32(sc.refs[j]))
+	}
+	t.reserveKeys(dst, moved)
+	for j := 0; j < count; j++ {
+		dc.refs[j] = t.appendKey(dst, keyAt(sc.buf, sc.refs[from+j]))
+	}
 	copy(dst.codes[:count], src.codes[from:from+count])
-	copy(dst.keys[:count], src.keys[from:from+count])
 	copy(dst.values[:count], src.values[from:from+count])
 	copy(dc.tails[:count], sc.tails[from:from+count])
 	copy(dc.lens[:count], sc.lens[from:from+count])
 	copy(src.codes[from:srcCount-count], src.codes[from+count:srcCount])
-	copy(src.keys[from:srcCount-count], src.keys[from+count:srcCount])
 	copy(src.values[from:srcCount-count], src.values[from+count:srcCount])
 	copy(sc.tails[from:srcCount-count], sc.tails[from+count:srcCount])
 	copy(sc.lens[from:srcCount-count], sc.lens[from+count:srcCount])
+	copy(sc.refs[from:srcCount-count], sc.refs[from+count:srcCount])
 	for j := srcCount - count; j < srcCount; j++ {
 		src.codes[j] = codePad
 	}
 	clear(sc.tails[srcCount-count : srcCount])
 	clear(sc.lens[srcCount-count : srcCount])
-	clear(src.keys[srcCount-count : srcCount])
+	clear(sc.refs[srcCount-count : srcCount])
 	clear(src.values[srcCount-count : srcCount])
 	dst.prefix.Store(src.prefix.Load())
 	dst.head[0].Store(src.head[0].Load())

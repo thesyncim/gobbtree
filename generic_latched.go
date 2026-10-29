@@ -36,6 +36,13 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	starting sync.Mutex
 	// owner marks a Tree's tree (generic_latched_owner.go).
 	owner bool
+	// An owner's text leaves reuse their buffers' bytes, a removed key's for
+	// the next to go in and a full buffer's for its live keys, while no key
+	// read over them is out: epoch is the generation of buffers the writer
+	// makes, and handed the last whose keys were handed out, which leaves
+	// it and every buffer before it to grow by appending.
+	epoch  uint32
+	handed atomic.Uint32
 }
 
 // A node's header. Its count is read racing; whether it is a leaf never
@@ -56,18 +63,31 @@ type gheader struct {
 // A leaf: entries in key order, with each key's code, its window past the
 // prefix, which narrows a search before keys are compared. Code slots past
 // the count hold codePad, as lowerCode's vector kernels count every slot.
+// Its keys follow it in one allocation: a keyed leaf's as they are, a text
+// leaf's as bytes.
 type gleaf[K any, V any] struct {
 	gheader
 	codes  [nodeSize]uint64
-	keys   [nodeSize]K
 	values [nodeSize]V
+}
+
+// A keyed leaf keeps its keys, which aren't text, as they are.
+type keyedLeaf[K any, V any] struct {
+	gleaf[K, V]
+	keys [nodeSize]K
 }
 
 // A text leaf also keeps, for each key, its window past the code's (tails)
 // and its length, saturated at 255 (lens), upstream's inline key and hash
 // tag (D14, D36): a key no longer than the prefix and 16 bytes is then
-// compared within the leaf, without reading its bytes. They follow the leaf
-// in one allocation, so that other leaves carry none.
+// compared within the leaf, without reading its bytes.
+//
+// It keeps its keys' bytes in a buffer of its own, which holds no pointer
+// for the collector to scan, each key's at the offset and length its ref
+// gives: the leaf holds one pointer where it held one a key. Bytes are
+// written once, as the keys the tree hands out read them: a key the leaf
+// drops keeps its bytes, and a leaf that fills its buffer takes a new one
+// of its live keys, which leaves the old to whatever still reads it.
 type textLeaf[K any, V any] struct {
 	gleaf[K, V]
 	textColumns
@@ -76,18 +96,74 @@ type textLeaf[K any, V any] struct {
 type textColumns struct {
 	tails [nodeSize]uint64
 	lens  [nodeSize]uint8
+	refs  [nodeSize]uint64
+	// buf holds size bytes, the first used of them written. In an owner's
+	// tree, hole is a removed key's ref, bytes the next key may take while
+	// the buffer's epoch is past the tree's handed one.
+	buf        unsafe.Pointer
+	used, size uint32
+	epoch      uint32
+	hole       uint64
 }
 
-// key is leaf n's key i, n held or owned.
-func (t *genericTree[K, V, O]) key(n *gleaf[K, V], i int) K { return n.keys[i&(nodeSize-1)] }
+// keyRef is the ref of a key of length bytes at offset in its leaf's buffer.
+func keyRef(offset, length int) uint64 { return uint64(offset)<<32 | uint64(length) }
+
+// keyAt is the text ref gives in buf. An empty key reads no byte, so that
+// it points nowhere, not past the buffer's end.
+func keyAt(buf unsafe.Pointer, ref uint64) string {
+	length := int(uint32(ref))
+	if length == 0 {
+		return ""
+	}
+	return unsafe.String((*byte)(unsafe.Add(buf, ref>>32)), length)
+}
+
+// keyed is keyed leaf n's keys.
+func (n *gleaf[K, V]) keyed() *[nodeSize]K { return &(*keyedLeaf[K, V])(unsafe.Pointer(n)).keys }
+
+// key is leaf n's key i, n held or owned, to hand out. A text key reads
+// its leaf's buffer, which it keeps alive as long as it lives, and in an
+// owner's tree keeps from reuse.
+func (t *genericTree[K, V, O]) key(n *gleaf[K, V], i int) K {
+	if prefixed[O, K]() {
+		if t.owner {
+			t.handOut()
+		}
+		return keyOfText[K](t.keyText(n, i))
+	}
+	return n.keyed()[i&(nodeSize-1)]
+}
+
+// handOut marks the buffers an owner's tree has made as read by a key
+// handed out, which their bytes must then keep. Readers may race to mark,
+// atomically, but only while no writer runs.
+func (t *genericTree[K, V, O]) handOut() {
+	if e := t.epoch; t.handed.Load() != e {
+		t.handed.Store(e)
+	}
+}
+
+// reusable reports whether text leaf n's buffer may have its bytes
+// written again: an owner's, made since the last key was handed out.
+func (t *genericTree[K, V, O]) reusable(n *gleaf[K, V]) bool {
+	return t.owner && n.text().epoch > t.handed.Load()
+}
 
 // keyText is text leaf n's key i as text, n held or owned.
 func (t *genericTree[K, V, O]) keyText(n *gleaf[K, V], i int) string {
-	return textView(&n.keys[i&(nodeSize-1)])
+	c := n.text()
+	return keyAt(c.buf, c.refs[i&(nodeSize-1)])
 }
 
-// separator is leaf n's first key, boxed for a separator above it.
-func (t *genericTree[K, V, O]) separator(n *gleaf[K, V]) *K { return box(t.key(n, 0)) }
+// separator is leaf n's first key, boxed for a separator above it: a text
+// key copied, so that the separator keeps no leaf's buffer alive.
+func (t *genericTree[K, V, O]) separator(n *gleaf[K, V]) *K {
+	if prefixed[O, K]() {
+		return box(keyOfText[K](strings.Clone(t.keyText(n, 0))))
+	}
+	return box(n.keyed()[0])
+}
 
 // text is text leaf n's columns.
 func (n *gleaf[K, V]) text() *textColumns {
@@ -155,7 +231,7 @@ func newGLeaf[K any, V any](text bool) *gleaf[K, V] {
 	if text {
 		n = &new(textLeaf[K, V]).gleaf
 	} else {
-		n = &gleaf[K, V]{}
+		n = &new(keyedLeaf[K, V]).gleaf
 	}
 	n.leaf = true
 	for i := range n.codes {
@@ -716,7 +792,7 @@ func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K, code uint64) (int, bo
 			mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
 			o, settled := slotOrder(n, mid, &k, p)
 			if !settled {
-				o = t.compare(t.key(n, mid), key)
+				o = t.compare(keyOfText[K](t.keyText(n, mid)), key)
 			}
 			if o < 0 {
 				lo = mid + 1
@@ -787,7 +863,8 @@ func (t *genericTree[K, V, O]) getText(key K, code uint64) (value V, found, done
 		}
 		// The slot that holds key, if any: settled within the leaf, or a
 		// candidate whose bytes are compared once the leaf's version holds.
-		var candidate K
+		var buf unsafe.Pointer
+		var ref uint64
 		slot, settled := -1, false
 		if p == 0 || headOrder(textView(&key), p, n.head[0].Load(), n.head[1].Load()) == 0 {
 			k := probeText(textView(&key), p)
@@ -805,7 +882,9 @@ func (t *genericTree[K, V, O]) getText(key K, code uint64) (value V, found, done
 				slot, settled = i&(nodeSize-1), ok
 				value = n.values[slot]
 				if !ok {
-					candidate = n.keys[slot]
+					// The candidate's bytes are read once the version
+					// holds: a racing buffer and ref may not match.
+					buf, ref = n.text().buf, n.text().refs[slot]
 				}
 				break
 			}
@@ -814,7 +893,7 @@ func (t *genericTree[K, V, O]) getText(key K, code uint64) (value V, found, done
 		if !n.latch.isUnchanged(version) {
 			continue
 		}
-		if slot >= 0 && (settled || textView(&candidate) == textView(&key)) {
+		if slot >= 0 && (settled || keyAt(buf, ref) == textView(&key)) {
 			return value, true, true
 		}
 		var zero V

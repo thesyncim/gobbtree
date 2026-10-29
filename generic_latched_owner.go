@@ -152,7 +152,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 		return old, true
 	}
 	if owned(&n.count) < nodeSize {
-		t.insertEntry(n, i, ownKey[O](key), value, fits)
+		t.insertEntry(n, i, key, value, fits)
 	} else {
 		t.ownerSplit(n, i, key, code, value)
 	}
@@ -185,7 +185,7 @@ func (t *genericTree[K, V, O]) ownerSplit(n *gleaf[K, V], i int, key K, code uin
 
 // ownerRemove is remove from an owner's tree: from its leaf where the leaf
 // keeps its minimum or is the root, else by the latched rebalancing.
-func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V) bool) (K, V, bool) {
+func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V) bool, handOut bool) (K, V, bool) {
 	var k K
 	var v V
 	if plainPointer(&t.root) == nil {
@@ -208,11 +208,11 @@ func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V)
 		return k, v, false
 	}
 	if owned(&n.count) > leafMinLen || plainPointer(&t.root) == &n.gheader {
-		k, v = t.removeEntry(n, i)
+		k, v = t.removeEntry(n, i, handOut)
 		return k, v, true
 	}
 	for {
-		if k, v, removed, done := t.removeRebalancing(seek, key, code, condition); done {
+		if k, v, removed, done := t.removeRebalancing(seek, key, code, condition, handOut); done {
 			return k, v, removed
 		}
 	}

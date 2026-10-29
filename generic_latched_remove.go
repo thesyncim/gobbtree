@@ -8,7 +8,7 @@ package gobbtree
 // levels it leaves underfull.
 func (t *genericTree[K, V, O]) remove(seek int, key K, condition func(K, V) bool) (K, V, bool) {
 	if t.owner {
-		return t.ownerRemove(seek, key, condition)
+		return t.ownerRemove(seek, key, condition, true)
 	}
 	var k K
 	var v V
@@ -23,7 +23,7 @@ func (t *genericTree[K, V, O]) remove(seek int, key K, condition func(K, V) bool
 		return k, v, removed
 	}
 	for {
-		if k, v, removed, done := t.removeRebalancing(seek, key, code, condition); done {
+		if k, v, removed, done := t.removeRebalancing(seek, key, code, condition, true); done {
 			return k, v, removed
 		}
 		// Another goroutine holds a node the removal needs: wait a moment,
@@ -54,14 +54,14 @@ func (t *genericTree[K, V, O]) removeLatched(seek int, key K, code uint64, condi
 	if int(n.count.Load()) <= leafMinLen && t.root.Load() != &n.gheader {
 		return k, v, false, false
 	}
-	k, v = t.removeEntry(n, i)
+	k, v = t.removeEntry(n, i, true)
 	return k, v, true, true
 }
 
 // removeRebalancing is one try of a removal that leaves its leaf underfull;
 // done is false, with nothing changed, if a node it takes is held by
 // another goroutine or changed since the descent.
-func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, code uint64, condition func(K, V) bool) (k K, v V, removed, done bool) {
+func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, code uint64, condition func(K, V) bool, handOut bool) (k K, v V, removed, done bool) {
 	var path gpath[K]
 	n, version := t.descend(key, code, seek, false, exclusive, &path)
 	var held latchSet
@@ -78,14 +78,14 @@ func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, code uint64, c
 	}
 	// Another goroutine may have filled the leaf since.
 	if int(n.count.Load()) > leafMinLen || t.root.Load() == &n.gheader {
-		k, v = t.removeEntry(n, i)
+		k, v = t.removeEntry(n, i, handOut)
 		return k, v, true, true
 	}
 	fixes, ok := t.takeFixes(&path, int(n.count.Load())-1, &held)
 	if !ok {
 		return k, v, false, false
 	}
-	k, v = t.removeEntry(n, i)
+	k, v = t.removeEntry(n, i, handOut)
 	depth := path.depth
 	for fix := 0; fix < fixes; fix++ {
 		level := path.levels[depth-1-fix]

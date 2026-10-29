@@ -169,6 +169,17 @@ func directText[O keyOrder[K], K any]() bool {
 }
 func textView[K any](key *K) string { return *(*string)(unsafe.Pointer(key)) }
 
+// keyOfText is text s as a text key: a string kind, or Bytes over s's bytes,
+// which its holder must not change.
+func keyOfText[K any](s string) K {
+	var k K
+	if unsafe.Sizeof(k) == unsafe.Sizeof("") {
+		return *(*K)(unsafe.Pointer(&s))
+	}
+	b := unsafe.Slice(unsafe.StringData(s), len(s))
+	return *(*K)(unsafe.Pointer(&b))
+}
+
 func compareKeys[O keyOrder[K], K any](a, b K) int {
 	if directText[O, K]() {
 		return strings.Compare(textView(&a), textView(&b))

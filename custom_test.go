@@ -382,8 +382,10 @@ func TestBytesLookupsDoNotAllocate(t *testing.T) {
 			t.Errorf("%s: %v allocations", name, n)
 		}
 	}
-	if n := testing.AllocsPerRun(100, func() { tr.Delete(buf); tr.Insert(buf, 2) }); n != 1 {
-		t.Errorf("tree churn: %v allocations, want the key copy", n)
+	// The key's copy goes into its leaf's buffer, which a new one of its
+	// live keys replaces now and then.
+	if n := testing.AllocsPerRun(100, func() { tr.Delete(buf); tr.Insert(buf, 2) }); n != 0 {
+		t.Errorf("tree churn: %v allocations, want none", n)
 	}
 }
 

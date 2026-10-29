@@ -296,17 +296,19 @@ func (t *treeCore[K, V, O]) Delete(key K) (V, bool) {
 // removeGeneric removes seek's entry from the generic tree, dropping the
 // tree once it is empty.
 func (t *treeCore[K, V, O]) removeGeneric(seek int, key K) (V, bool) {
-	_, v, ok := t.removeEntryGeneric(seek, key)
+	_, v, ok := t.removeEntryGeneric(seek, key, false)
 	return v, ok
 }
 
-func (t *treeCore[K, V, O]) removeEntryGeneric(seek int, key K) (K, V, bool) {
+// removeEntryGeneric removes seek's entry from the generic tree; handOut is
+// false where the caller drops the key returned.
+func (t *treeCore[K, V, O]) removeEntryGeneric(seek int, key K, handOut bool) (K, V, bool) {
 	if t.generic == nil {
 		var k K
 		var v V
 		return k, v, false
 	}
-	k, v, ok := t.generic.ownerRemove(seek, key, nil)
+	k, v, ok := t.generic.ownerRemove(seek, key, nil, handOut)
 	if ok {
 		t.length--
 		if t.length == 0 {
@@ -358,7 +360,7 @@ func (t *treeCore[K, V, O]) Last() (K, V, bool) {
 func (t *treeCore[K, V, O]) PopFirst() (K, V, bool) {
 	if t.words == nil {
 		var zero K
-		return t.removeEntryGeneric(seekFirst, zero)
+		return t.removeEntryGeneric(seekFirst, zero, true)
 	}
 	k, v, ok := t.First()
 	if ok {
@@ -369,7 +371,7 @@ func (t *treeCore[K, V, O]) PopFirst() (K, V, bool) {
 func (t *treeCore[K, V, O]) PopLast() (K, V, bool) {
 	if t.words == nil {
 		var zero K
-		return t.removeEntryGeneric(seekLast, zero)
+		return t.removeEntryGeneric(seekLast, zero, true)
 	}
 	k, v, ok := t.Last()
 	if ok {
