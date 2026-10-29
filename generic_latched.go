@@ -2,6 +2,7 @@ package gobbtree
 
 import (
 	"cmp"
+	"math/bits"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -513,6 +514,52 @@ func (t *genericTree[K, V, O]) refitLeaf(n *gleaf[K, V]) {
 		s := textView(&n.keys[i])
 		n.codes[i], n.text().tails[i], n.text().lens[i] = stringCode(s, p), stringCode(s, p+8), textLen(s)
 	}
+}
+
+// refitColumns is refitLeaf for text leaf n whose keys all begin with its
+// prefix q and whose columns hold their windows there, as a split's halves
+// do: the prefix the first and last keys share, and each key's windows
+// past it, come from the columns, which hold every byte of a key that fits
+// them, rather than from the keys, reading only those that don't fit and
+// the first for the head. It reports false, changing nothing, where the
+// columns can't tell the prefix: a leaf of fewer than two keys, a prefix
+// past 200 bytes, or first and last keys alike past their windows.
+func (t *genericTree[K, V, O]) refitColumns(n *gleaf[K, V]) bool {
+	count, q := int(n.count.Load()), int(n.prefix.Load())
+	if count < 2 || q > 200 {
+		return false
+	}
+	c := n.text()
+	last := count - 1
+	d := 16
+	switch {
+	case n.codes[0] != n.codes[last]:
+		d = bits.LeadingZeros64(n.codes[0]^n.codes[last]) / 8
+	case c.tails[0] != c.tails[last]:
+		d = 8 + bits.LeadingZeros64(c.tails[0]^c.tails[last])/8
+	case int(c.lens[0]) > q+16 && int(c.lens[last]) > q+16:
+		return false
+	}
+	d = min(d, int(c.lens[0])-q, int(c.lens[last])-q)
+	if d <= 0 {
+		return true
+	}
+	p := q + d
+	for i := 0; i < count; i++ {
+		code, tail := n.codes[i], c.tails[i]
+		switch l := int(c.lens[i]); {
+		case l > q+16 || l == 255:
+			s := textView(&n.keys[i])
+			code, tail = stringCode(s, p), stringCode(s, p+8)
+		case d >= 8:
+			code, tail = tail<<(8*(d-8)), 0
+		default:
+			code, tail = code<<(8*d)|tail>>(64-8*d), tail<<(8*d)
+		}
+		n.codes[i], c.tails[i] = code, tail
+	}
+	n.setPrefix(textView(&n.keys[0]), p)
+	return true
 }
 
 // textLen is a text key's length as a leaf keeps it, saturated at 255.

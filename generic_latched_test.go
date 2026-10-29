@@ -2,6 +2,7 @@ package gobbtree
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"reflect"
 	"slices"
 	"strings"
@@ -615,6 +616,69 @@ func TestInnerRouteLayout(t *testing.T) {
 	} {
 		if n.codes != unsafe.Offsetof(r.codes) || n.children != unsafe.Offsetof(r.children) {
 			t.Fatalf("ginner fields at %d and %d, innerRoute's at %d and %d", n.codes, n.children, unsafe.Offsetof(r.codes), unsafe.Offsetof(r.children))
+		}
+	}
+}
+
+// refitColumns, where it refits, leaves a leaf as refitLeaf does: the
+// prefix its first and last keys share, and each key's windows past it.
+func TestRefitColumns(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 9))
+	alphabet := []string{"", "\x00", "a", "ab", "abc", "user:", "user:3a", "user:3a4f5b", "\xff\x00\xff"}
+	var tr genericTree[string, uint64, natural[string]]
+	for trial := 0; trial < 20000; trial++ {
+		base := alphabet[rng.IntN(len(alphabet))]
+		// Bytes every key shares past the base, which the columns, kept at
+		// the base's prefix, don't yet strip.
+		var shared []byte
+		for range rng.IntN(24) {
+			shared = append(shared, "\x00\x01ab\xff"[rng.IntN(5)])
+		}
+		count := 2 + rng.IntN(nodeSize-1)
+		keys := make([]string, 0, count)
+		seen := map[string]bool{}
+		for tries := 0; len(keys) < count && tries < 1000; tries++ {
+			b := append([]byte(base), shared...)
+			for range rng.IntN(30) {
+				b = append(b, "\x00\x01ab\xff"[rng.IntN(5)])
+			}
+			if k := string(b); !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+		count = len(keys)
+		if count < 2 {
+			continue
+		}
+		slices.Sort(keys)
+		// Columns at the prefix the base gives, as a split's half keeps.
+		q := len(base)
+		for _, k := range keys {
+			q = min(q, commonPrefix(k, base))
+		}
+		build := func() *gleaf[string, uint64] {
+			n := newGLeaf[string, uint64](true)
+			for i, k := range keys {
+				n.keys[i] = k
+				n.codes[i], n.text().tails[i], n.text().lens[i] = stringCode(k, q), stringCode(k, q+8), textLen(k)
+			}
+			n.count.Store(int32(count))
+			n.setPrefix(keys[0], q)
+			return n
+		}
+		a, b := build(), build()
+		if !tr.refitColumns(a) {
+			continue
+		}
+		tr.refitLeaf(b)
+		if a.prefix.Load() != b.prefix.Load() || a.head[0].Load() != b.head[0].Load() || a.head[1].Load() != b.head[1].Load() {
+			t.Fatalf("%q at %d: prefix %d, want %d", keys, q, a.prefix.Load(), b.prefix.Load())
+		}
+		for i := range count {
+			if a.codes[i] != b.codes[i] || a.text().tails[i] != b.text().tails[i] || a.text().lens[i] != b.text().lens[i] {
+				t.Fatalf("%q at %d: key %d windows %x %x, want %x %x", keys, q, i, a.codes[i], a.text().tails[i], b.codes[i], b.text().tails[i])
+			}
 		}
 	}
 }

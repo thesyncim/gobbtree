@@ -382,6 +382,12 @@ func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int) (K, V) {
 // has room, closing src's gap and clearing the slots it frees.
 func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gleaf[K, V], from, count int) {
 	srcCount, dstCount := int(src.count.Load()), int(dst.count.Load())
+	if prefixed[O, K]() && dstCount == 0 {
+		// A split's new half: its keys keep src's prefix and windows, and
+		// each half refits from them.
+		t.splitLeafEntries(dst, src, from, count)
+		return
+	}
 	copy(dst.codes[at+count:dstCount+count], dst.codes[at:dstCount])
 	copy(dst.keys[at+count:dstCount+count], dst.keys[at:dstCount])
 	copy(dst.values[at+count:dstCount+count], dst.values[at:dstCount])
@@ -406,6 +412,41 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 	src.count.Store(int32(srcCount - count))
 	t.refitLeaf(dst)
 	t.refitLeaf(src)
+}
+
+// splitLeafEntries is moveLeafEntries into dst, empty, for text leaves: the
+// entries move with their windows, dst takes src's prefix, and each leaf
+// refits from its columns where they tell it how.
+func (t *genericTree[K, V, O]) splitLeafEntries(dst, src *gleaf[K, V], from, count int) {
+	srcCount := int(src.count.Load())
+	sc, dc := src.text(), dst.text()
+	copy(dst.codes[:count], src.codes[from:from+count])
+	copy(dst.keys[:count], src.keys[from:from+count])
+	copy(dst.values[:count], src.values[from:from+count])
+	copy(dc.tails[:count], sc.tails[from:from+count])
+	copy(dc.lens[:count], sc.lens[from:from+count])
+	copy(src.codes[from:srcCount-count], src.codes[from+count:srcCount])
+	copy(src.keys[from:srcCount-count], src.keys[from+count:srcCount])
+	copy(src.values[from:srcCount-count], src.values[from+count:srcCount])
+	copy(sc.tails[from:srcCount-count], sc.tails[from+count:srcCount])
+	copy(sc.lens[from:srcCount-count], sc.lens[from+count:srcCount])
+	for j := srcCount - count; j < srcCount; j++ {
+		src.codes[j] = codePad
+	}
+	clear(sc.tails[srcCount-count : srcCount])
+	clear(sc.lens[srcCount-count : srcCount])
+	clear(src.keys[srcCount-count : srcCount])
+	clear(src.values[srcCount-count : srcCount])
+	dst.prefix.Store(src.prefix.Load())
+	dst.head[0].Store(src.head[0].Load())
+	dst.head[1].Store(src.head[1].Load())
+	dst.count.Store(int32(count))
+	src.count.Store(int32(srcCount - count))
+	for _, n := range [2]*gleaf[K, V]{dst, src} {
+		if !t.refitColumns(n) {
+			t.refitLeaf(n)
+		}
+	}
 }
 
 // insertChild inserts child, whose keys are at least separator, at i in
