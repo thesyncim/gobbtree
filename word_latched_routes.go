@@ -253,10 +253,15 @@ func (t *latchedTree) refreshRoutes(dir []*wordNode) *latchedRoutes {
 		if span == 0 {
 			return nil
 		}
-		// Nodes hold about twenty children or entries.
-		leaves := count
-		for range level - 1 {
-			leaves *= 20
+		// The domain runs from the first key to the last, not between the
+		// root's separators: a new root has one, and keys beyond them,
+		// appends' among them, would find no hint.
+		leaves, first := leftmostShape(dir, root)
+		lo = min(lo, first)
+		if last := nodeIn(dir, t.rightmost.Load()); last != nil {
+			if n := min(int(last.n), nodeSize); n > 0 {
+				hi = max(hi, last.entries()[n-1].key)
+			}
 		}
 		r = newHintTable(lo, hi, span, leaves)
 		r.root, r.rootCount = rootID, count
@@ -266,6 +271,24 @@ func (t *latchedTree) refreshRoutes(dir []*wordNode) *latchedRoutes {
 	// changes or doubles.
 	t.routes.Store(r)
 	return r
+}
+
+// leftmostShape estimates how many leaves the tree has, from the child
+// counts along its leftmost path, and reads its first key there. Its reads
+// race writers; a heuristic needs no check.
+func leftmostShape(dir []*wordNode, root *wordNode) (leaves int, first uint64) {
+	leaves, first = 1, ^uint64(0)
+	n := root
+	for depth := 0; n != nil && depth < maxDepth; depth++ {
+		count := min(max(int(n.n), 1), nodeSize)
+		if n.leaf {
+			first = n.entries()[0].key
+			break
+		}
+		leaves *= count
+		n = nodeIn(dir, n.inner().children[0])
+	}
+	return leaves, first
 }
 
 // sampleLeafSpan estimates a leaf's span: the median gap between
