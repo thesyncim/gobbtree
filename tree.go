@@ -272,7 +272,7 @@ func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 		}
 		t.generic = &genericTree[K, V, O]{owner: true}
 	}
-	old, found := t.generic.insert(key, value, insertReplace, nil)
+	old, found := t.generic.ownerInsert(key, value, insertReplace, nil)
 	if !found {
 		t.length++
 	}
@@ -306,7 +306,7 @@ func (t *treeCore[K, V, O]) removeEntryGeneric(seek int, key K) (K, V, bool) {
 		var v V
 		return k, v, false
 	}
-	k, v, ok := t.generic.remove(seek, key, nil)
+	k, v, ok := t.generic.ownerRemove(seek, key, nil)
 	if ok {
 		t.length--
 		if t.length == 0 {

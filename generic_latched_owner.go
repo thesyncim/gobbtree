@@ -30,17 +30,18 @@ func (t *genericTree[K, V, O]) ownerLeaf(key K, code uint64) *gleaf[K, V] {
 	return asLeaf[K, V](h)
 }
 
-// ownerSeek is key's leaf, its slot there and whether key is there. A text
+// ownerSeek is key's leaf, its slot there and whether key is there, and
+// whether key fits the leaf's windows, so begins with its prefix. A text
 // key descends and is checked in its leaf in one loop, calls costing a
 // lookup what its loads do: a key that fits its windows is there exactly
 // where a slot's code, tail and length are its, as readTextLeaf settles it;
 // any other goes to the leaf's search. A key without the shared prefix
 // routes anywhere, but it is in no leaf, and a writer admits its key first.
-func (t *genericTree[K, V, O]) ownerSeek(key K, code uint64) (*gleaf[K, V], int, bool) {
+func (t *genericTree[K, V, O]) ownerSeek(key K, code uint64) (n *gleaf[K, V], i int, found, fits bool) {
 	if !prefixed[O, K]() {
 		n := t.ownerLeaf(key, code)
 		i, ok := t.find(n, key, code)
-		return n, i, ok
+		return n, i, ok, false
 	}
 	s := textView(&key)
 	h := plainPointer(&t.root)
@@ -54,7 +55,7 @@ func (t *genericTree[K, V, O]) ownerSeek(key K, code uint64) (*gleaf[K, V], int,
 			h = plainPointer(&n.children[i&(nodeSize-1)])
 			continue
 		case textAbsent:
-			return asLeaf[K, V](at), lo, false
+			return asLeaf[K, V](at), lo, false, true
 		}
 		n := asLeaf[K, V](at)
 		if found == textCode {
@@ -64,11 +65,11 @@ func (t *genericTree[K, V, O]) ownerSeek(key K, code uint64) (*gleaf[K, V], int,
 			}
 			j := lo & (nodeSize - 1)
 			if text := n.text(); text.tails[j] == tail && text.lens[j] == textLen(s) {
-				return n, lo, true
+				return n, lo, true, true
 			}
 		}
 		i, ok := t.find(n, key, code)
-		return n, i, ok
+		return n, i, ok, found == textCode
 	}
 }
 
@@ -80,7 +81,7 @@ func (t *genericTree[K, V, O]) ownerGet(key K) (value V, found bool) {
 	if !prefixed[O, K]() {
 		code = t.code(key)
 	}
-	if n, i, ok := t.ownerSeek(key, code); ok {
+	if n, i, ok, _ := t.ownerSeek(key, code); ok {
 		return n.values[i&(nodeSize-1)], true
 	}
 	return value, false
@@ -91,7 +92,7 @@ func (t *genericTree[K, V, O]) ownerRead(key K, visit func(K, V)) bool {
 		return false
 	}
 	code := t.code(key)
-	n, i, ok := t.ownerSeek(key, code)
+	n, i, ok, _ := t.ownerSeek(key, code)
 	if ok {
 		visit(n.keys[i], n.values[i])
 	}
@@ -104,7 +105,7 @@ func (t *genericTree[K, V, O]) ownerUpdate(key K, change func(K, V) V) (V, bool)
 		return zero, false
 	}
 	code := t.code(key)
-	n, i, ok := t.ownerSeek(key, code)
+	n, i, ok, _ := t.ownerSeek(key, code)
 	if !ok {
 		return zero, false
 	}
@@ -123,14 +124,21 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 	if !prefixed[O, K]() {
 		code = t.code(key)
 	}
-	n, i, found := t.ownerSeek(key, code)
-	if !found && prefixed[O, K]() && t.sharedOrder(key) != 0 {
-		// A new key without the shared prefix shortens it, which refits
-		// the borders its route may have crossed: route it again.
-		t.admit(key)
-		n, i, found = t.ownerSeek(key, code)
-	} else if !found && prefixed[O, K]() && plainPointer(&t.shared) == nil {
-		t.admit(key)
+	n, i, found, fits := t.ownerSeek(key, code)
+	if !found && prefixed[O, K]() {
+		// A key with the prefix of a leaf whose keys share the shared
+		// prefix has it too; any other is checked.
+		shared := plainPointer(&t.shared)
+		switch {
+		case shared == nil:
+			t.admit(key)
+		case (!fits || owned(&n.prefix) < len(*shared)) && t.sharedOrder(key) != 0:
+			// A new key without the shared prefix shortens it, which
+			// refits the borders its route may have crossed: route it
+			// again.
+			t.admit(key)
+			n, i, found, fits = t.ownerSeek(key, code)
+		}
 	}
 	if found {
 		i &= nodeSize - 1
@@ -144,7 +152,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 		return old, true
 	}
 	if owned(&n.count) < nodeSize {
-		t.insertEntry(n, i, ownKey[O](key), value)
+		t.insertEntry(n, i, ownKey[O](key), value, fits)
 		var zero V
 		return zero, false
 	}
@@ -165,7 +173,7 @@ func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V)
 	code := uint64(0)
 	if seek == seekKey {
 		code = t.code(key)
-		n, i, ok = t.ownerSeek(key, code)
+		n, i, ok, _ = t.ownerSeek(key, code)
 	} else {
 		n, _ = t.descend(key, 0, seek, false, optimistic, nil)
 		i, ok = t.target(n, seek, key, 0)

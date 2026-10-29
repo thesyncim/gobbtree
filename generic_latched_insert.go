@@ -184,7 +184,7 @@ func (t *genericTree[K, V, O]) insertInto(n *gleaf[K, V], key K, code uint64, va
 	if int(n.count.Load()) == nodeSize {
 		return old, false, false
 	}
-	t.insertEntry(n, i, ownKey[O](key), value)
+	t.insertEntry(n, i, ownKey[O](key), value, false)
 	return old, false, true
 }
 
@@ -259,9 +259,9 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 	cut, left := ofSplit(nodeSize, index, minimum)
 	t.moveLeafEntries(right, 0, leaf, cut, nodeSize-cut)
 	if left {
-		t.insertEntry(leaf, index, ownKey[O](key), value)
+		t.insertEntry(leaf, index, ownKey[O](key), value, false)
 	} else {
-		t.insertEntry(right, index-cut, ownKey[O](key), value)
+		t.insertEntry(right, index-cut, ownKey[O](key), value, false)
 	}
 	separator := new(K)
 	*separator = right.keys[0]
@@ -311,18 +311,24 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 // leaves read them latched, or racing where a version check covers them.
 
 // insertEntry inserts an entry at i into leaf n, which has room; a key
-// without the leaf's prefix shortens it.
-func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V) {
+// without the leaf's prefix shortens it. shares is true where the key is
+// known to begin with the prefix, as a lookup that fit its windows found.
+func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V, shares bool) {
 	p, refit := 0, false
 	if prefixed[O, K]() {
 		p = int(n.prefix.Load())
-		refit = p > 0 && t.leafOrder(n, key, p) != 0
+		refit = !shares && p > 0 && t.leafOrder(n, key, p) != 0
 	}
 	count := int(n.count.Load())
 	copy(n.codes[i+1:count+1], n.codes[i:count])
 	copy(n.keys[i+1:count+1], n.keys[i:count])
 	copy(n.values[i+1:count+1], n.values[i:count])
-	n.codes[i], n.keys[i], n.values[i] = windowKey[O](key, p), key, value
+	if prefixed[O, K]() {
+		n.codes[i] = stringCode(textView(&key), p)
+	} else {
+		n.codes[i] = windowKey[O](key, p)
+	}
+	n.keys[i], n.values[i] = key, value
 	if prefixed[O, K]() {
 		copy(n.text().tails[i+1:count+1], n.text().tails[i:count])
 		copy(n.text().lens[i+1:count+1], n.text().lens[i:count])
