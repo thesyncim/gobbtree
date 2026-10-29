@@ -73,7 +73,7 @@ func floatCode(f float64) uint64 {
 }
 
 func stringCode(s string, offset int) uint64 {
-	if uint(offset)+8 <= uint(len(s)) {
+	if len(s) >= 8 && uint(offset) <= uint(len(s)-8) {
 		// Eight whole bytes, the common case, inlined: one load.
 		return binary.BigEndian.Uint64((*[8]byte)(unsafe.Add(unsafe.Pointer(unsafe.StringData(s)), offset))[:])
 	}

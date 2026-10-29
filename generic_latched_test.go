@@ -503,3 +503,30 @@ func TestGenericSharedPrefixShrinks(t *testing.T) {
 		last, first = k, false
 	}
 }
+
+// stringCode windows any offset: whole windows, tails, past the end, and
+// offsets below zero, which panic as slicing does.
+func TestStringCodeOffsets(t *testing.T) {
+	s := "0123456789abcdefg"
+	for offset := 0; offset <= len(s)+9; offset++ {
+		var want uint64
+		for i := 0; i < 8; i++ {
+			if offset+i < len(s) {
+				want |= uint64(s[offset+i]) << (56 - 8*i)
+			}
+		}
+		if got := stringCode(s, offset); got != want {
+			t.Fatalf("offset %d: %x, want %x", offset, got, want)
+		}
+	}
+	for _, offset := range []int{-1, -8, -9} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("offset %d read before the string", offset)
+				}
+			}()
+			stringCode(s, offset)
+		}()
+	}
+}
