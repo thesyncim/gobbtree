@@ -36,21 +36,28 @@ type gheader struct {
 	leaf  bool
 }
 
+// A leaf: entries in key order, with each key's code, its window at offset
+// 0, which narrows a search before keys are compared. Code slots past the
+// count hold codePad, as lowerCode's vector kernels count every slot.
 type gleaf[K any, V any] struct {
 	gheader
+	codes  [nodeSize]uint64
 	keys   [nodeSize]K
 	values [nodeSize]V
 }
 
 // An internal node: child i holds keys at least separator i, whose code,
-// its window at offset 0, routes without reading the key. Separator 0 is
-// the node's own, nil on the tree's left border.
+// its window at offset 0, routes without reading the key; code slots past
+// the count hold codePad. Separator 0 is the node's own, nil on the tree's
+// left border.
 type ginner[K any] struct {
 	gheader
 	codes    [nodeSize]atomic.Uint64
 	seps     [nodeSize]atomic.Pointer[K]
 	children [nodeSize]atomic.Pointer[gheader]
 }
+
+const codePad = ^uint64(0)
 
 func asLeaf[K any, V any](h *gheader) *gleaf[K, V] { return (*gleaf[K, V])(unsafe.Pointer(h)) }
 func asInner[K any](h *gheader) *ginner[K]         { return (*ginner[K])(unsafe.Pointer(h)) }
@@ -64,12 +71,18 @@ func (h *gheader) freed() { h.count.Store(0) }
 func newGLeaf[K any, V any]() *gleaf[K, V] {
 	n := &gleaf[K, V]{}
 	n.leaf = true
+	for i := range n.codes {
+		n.codes[i] = codePad
+	}
 	n.latch.Store(latchExclusive)
 	return n
 }
 
 func newGInner[K any]() *ginner[K] {
 	n := &ginner[K]{}
+	for i := range n.codes {
+		n.codes[i].Store(codePad)
+	}
 	n.latch.Store(latchExclusive)
 	return n
 }
@@ -81,26 +94,65 @@ const (
 	seekLast
 )
 
+// exactCodes reports keys whose codes order them exactly: built-in word
+// keys in their natural order. Their equal codes are equal keys.
+func exactCodes[O keyOrder[K], K any]() bool { return wordKeyKind[O, K]() != 0 }
+
+// codeRange is where codes, count of them in order, equal code: [lo, hi).
+// It reads them racing, by plain loads where a version check covers them.
+func codeRange(codes *[nodeSize]atomic.Uint64, count int, code uint64) (lo, hi int) {
+	if seqlockPlainStores {
+		plain := (*[nodeSize]uint64)(unsafe.Pointer(codes))
+		lo, hi = lowerCode(plain, count, code), count
+		if code != ^uint64(0) {
+			hi = lowerCode(plain, count, code+1)
+		}
+		return lo, hi
+	}
+	lo, hi = 0, count
+	for lo < hi {
+		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
+		if codes[mid].Load() < code {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	end := count
+	for a := lo; a < end; {
+		mid := int(uint(a+end)>>1) & (nodeSize - 1)
+		if codes[mid].Load() <= code {
+			a = mid + 1
+		} else {
+			end = mid
+		}
+	}
+	return lo, end
+}
+
 // route is the child of internal node n, of count children, whose keys
 // hold key, read racing: the last whose separator is at most key, or below
-// it when strict. ok is false where a racing read finds no separator.
-func (n *ginner[K]) route(key K, code uint64, count int, strict bool, compare func(a, b K) int) (int, bool) {
-	lo, hi := 1, count
-	for lo < hi {
-		mid := int(uint(lo+hi) >> 1)
-		c := n.codes[mid&(nodeSize-1)].Load()
-		var above bool
-		if c != code {
-			above = c > code
-		} else {
-			sep := n.seps[mid&(nodeSize-1)].Load()
-			if sep == nil {
-				return 0, false
-			}
-			order := compare(*sep, key)
-			above = order > 0 || strict && order == 0
+// it when strict. Codes settle it unless they tie inexactly; then boxed
+// separators, never changed, are compared whole. ok is false where a racing
+// read finds no separator.
+func (t *genericTree[K, V, O]) route(n *ginner[K], key K, code uint64, count int, strict bool) (int, bool) {
+	lo, hi := codeRange(&n.codes, count, code)
+	if lo == hi || exactCodes[O, K]() {
+		if strict || lo == hi {
+			return max(lo-1, 0), true
 		}
-		if above {
+		return hi - 1, true
+	}
+	// Separator 0 bounds the node from below, so it is never above key.
+	lo = max(lo, 1)
+	for lo < hi {
+		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
+		sep := n.seps[mid].Load()
+		if sep == nil {
+			return 0, false
+		}
+		order := t.compare(*sep, key)
+		if order > 0 || strict && order == 0 {
 			hi = mid
 		} else {
 			lo = mid + 1
@@ -169,13 +221,9 @@ func (t *genericTree[K, V, O]) compare(a, b K) int { return compareKeys[O](a, b)
 
 // descend finds the leaf that seek's entry belongs in and latches it in
 // mode, by optimistic lock coupling through the internal nodes; strict
-// seeks the leaf of keys below key. path, if not nil, keeps the internal
-// nodes. The tree has a root.
-func (t *genericTree[K, V, O]) descend(key K, seek int, strict bool, mode int, path *gpath[K]) (*gleaf[K, V], uint64) {
-	var code uint64
-	if seek == seekKey {
-		code = windowKey[O](key, 0)
-	}
+// seeks the leaf of keys below key, whose code is code. path, if not nil,
+// keeps the internal nodes. The tree has a root.
+func (t *genericTree[K, V, O]) descend(key K, code uint64, seek int, strict bool, mode int, path *gpath[K]) (*gleaf[K, V], uint64) {
 restart:
 	for {
 		if path != nil {
@@ -208,7 +256,7 @@ restart:
 				i = count - 1
 			default:
 				var ok bool
-				if i, ok = n.route(key, code, count, strict, t.compare); !ok {
+				if i, ok = t.route(n, key, code, count, strict); !ok {
 					continue restart
 				}
 			}
@@ -246,19 +294,29 @@ restart:
 	}
 }
 
-// find is key's slot in leaf n, latched, and whether key is there.
-func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K) (int, bool) {
+func (t *genericTree[K, V, O]) code(key K) uint64 { return windowKey[O](key, 0) }
+
+// find is key's slot in leaf n, latched, and whether key is there; code is
+// key's code.
+func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K, code uint64) (int, bool) {
 	count := int(n.count.Load())
-	lo, hi := 0, count
+	lo := lowerCode(&n.codes, count, code)
+	if exactCodes[O, K]() {
+		return lo, lo < count && n.codes[lo&(nodeSize-1)] == code
+	}
+	hi := count
+	if code != ^uint64(0) {
+		hi = lowerCode(&n.codes, count, code+1)
+	}
 	for lo < hi {
-		mid := int(uint(lo+hi) >> 1)
+		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
 		if t.compare(n.keys[mid], key) < 0 {
 			lo = mid + 1
 		} else {
 			hi = mid
 		}
 	}
-	return lo, lo < count && t.compare(n.keys[lo], key) == 0
+	return lo, lo < count && t.compare(n.keys[lo&(nodeSize-1)], key) == 0
 }
 
 // start makes the tree's root leaf, once.
@@ -272,14 +330,46 @@ func (t *genericTree[K, V, O]) start() {
 	}
 }
 
-// get is key's value, read with its leaf latched shared.
+// optimisticLeaves reports trees whose lookups read a leaf without
+// latching it, checking its version after: exact codes settle the search
+// without comparing keys, so no user code runs on a racing read. A value is
+// copied racing, perhaps torn, and returned only once the check passes;
+// until then nothing reads through it, and each of its words is a pointer
+// or not as its type says, which is all the collector needs.
+func optimisticLeaves[O keyOrder[K], K any]() bool {
+	return seqlockPlainStores && exactCodes[O, K]()
+}
+
+// get is key's value. With optimistic leaves it is read without latching
+// the leaf, a few times while writers change it, before it latches shared.
 func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 	if t.root.Load() == nil {
 		return value, false
 	}
-	n, _ := t.descend(key, seekKey, false, shared, nil)
-	if i, ok := t.find(n, key); ok {
+	code := t.code(key)
+	if optimisticLeaves[O, K]() {
+		for try := 0; try < 4; try++ {
+			n, version := t.descend(key, code, seekKey, false, optimistic, nil)
+			count := min(int(n.count.Load()), nodeSize)
+			i := lowerCode(&n.codes, count, code) & (nodeSize - 1)
+			found = i < count && n.codes[i] == code
+			value = n.values[i]
+			loadFence()
+			if n.latch.isUnchanged(version) {
+				if !found {
+					var zero V
+					return zero, false
+				}
+				return value, true
+			}
+		}
+	}
+	n, _ := t.descend(key, code, seekKey, false, shared, nil)
+	if i, ok := t.find(n, key, code); ok {
 		value, found = n.values[i], true
+	} else {
+		var zero V
+		value, found = zero, false
 	}
 	n.latch.unlockShared()
 	return value, found
@@ -291,9 +381,10 @@ func (t *genericTree[K, V, O]) read(key K, visit func(K, V)) bool {
 	if t.root.Load() == nil {
 		return false
 	}
-	n, _ := t.descend(key, seekKey, false, shared, nil)
+	code := t.code(key)
+	n, _ := t.descend(key, code, seekKey, false, shared, nil)
 	defer n.latch.unlockShared()
-	i, ok := t.find(n, key)
+	i, ok := t.find(n, key, code)
 	if ok {
 		visit(n.keys[i], n.values[i])
 	}
@@ -307,9 +398,10 @@ func (t *genericTree[K, V, O]) update(key K, change func(K, V) V) (V, bool) {
 	if t.root.Load() == nil {
 		return zero, false
 	}
-	n, version := t.descend(key, seekKey, false, exclusive, nil)
+	code := t.code(key)
+	n, version := t.descend(key, code, seekKey, false, exclusive, nil)
 	defer n.latch.unlockExclusive(version)
-	i, ok := t.find(n, key)
+	i, ok := t.find(n, key, code)
 	if !ok {
 		return zero, false
 	}

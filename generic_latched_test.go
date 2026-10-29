@@ -49,12 +49,15 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 			n := asLeaf[K, V](h)
 			for i := 0; i < count; i++ {
 				inside(n.keys[i])
+				if n.codes[i] != windowKey[O](n.keys[i], 0) {
+					t.Fatalf("leaf code %d is stale", i)
+				}
 				if i > 0 && compareKeys[O](n.keys[i-1], n.keys[i]) >= 0 {
 					t.Fatalf("leaf keys out of order at %d", i)
 				}
 			}
 			for i := count; i < nodeSize; i++ {
-				if !reflect.ValueOf(&n.keys[i]).Elem().IsZero() || !reflect.ValueOf(&n.values[i]).Elem().IsZero() {
+				if n.codes[i] != codePad || !reflect.ValueOf(&n.keys[i]).Elem().IsZero() || !reflect.ValueOf(&n.values[i]).Elem().IsZero() {
 					t.Fatalf("leaf slot %d past count %d holds an entry", i, count)
 				}
 			}
@@ -96,7 +99,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 			total += check(child, childLow, childHigh, depth+1)
 		}
 		for i := count; i < nodeSize; i++ {
-			if n.seps[i].Load() != nil || n.children[i].Load() != nil || n.codes[i].Load() != 0 {
+			if n.seps[i].Load() != nil || n.children[i].Load() != nil || n.codes[i].Load() != codePad {
 				t.Fatalf("internal slot %d past count %d holds a child", i, count)
 			}
 		}
@@ -133,6 +136,9 @@ func TestGenericChurn(t *testing.T) {
 	var wg sync.WaitGroup
 	for worker := 0; worker < workers; worker++ {
 		wg.Go(func() {
+			// Each worker owns the keys equal to it modulo workers, so its
+			// model of them is exact.
+			present := map[uint64]bool{}
 			x := uint64(worker)*0x9e3779b97f4a7c15 + 1
 			for round := 0; round < rounds; round++ {
 				for j := 0; j < keys; j++ {
@@ -141,17 +147,30 @@ func TestGenericChurn(t *testing.T) {
 					k := genericKey(i)
 					switch x >> 61 {
 					case 0, 1:
-						m.Delete(k)
-					case 2:
-						if _, v, ok := m.Take(k); ok && v.key != k {
-							t.Errorf("took %q holding %q", k, v.key)
+						if _, ok := m.Delete(k); ok != present[i] {
+							t.Errorf("delete %q found %v, want %v", k, ok, present[i])
 						}
+						present[i] = false
+					case 2:
+						if _, v, ok := m.Take(k); ok != present[i] || ok && v.key != k {
+							t.Errorf("took %q: %v holding %q, want %v", k, ok, v.key, present[i])
+						}
+						present[i] = false
 					case 3:
-						m.UpdateOrInsert(k, value{k, []int{1}}, func(_ string, old, _ value) value {
+						if _, ok := m.UpdateOrInsert(k, value{k, []int{1}}, func(_ string, old, _ value) value {
 							return value{old.key, append(old.hits[:len(old.hits):len(old.hits)], 1)}
-						})
+						}); ok != present[i] {
+							t.Errorf("upsert %q found %v, want %v", k, ok, present[i])
+						}
+						present[i] = true
 					default:
-						m.Insert(k, value{k, []int{0}})
+						if _, ok := m.Insert(k, value{k, []int{0}}); ok != present[i] {
+							t.Errorf("insert %q found %v, want %v", k, ok, present[i])
+						}
+						present[i] = true
+					}
+					if v, ok := m.Get(k); ok != present[i] || ok && v.key != k {
+						t.Errorf("get %q: %v holding %q, want %v", k, ok, v.key, present[i])
 					}
 					if v, ok := m.Get(genericKey((x >> 20) % keys)); ok && v.key != genericKey((x>>20)%keys) {
 						t.Errorf("read %q holding %q", genericKey((x>>20)%keys), v.key)
@@ -227,5 +246,79 @@ func TestGenericFillAndDrain(t *testing.T) {
 		if !m.IsEmpty() || checkGenericTree(t, &m.generic) != 0 {
 			t.Fatalf("%s: not empty after draining", order)
 		}
+	}
+}
+
+// Lookups of word keys copy values without latching their leaf; a copy torn
+// by a writer must never be returned. Values here span many words, with
+// pointers and an interface, and each is consistent only whole.
+func TestGenericOptimisticValues(t *testing.T) {
+	type wide struct {
+		id    uint64
+		name  *string
+		check []uint64
+		any   any
+		pad   [6]uint64
+		self  uint64
+	}
+	make := func(k, gen uint64) wide {
+		name := fmt.Sprint(k, ":", gen)
+		w := wide{id: k, name: &name, check: []uint64{k, gen}, any: gen, self: k ^ gen}
+		for i := range w.pad {
+			w.pad[i] = gen
+		}
+		return w
+	}
+	consistent := func(k uint64, w wide) bool {
+		gen := w.self ^ k
+		if w.id != k || *w.name != fmt.Sprint(k, ":", gen) || len(w.check) != 2 || w.check[0] != k || w.check[1] != gen || w.any.(uint64) != gen {
+			return false
+		}
+		for _, p := range w.pad {
+			if p != gen {
+				return false
+			}
+		}
+		return true
+	}
+	var m Map[uint64, wide]
+	const keys = 2048
+	for k := uint64(0); k < keys; k++ {
+		m.Insert(k, make(k, 0))
+	}
+	ops := 200000
+	if testing.Short() {
+		ops = 20000
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Go(func() {
+			x := uint64(w + 1)
+			for i := 0; i < ops; i++ {
+				x = x*6364136223846793005 + 1442695040888963407
+				k := (x >> 33) % keys
+				if x>>62 == 0 {
+					m.Delete(k)
+				}
+				m.Insert(k, make(k, x>>40))
+			}
+		})
+	}
+	for r := 0; r < 4; r++ {
+		wg.Go(func() {
+			x := uint64(r + 100)
+			for i := 0; i < 2*ops; i++ {
+				x = x*6364136223846793005 + 1442695040888963407
+				k := (x >> 33) % keys
+				if v, ok := m.Get(k); ok && !consistent(k, v) {
+					t.Errorf("key %d: torn value %+v", k, v)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if got := checkGenericTree(t, &m.generic); got != seqLen(m.All()) {
+		t.Fatalf("tree holds %d entries, scan %d", got, seqLen(m.All()))
 	}
 }

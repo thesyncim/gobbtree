@@ -12,11 +12,15 @@ func (t *genericTree[K, V, O]) remove(seek int, key K, condition func(K, V) bool
 	if t.root.Load() == nil {
 		return k, v, false
 	}
-	if k, v, removed, done := t.removeLatched(seek, key, condition); done {
+	var code uint64
+	if seek == seekKey {
+		code = t.code(key)
+	}
+	if k, v, removed, done := t.removeLatched(seek, key, code, condition); done {
 		return k, v, removed
 	}
 	for {
-		if k, v, removed, done := t.removeRebalancing(seek, key, condition); done {
+		if k, v, removed, done := t.removeRebalancing(seek, key, code, condition); done {
 			return k, v, removed
 		}
 		// Another goroutine holds a node the removal needs: wait a moment,
@@ -26,7 +30,7 @@ func (t *genericTree[K, V, O]) remove(seek int, key K, condition func(K, V) bool
 }
 
 // target is where seek's entry is in leaf n, or false without one.
-func (t *genericTree[K, V, O]) target(n *gleaf[K, V], seek int, key K) (int, bool) {
+func (t *genericTree[K, V, O]) target(n *gleaf[K, V], seek int, key K, code uint64) (int, bool) {
 	count := int(n.count.Load())
 	switch seek {
 	case seekFirst:
@@ -34,13 +38,13 @@ func (t *genericTree[K, V, O]) target(n *gleaf[K, V], seek int, key K) (int, boo
 	case seekLast:
 		return count - 1, count > 0
 	}
-	return t.find(n, key)
+	return t.find(n, key, code)
 }
 
-func (t *genericTree[K, V, O]) removeLatched(seek int, key K, condition func(K, V) bool) (k K, v V, removed, done bool) {
-	n, version := t.descend(key, seek, false, exclusive, nil)
+func (t *genericTree[K, V, O]) removeLatched(seek int, key K, code uint64, condition func(K, V) bool) (k K, v V, removed, done bool) {
+	n, version := t.descend(key, code, seek, false, exclusive, nil)
 	defer n.latch.unlockExclusive(version)
-	i, ok := t.target(n, seek, key)
+	i, ok := t.target(n, seek, key, code)
 	if !ok || condition != nil && !condition(n.keys[i], n.values[i]) {
 		return k, v, false, true
 	}
@@ -54,9 +58,9 @@ func (t *genericTree[K, V, O]) removeLatched(seek int, key K, condition func(K, 
 // removeRebalancing is one try of a removal that leaves its leaf underfull;
 // done is false, with nothing changed, if a node it takes is held by
 // another goroutine or changed since the descent.
-func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, condition func(K, V) bool) (k K, v V, removed, done bool) {
+func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, code uint64, condition func(K, V) bool) (k K, v V, removed, done bool) {
 	var path gpath[K]
-	n, version := t.descend(key, seek, false, exclusive, &path)
+	n, version := t.descend(key, code, seek, false, exclusive, &path)
 	var held latchSet
 	released := false
 	defer func() {
@@ -65,7 +69,7 @@ func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, condition func
 			n.latch.unlockExclusive(version)
 		}
 	}()
-	i, ok := t.target(n, seek, key)
+	i, ok := t.target(n, seek, key, code)
 	if !ok || condition != nil && !condition(n.keys[i], n.values[i]) {
 		return k, v, false, true
 	}

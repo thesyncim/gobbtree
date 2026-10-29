@@ -72,22 +72,23 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 	if t.root.Load() == nil {
 		t.start()
 	}
-	if old, found, done := t.insertLatched(key, value, policy, merge); done {
+	code := t.code(key)
+	if old, found, done := t.insertLatched(key, code, value, policy, merge); done {
 		return old, found
 	}
-	return t.insertSplitting(key, value, policy, merge)
+	return t.insertSplitting(key, code, value, policy, merge)
 }
 
-func (t *genericTree[K, V, O]) insertLatched(key K, value V, policy int, merge func(K, V, V) V) (old V, found, done bool) {
-	n, version := t.descend(key, seekKey, false, exclusive, nil)
+func (t *genericTree[K, V, O]) insertLatched(key K, code uint64, value V, policy int, merge func(K, V, V) V) (old V, found, done bool) {
+	n, version := t.descend(key, code, seekKey, false, exclusive, nil)
 	defer n.latch.unlockExclusive(version)
-	return t.insertInto(n, key, value, policy, merge)
+	return t.insertInto(n, key, code, value, policy, merge)
 }
 
-// insertInto inserts into leaf n, held exclusively, if it holds key or has
-// room; done is false when the leaf is full and must split.
-func (t *genericTree[K, V, O]) insertInto(n *gleaf[K, V], key K, value V, policy int, merge func(K, V, V) V) (old V, found, done bool) {
-	i, ok := t.find(n, key)
+// insertInto inserts into leaf n, held exclusively, if it holds key, of
+// code code, or has room; done is false when the leaf is full and must split.
+func (t *genericTree[K, V, O]) insertInto(n *gleaf[K, V], key K, code uint64, value V, policy int, merge func(K, V, V) V) (old V, found, done bool) {
+	i, ok := t.find(n, key, code)
 	if ok {
 		old = n.values[i]
 		switch policy {
@@ -101,19 +102,19 @@ func (t *genericTree[K, V, O]) insertInto(n *gleaf[K, V], key K, value V, policy
 	if int(n.count.Load()) == nodeSize {
 		return old, false, false
 	}
-	insertEntry(n, i, ownKey[O](key), value)
+	insertEntry(n, i, ownKey[O](key), code, value)
 	return old, false, true
 }
 
 // insertIntoReleasing is insertInto that lets go of n if merge panics.
-func (t *genericTree[K, V, O]) insertIntoReleasing(n *gleaf[K, V], version uint64, key K, value V, policy int, merge func(K, V, V) V) (old V, found, done bool) {
+func (t *genericTree[K, V, O]) insertIntoReleasing(n *gleaf[K, V], version uint64, key K, code uint64, value V, policy int, merge func(K, V, V) V) (old V, found, done bool) {
 	finished := false
 	defer func() {
 		if !finished {
 			n.latch.unlockExclusive(version)
 		}
 	}()
-	old, found, done = t.insertInto(n, key, value, policy, merge)
+	old, found, done = t.insertInto(n, key, code, value, policy, merge)
 	finished = true
 	return old, found, done
 }
@@ -121,16 +122,16 @@ func (t *genericTree[K, V, O]) insertIntoReleasing(n *gleaf[K, V], version uint6
 // insertSplitting is insert where the leaf was full: it searches again,
 // keeping its path, and splits, until no other goroutine holds a node the
 // split needs.
-func (t *genericTree[K, V, O]) insertSplitting(key K, value V, policy int, merge func(K, V, V) V) (V, bool) {
+func (t *genericTree[K, V, O]) insertSplitting(key K, code uint64, value V, policy int, merge func(K, V, V) V) (V, bool) {
 	for {
 		var path gpath[K]
-		n, version := t.descend(key, seekKey, false, exclusive, &path)
-		old, found, done := t.insertIntoReleasing(n, version, key, value, policy, merge)
+		n, version := t.descend(key, code, seekKey, false, exclusive, &path)
+		old, found, done := t.insertIntoReleasing(n, version, key, code, value, policy, merge)
 		if done {
 			n.latch.unlockExclusive(version)
 			return old, found
 		}
-		if t.split(&path, n, version, key, value) {
+		if t.split(&path, n, version, key, code, value) {
 			return old, false
 		}
 		n.latch.unlockExclusive(version)
@@ -146,7 +147,7 @@ func (t *genericTree[K, V, O]) insertSplitting(key K, value V, policy int, merge
 // It takes those path nodes at the versions the descent read; false, with
 // nothing changed, if one changed or is held. Otherwise it lets go of
 // everything, leaf included.
-func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVersion uint64, key K, value V) bool {
+func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVersion uint64, key K, code uint64, value V) bool {
 	depth := path.depth
 	room := -1
 	for level := depth - 1; level >= 0; level-- {
@@ -166,7 +167,7 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 	var fresh latchSet
 	right := newGLeaf[K, V]()
 	fresh.push(&right.gheader, 0)
-	index, _ := t.find(leaf, key)
+	index, _ := t.find(leaf, key, code)
 	// A key past the leaf's last leaves it nearly full, as an ascending
 	// run refills the new leaf.
 	minimum := leafMinLen
@@ -176,9 +177,9 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 	cut, left := ofSplit(nodeSize, index, minimum)
 	moveLeafEntries(right, 0, leaf, cut, nodeSize-cut)
 	if left {
-		insertEntry(leaf, index, ownKey[O](key), value)
+		insertEntry(leaf, index, ownKey[O](key), code, value)
 	} else {
-		insertEntry(right, index-cut, ownKey[O](key), value)
+		insertEntry(right, index-cut, ownKey[O](key), code, value)
 	}
 	separator := new(K)
 	*separator = right.keys[0]
@@ -220,11 +221,12 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 // values are read with their leaf latched.
 
 // insertEntry inserts an entry at i into leaf n, which has room.
-func insertEntry[K any, V any](n *gleaf[K, V], i int, key K, value V) {
+func insertEntry[K any, V any](n *gleaf[K, V], i int, key K, code uint64, value V) {
 	count := int(n.count.Load())
+	copy(n.codes[i+1:count+1], n.codes[i:count])
 	copy(n.keys[i+1:count+1], n.keys[i:count])
 	copy(n.values[i+1:count+1], n.values[i:count])
-	n.keys[i], n.values[i] = key, value
+	n.codes[i], n.keys[i], n.values[i] = code, key, value
 	n.count.Store(int32(count + 1))
 }
 
@@ -233,11 +235,12 @@ func insertEntry[K any, V any](n *gleaf[K, V], i int, key K, value V) {
 func removeEntry[K any, V any](n *gleaf[K, V], i int) (K, V) {
 	count := int(n.count.Load())
 	key, value := n.keys[i], n.values[i]
+	copy(n.codes[i:count-1], n.codes[i+1:count])
 	copy(n.keys[i:count-1], n.keys[i+1:count])
 	copy(n.values[i:count-1], n.values[i+1:count])
 	var zk K
 	var zv V
-	n.keys[count-1], n.values[count-1] = zk, zv
+	n.codes[count-1], n.keys[count-1], n.values[count-1] = codePad, zk, zv
 	n.count.Store(int32(count - 1))
 	return key, value
 }
@@ -246,12 +249,18 @@ func removeEntry[K any, V any](n *gleaf[K, V], i int) (K, V) {
 // has room, closing src's gap and clearing the slots it frees.
 func moveLeafEntries[K any, V any](dst *gleaf[K, V], at int, src *gleaf[K, V], from, count int) {
 	srcCount, dstCount := int(src.count.Load()), int(dst.count.Load())
+	copy(dst.codes[at+count:dstCount+count], dst.codes[at:dstCount])
 	copy(dst.keys[at+count:dstCount+count], dst.keys[at:dstCount])
 	copy(dst.values[at+count:dstCount+count], dst.values[at:dstCount])
+	copy(dst.codes[at:at+count], src.codes[from:from+count])
 	copy(dst.keys[at:at+count], src.keys[from:from+count])
 	copy(dst.values[at:at+count], src.values[from:from+count])
+	copy(src.codes[from:srcCount-count], src.codes[from+count:srcCount])
 	copy(src.keys[from:srcCount-count], src.keys[from+count:srcCount])
 	copy(src.values[from:srcCount-count], src.values[from+count:srcCount])
+	for j := srcCount - count; j < srcCount; j++ {
+		src.codes[j] = codePad
+	}
 	clear(src.keys[srcCount-count : srcCount])
 	clear(src.values[srcCount-count : srcCount])
 	dst.count.Store(int32(dstCount + count))
@@ -285,7 +294,7 @@ func removeGChild[K any](n *ginner[K], i int) {
 		n.seps[j].Store(n.seps[j+1].Load())
 		n.children[j].Store(n.children[j+1].Load())
 	}
-	n.codes[count-1].Store(0)
+	n.codes[count-1].Store(codePad)
 	n.seps[count-1].Store(nil)
 	n.children[count-1].Store(nil)
 	n.count.Store(int32(count - 1))
@@ -311,7 +320,7 @@ func moveChildEntries[K any](dst *ginner[K], at int, src *ginner[K], from, count
 		src.children[j].Store(src.children[j+count].Load())
 	}
 	for j := srcCount - count; j < srcCount; j++ {
-		src.codes[j].Store(0)
+		src.codes[j].Store(codePad)
 		src.seps[j].Store(nil)
 		src.children[j].Store(nil)
 	}

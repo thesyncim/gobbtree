@@ -18,7 +18,11 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 			seek = seekKey
 		}
 		for {
-			n, _ := t.descend(from, seek, false, shared, &path)
+			var code uint64
+			if seek == seekKey {
+				code = t.code(from)
+			}
+			n, _ := t.descend(from, code, seek, false, shared, &path)
 			count, done := 0, false
 			for i := 0; i < int(n.count.Load()); i++ {
 				k := n.keys[i]
@@ -50,7 +54,11 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 		seek = seekKey
 	}
 	for {
-		n, _ := t.descend(below, seek, strict, shared, &path)
+		var code uint64
+		if seek == seekKey {
+			code = t.code(below)
+		}
+		n, _ := t.descend(below, code, seek, strict, shared, &path)
 		count, done := 0, false
 		for i := int(n.count.Load()) - 1; i >= 0; i-- {
 			k := n.keys[i]
