@@ -41,6 +41,25 @@ func textFits(n *leafRoute, s string, p int) bool {
 	return p <= 16 && len(s) <= p+16 && len(s) >= p && headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) == 0
 }
 
+// descendCodeBy is descendCode by calls to the search kernels. An internal
+// node's codes are its separators', the first 0: the route is the last
+// child whose separator is at most code.
+func descendCodeBy(h *gheader, code uint64) (*gheader, int, bool) {
+	for !h.leaf {
+		n := (*innerRoute)(unsafe.Pointer(h))
+		count := owned(&n.count)
+		codes := (*[nodeSize]uint64)(unsafe.Pointer(&n.codes))
+		i := lowerCode(codes, count, code)
+		if i < count && codes[i&(nodeSize-1)] == code {
+			i++
+		}
+		h = plainPointer(&n.children[(i-1)&(nodeSize-1)])
+	}
+	n := (*leafRoute)(unsafe.Pointer(h))
+	lo := lowerCode(&n.codes, owned(&n.count), code)
+	return h, lo, lo < owned(&n.count) && n.codes[lo&(nodeSize-1)] == code
+}
+
 // descendTextBy is descendText by calls to the search kernels.
 func descendTextBy(h *gheader, s string) (*gheader, int, int) {
 	for !h.leaf {

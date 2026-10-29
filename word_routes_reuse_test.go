@@ -3,6 +3,7 @@ package gobbtree
 import "testing"
 
 func TestWordRoutesReuseOnDomainChange(t *testing.T) {
+	needWords(t)
 	const base = uint64(1) << 60
 	var owner Tree[uint64, uint64]
 	var store interface {
@@ -53,6 +54,7 @@ func TestWordRoutesReuseOnDomainChange(t *testing.T) {
 // Ascending keys put the root's last separator far below the largest key;
 // the route domain must still reach it, or every key above it descends.
 func TestRouteDomainCoversLargestKey(t *testing.T) {
+	needWords(t)
 	var tr Tree[uint64, uint64]
 	const n = 300000
 	for i := range uint64(n) {

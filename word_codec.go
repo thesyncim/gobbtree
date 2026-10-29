@@ -4,7 +4,7 @@ import "math"
 
 func (t *treeCore[K, V, O]) initWords() bool {
 	keyKind, valueKind := wordKeyKind[O, K](), wordKind[V]()
-	if keyKind == 0 || keyKind == 11 || keyKind == 12 || keyKind == 13 || valueKind == 0 {
+	if !wordEngine || keyKind == 0 || keyKind == 11 || keyKind == 12 || keyKind == 13 || valueKind == 0 {
 		return false
 	}
 	t.words = &wordTree{keyKind: keyKind, valueKind: valueKind}

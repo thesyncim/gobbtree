@@ -113,11 +113,17 @@ func (custom[K]) own(key K) K {
 // wordKeyKind admits built-in word keys to the numeric arenas, whose codes
 // encode the natural order; keys that order themselves never use them.
 func wordKeyKind[O keyOrder[K], K any]() uint8 {
-	var o O
-	if unsafe.Sizeof(o) != 0 {
+	if !wordSized[O, K]() {
 		return 0
 	}
 	return wordKind[K]()
+}
+
+// wordSized reports keys that may be word keys: in their natural order and
+// no wider than a word. Sizes are constants for each shape, so where it is
+// inlined, text keys skip the kinds' type switch, and the code it guards.
+func wordSized[O keyOrder[K], K any]() bool {
+	return unsafe.Sizeof(*(*O)(nil)) == 0 && unsafe.Sizeof(*(*K)(nil)) <= 8
 }
 
 func isCustom[O keyOrder[K], K any]() bool {

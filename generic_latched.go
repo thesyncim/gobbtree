@@ -35,6 +35,11 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	starting sync.Mutex
 	// owner marks a Tree's tree (generic_latched_owner.go).
 	owner bool
+	// exact caches exactCodes, set as the root is first made, for the
+	// lookups that check it behind wordSized, which folds for text keys:
+	// the kinds' type switch is a call. Only an owner's lookups and plain
+	// stores' read it racing; one that finds it unset goes the general way.
+	exact bool
 	// An owner's text leaves reuse their buffers' bytes, a removed key's for
 	// the next to go in and a full buffer's for its live keys, while no key
 	// read over them is out: epoch is the generation of buffers the writer
@@ -63,7 +68,7 @@ type gheader struct {
 // prefix, which narrows a search before keys are compared. Code slots past
 // the count hold codePad, as lowerCode's vector kernels count every slot.
 // Its keys follow it in one allocation: a keyed leaf's as they are, a text
-// leaf's as bytes.
+// leaf's as bytes. A leaf whose codes are its keys (codeKeys) keeps none.
 type gleaf[K any, V any] struct {
 	gheader
 	codes  [nodeSize]uint64
@@ -139,6 +144,24 @@ func keyAt(buf unsafe.Pointer, ref uint64) string {
 // headed reports keys whose leaves keep heads.
 func headed[O keyOrder[K], K any]() bool { return !exactCodes[O, K]() }
 
+// codeKeys reports keys their codes hold whole, built-in integers: their
+// leaves keep codes and no keys, and a key is decoded from its code. Floats
+// keep theirs, as their codes fold -0 into 0.
+func codeKeys[O keyOrder[K], K any]() bool { return wordSized[O, K]() && wholeKey[K]() }
+
+// wordKey reports word kinds, and wholeKey those whose codes hold them
+// whole: all but floats. Kept out of line, they leave their callers small
+// enough to inline, where their size checks fold.
+//
+//go:noinline
+func wordKey[K any]() bool { return wordKind[K]() != 0 }
+
+//go:noinline
+func wholeKey[K any]() bool {
+	kind := wordKind[K]()
+	return kind != 0 && kind != 11 && kind != 12
+}
+
 // head is leaf n's head, false where it has none.
 func (t *genericTree[K, V, O]) head(n *gleaf[K, V]) (K, bool) {
 	var k K
@@ -178,7 +201,7 @@ func (t *genericTree[K, V, O]) setHead(n *gleaf[K, V]) {
 		n.text().head.Store(&b[0])
 		return
 	}
-	k := n.keyed()[0]
+	k := t.key(n, 0)
 	(*keyedLeaf[K, V])(unsafe.Pointer(n)).head.Store(&k)
 }
 
@@ -205,6 +228,9 @@ func (t *genericTree[K, V, O]) key(n *gleaf[K, V], i int) K {
 			t.handOut()
 		}
 		return keyOfText[K](t.keyText(n, i))
+	}
+	if codeKeys[O, K]() {
+		return decodeWordKey[K](n.codes[i&(nodeSize-1)], wordKeyKind[O, K]())
 	}
 	return n.keyed()[i&(nodeSize-1)]
 }
@@ -274,7 +300,7 @@ func (t *genericTree[K, V, O]) separatorKey(n *ginner[K], i int) (K, bool) {
 	if leaf.count.Load() == 0 {
 		return k, false
 	}
-	return leaf.keyed()[0], true
+	return t.key(leaf, 0), true
 }
 
 // lowFence is internal node n's low fence, the head of its leftmost leaf,
@@ -346,13 +372,16 @@ func asInner[K any](h *gheader) *ginner[K]         { return (*ginner[K])(unsafe.
 // stale route to it starts over, and its version moves when it is let go.
 func (h *gheader) freed() { h.count.Store(0) }
 
-// newGLeaf and newGInner make a node latched exclusively, at version 0,
+// newLeaf and newGInner make a node latched exclusively, at version 0,
 // until the operation making it lets go.
-func newGLeaf[K any, V any](text bool) *gleaf[K, V] {
+func (t *genericTree[K, V, O]) newLeaf() *gleaf[K, V] {
 	var n *gleaf[K, V]
-	if text {
+	switch {
+	case prefixed[O, K]():
 		n = &new(textLeaf[K, V]).gleaf
-	} else {
+	case codeKeys[O, K]():
+		n = new(gleaf[K, V])
+	default:
 		n = &new(keyedLeaf[K, V]).gleaf
 	}
 	n.leaf = true
@@ -381,7 +410,7 @@ const (
 
 // exactCodes reports keys whose codes order them exactly: built-in word
 // keys in their natural order. Their equal codes are equal keys.
-func exactCodes[O keyOrder[K], K any]() bool { return wordKeyKind[O, K]() != 0 }
+func exactCodes[O keyOrder[K], K any]() bool { return wordSized[O, K]() && wordKey[K]() }
 
 // codeRange is where codes, count of them in order, equal code: [lo, hi).
 // It reads them racing, by plain loads where a version check covers them.
@@ -529,24 +558,23 @@ func (p *gpath[K]) takeHighHolder(level int, held *latchSet) bool {
 }
 
 // nextFence is the lowest key past the leaf path leads to, the head of the
-// next leaf, nil on the right border; false where a racing reader finds the
-// node it reads it through changed since its descent.
-func (t *genericTree[K, V, O]) nextFence(p *gpath[K]) (*K, bool) {
+// next leaf, and whether there is one, none on the right border; ok is
+// false where a racing reader finds the node it reads it through changed
+// since its descent. The key is returned whole, so a scan's step keeps it
+// on the stack.
+func (t *genericTree[K, V, O]) nextFence(p *gpath[K]) (k K, has, ok bool) {
 	for level := p.depth - 1; level >= 0; level-- {
 		l := &p.levels[level]
 		if l.edge+1 >= l.count {
 			continue
 		}
-		k, ok := t.separatorKey(l.n, l.edge+1)
-		if !t.owner && !l.n.latch.isUnchanged(l.version) {
-			return nil, false
+		k, found := t.separatorKey(l.n, l.edge+1)
+		if !t.owner && !l.n.latch.isUnchanged(l.version) || !found {
+			return k, false, false
 		}
-		if !ok {
-			return nil, false
-		}
-		return &k, true
+		return k, true, true
 	}
-	return nil, true
+	return k, false, true
 }
 
 func latchHeader(h *gheader, mode int) uint64 {
@@ -726,9 +754,11 @@ func commonPrefix(a, b string) int {
 // firstKey is leaf n's first key, which it holds, for the tree's own use.
 func (t *genericTree[K, V, O]) firstKey(n *gleaf[K, V]) K {
 	if prefixed[O, K]() {
+		// Read for the tree's own use, not handed out: its bytes may go on
+		// being reused.
 		return keyOfText[K](t.keyText(n, 0))
 	}
-	return n.keyed()[0]
+	return t.key(n, 0)
 }
 
 // leafLow is leaf n's low fence, its head, nil for the leftmost leaf.
@@ -972,21 +1002,22 @@ func (t *genericTree[K, V, O]) start() {
 	t.starting.Lock()
 	defer t.starting.Unlock()
 	if t.root.Load() == nil {
-		n := newGLeaf[K, V](prefixed[O, K]())
+		t.exact = exactCodes[O, K]()
+		n := t.newLeaf()
 		n.latch.unlockExclusive(0)
 		t.root.Store(&n.gheader)
 	}
 }
 
-// optimisticLeaves reports trees whose lookups read a leaf without
-// latching it, checking its version after: exact codes settle the search
-// without comparing keys, so no user code runs on a racing read. A value is
-// copied racing, perhaps torn, and returned only once the check passes;
-// until then nothing reads through it, and each of its words is a pointer
-// or not as its type says, which is all the collector needs.
-func optimisticLeaves[O keyOrder[K], K any]() bool {
-	return seqlockPlainStores && exactCodes[O, K]()
-}
+// wordCodes is exactCodes for the hot paths: t.exact, set once the root is,
+// behind a size check that folds where it can't hold. Where stores are
+// plain, such trees' lookups read a leaf without latching it, checking its
+// version after: exact codes settle the search without comparing keys, so
+// no user code runs on a racing read. A value is copied racing, perhaps
+// torn, and returned only once the check passes; until then nothing reads
+// through it, and each of its words is a pointer or not as its type says,
+// which is all the collector needs.
+func (t *genericTree[K, V, O]) wordCodes() bool { return wordSized[O, K]() && t.exact }
 
 // optimisticText reports trees whose lookups read a text leaf without
 // latching it: its codes leave one candidate, whose key header and value
@@ -1062,6 +1093,14 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 			}
 		}
 	}
+	if seqlockPlainStores && t.wordCodes() {
+		code := numericKey[O](key)
+		if h, word, ok := codeLeafOrdered((**gheader)(unsafe.Pointer(&t.root)), code); ok {
+			if value, found, ok := t.readCodeLeaf(asLeaf[K, V](h), word, code); ok {
+				return value, found
+			}
+		}
+	}
 	if t.root.Load() == nil {
 		return value, false
 	}
@@ -1071,7 +1110,7 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 			return value, found
 		}
 	}
-	if optimisticLeaves[O, K]() {
+	if seqlockPlainStores && t.wordCodes() {
 		for try := 0; try < 4; try++ {
 			n, version := t.descend(key, code, seekKey, false, optimistic, nil)
 			count := min(int(n.count.Load()), nodeSize)

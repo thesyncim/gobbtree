@@ -126,12 +126,98 @@ func (t *genericTree[K, V, O]) readTextLeaf(n *gleaf[K, V], word uint64, key K) 
 	return value, true, true
 }
 
+// codeLeafOrdered is textLeafOrdered for keys that codes order exactly,
+// by code, from the root at root: an internal node's codes are its
+// separators', its first 0, and its route the last child whose separator
+// is at most code, which a search of every slot feeds the closing check.
+func codeLeafOrdered(root **gheader, code uint64) (*gheader, uint64, bool) {
+	h := *root
+	if h == nil {
+		return nil, 0, false
+	}
+	word := h.latch.Load()
+	if *after(root, word) != h {
+		return nil, 0, false
+	}
+	for depth := 0; depth < maxDepth; depth++ {
+		if word&latchExclusive != 0 {
+			return nil, 0, false
+		}
+		if h.leaf {
+			return h, word, true
+		}
+		n := (*innerRoute)(unsafe.Pointer(h))
+		count := int(*(*int32)(unsafe.Pointer(&n.count)))
+		if count < 1 || count > nodeSize {
+			return nil, 0, false
+		}
+		i := routeCode((*[nodeSize]uint64)(unsafe.Pointer(&n.codes)), count, code)
+		acc := uint64(i) ^ uint64(count)<<8
+		child := *after((**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)])), acc)
+		if child == nil {
+			return nil, 0, false
+		}
+		childWord := child.latch.Load()
+		closing := *after((*uint64)(unsafe.Pointer(&h.latch)), acc^childWord^uint64(uintptr(unsafe.Pointer(child))))
+		if closing&^latchSharedMask != word&^latchSharedMask {
+			return nil, 0, false
+		}
+		h, word = child, childWord
+	}
+	return nil, 0, false
+}
+
+// readCodeLeaf is readTextLeaf for keys that codes order exactly: key is
+// in leaf n exactly where its code is, the slot every code below it
+// counts to, which feeds the closing check.
+func (t *genericTree[K, V, O]) readCodeLeaf(n *gleaf[K, V], word, code uint64) (value V, found, ok bool) {
+	if word&latchExclusive != 0 {
+		return value, false, false
+	}
+	count := int(*(*int32)(unsafe.Pointer(&n.count)))
+	if count < 0 || count > nodeSize {
+		return value, false, false
+	}
+	lo := lowerCode(&n.codes, count, code) & (nodeSize - 1)
+	c := n.codes[lo]
+	acc := uint64(count) ^ uint64(lo)<<8 ^ c
+	if lo < count && c == code {
+		found = true
+		value = n.values[lo]
+		if unsafe.Sizeof(value) == 8 {
+			acc ^= *(*uint64)(unsafe.Pointer(&value))
+		} else {
+			loadFence()
+		}
+	}
+	closing := *after((*uint64)(unsafe.Pointer(&n.latch)), acc)
+	if closing&^latchSharedMask != word&^latchSharedMask {
+		return value, false, false
+	}
+	if !found {
+		var zero V
+		return zero, false, true
+	}
+	return value, true, true
+}
+
 // leafLatched is key's leaf latched in mode, shared or exclusive, and the
 // version held: through the ordered descent and a compare-and-swap at the
 // latch word it read, as the word tree's upgradeOrdered takes its leaf, or
 // else by a latching descent. A swap that succeeds finds the leaf as the
 // descent's checks vouched for it, so the leaf is still key's.
 func (t *genericTree[K, V, O]) leafLatched(key K, code uint64, seek int, mode int) (*gleaf[K, V], uint64) {
+	if seqlockPlainStores && t.wordCodes() && seek == seekKey {
+		if h, word, ok := codeLeafOrdered((**gheader)(unsafe.Pointer(&t.root)), code); ok {
+			n := asLeaf[K, V](h)
+			switch {
+			case mode == exclusive && word&(latchExclusive|latchSharedMask) == 0 && n.latch.tryLockAt(word):
+				return n, word
+			case mode == shared && word&latchExclusive == 0 && n.latch.CompareAndSwap(word, word+latchSharedUnit):
+				return n, 0
+			}
+		}
+	}
 	if optimisticText[O, K]() && seek == seekKey {
 		if n, word, ok := t.textLeafOrdered(key); ok {
 			switch {

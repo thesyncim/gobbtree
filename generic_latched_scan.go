@@ -43,12 +43,11 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 				keys[count], values[count] = k, n.values[i]
 				count++
 			}
-			var next, last *K
-			ok := true
+			var next, last K
+			has, ok, kept := false, true, false
 			if !done {
-				if next, ok = t.nextFence(&path); !ok && held > 0 {
-					k := t.key(n, held-1)
-					last = &k
+				if next, has, ok = t.nextFence(&path); !ok && held > 0 {
+					last, kept = t.key(n, held-1), true
 				}
 			}
 			n.latch.unlockShared()
@@ -58,12 +57,12 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 				}
 			}
 			switch {
-			case done || ok && next == nil || !ok && last == nil:
+			case done || ok && !has || !ok && !kept:
 				return
 			case !ok:
-				seek, from, fenced, past = seekKey, *last, true, true
+				seek, from, fenced, past = seekKey, last, true, true
 			default:
-				seek, from, fenced, past = seekKey, *next, true, false
+				seek, from, fenced, past = seekKey, next, true, false
 			}
 		}
 	}

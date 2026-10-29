@@ -10,6 +10,7 @@ import (
 )
 
 func TestWordArenaIDsAcrossSlabGrowth(t *testing.T) {
+	needWords(t)
 	tr := wordTree{}
 	live := make(map[uint32]uint64)
 	for i := 0; i < 16000; i++ {
@@ -42,6 +43,7 @@ func TestWordArenaIDsAcrossSlabGrowth(t *testing.T) {
 }
 
 func TestOwnerDeleteWithCollidingTags(t *testing.T) {
+	needWords(t)
 	const size = 1 << 16
 	keyAt := func(i int) uint64 { return uint64(i)<<48 | uint64(i)<<8 }
 	var tr Tree[uint64, uint64]
@@ -78,6 +80,7 @@ func TestOwnerDeleteWithCollidingTags(t *testing.T) {
 }
 
 func TestOwnerReinsertHintInvalidation(t *testing.T) {
+	needWords(t)
 	for _, action := range []string{"immediate", "read", "insert", "replace", "delete", "miss", "pop-first", "pop-last", "split-append", "clear"} {
 		t.Run(action, func(t *testing.T) {
 			tr := NewTree[uint64, uint64]()
@@ -151,6 +154,14 @@ func TestOwnerReinsertHintInvalidation(t *testing.T) {
 			}
 			checkTree(t, tr)
 		})
+	}
+}
+
+// needWords skips a test of the word trees' internals where the
+// gobbtree_generic tag leaves them out.
+func needWords(t *testing.T) {
+	if !wordEngine {
+		t.Skip("word trees off")
 	}
 }
 
@@ -295,7 +306,7 @@ func TestWordValues(t *testing.T) {
 		for _, key := range []int64{math.MinInt64, -1, 0, 1, math.MaxInt64} {
 			tr.Insert(key, value)
 		}
-		if tr.words == nil {
+		if wordEngine && tr.words == nil {
 			t.Fatal("numeric specialization not selected")
 		}
 		for key, got := range tr.All() {
@@ -359,6 +370,7 @@ func routeScan(n *wordNode, key uint64) int {
 }
 
 func TestWordOuterLeafRedistribution(t *testing.T) {
+	needWords(t)
 	for _, test := range []struct {
 		name   string
 		counts []int
@@ -415,6 +427,7 @@ func TestWordOuterLeafRedistribution(t *testing.T) {
 }
 
 func TestWordLeafRedistribution(t *testing.T) {
+	needWords(t)
 	for _, order := range []string{"ascending", "descending", "mixed"} {
 		t.Run(order, func(t *testing.T) {
 			var tree Tree[uint64, uint64]
@@ -457,6 +470,7 @@ func TestWordLeafRedistribution(t *testing.T) {
 }
 
 func TestWordLeafSearchBounds(t *testing.T) {
+	needWords(t)
 	for distribution := 0; distribution < 6; distribution++ {
 		for count := 0; count <= nodeSize; count++ {
 			keys := make([]uint64, count)
@@ -508,6 +522,7 @@ func TestWordLeafSearchBounds(t *testing.T) {
 }
 
 func TestWordInternalRoutingBounds(t *testing.T) {
+	needWords(t)
 	for distribution := 0; distribution < 6; distribution++ {
 		for count := 1; count <= nodeSize; count++ {
 			keys := make([]uint64, count)
@@ -560,6 +575,7 @@ func TestWordInternalRoutingBounds(t *testing.T) {
 }
 
 func TestRefillDirectoryMatchesFill(t *testing.T) {
+	needWords(t)
 	random := uint64(1)
 	next := func() uint64 {
 		random ^= random << 13
@@ -627,6 +643,7 @@ func TestWordLowerEntryMatchesBinarySearch(t *testing.T) {
 }
 
 func TestFillDirectoryMatchesBucketScan(t *testing.T) {
+	needWords(t)
 	random := uint64(7)
 	for trial := 0; trial < 20000; trial++ {
 		var codes [nodeSize]uint64
@@ -662,6 +679,7 @@ func TestFillDirectoryMatchesBucketScan(t *testing.T) {
 // Ascending runs, whole or in clusters, fill leaves rather than leaving each
 // a third empty; random keys keep balanced splits.
 func TestAscendingRunsFillLeaves(t *testing.T) {
+	needWords(t)
 	const n = 1 << 16
 	fill := func(key func(uint64) uint64) (tree, concurrent float64) {
 		var tr Tree[uint64, uint64]

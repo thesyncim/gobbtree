@@ -307,7 +307,7 @@ func (p *gpath[K]) room() int {
 // path's level top, splitting the full nodes below it, or the root. The
 // nodes it makes are latched in fresh.
 func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K, V], index int, key K, value V, fresh *latchSet) {
-	right := newGLeaf[K, V](prefixed[O, K]())
+	right := t.newLeaf()
 	fresh.push(&right.gheader, 0)
 	// A key past the leaf's last leaves it nearly full, as an ascending
 	// run refills the new leaf.
@@ -403,9 +403,12 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 		n.codes[i] = stringCode(s, p)
 		c.slots[i] = textSlot{stringCode(s, p+8), ref}
 	} else {
-		keys := n.keyed()
-		copy(keys[i+1:count+1], keys[i:count])
-		keys[i], n.codes[i] = ownKey[O](key), windowKey[O](key, p)
+		if !codeKeys[O, K]() {
+			keys := n.keyed()
+			copy(keys[i+1:count+1], keys[i:count])
+			keys[i] = ownKey[O](key)
+		}
+		n.codes[i] = windowKey[O](key, p)
 	}
 	n.values[i] = value
 	n.count.Store(int32(count + 1))
@@ -544,7 +547,7 @@ func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int, handOut bool) 
 		if count == 1 {
 			c.buf, c.used, c.size, c.hole = nil, 0, 0, 0
 		}
-	} else {
+	} else if !codeKeys[O, K]() {
 		keys := n.keyed()
 		copy(keys[i:count-1], keys[i+1:count])
 		var zk K
@@ -581,7 +584,7 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 		}
 		copy(sc.slots[from:srcCount-count], sc.slots[from+count:srcCount])
 		clear(sc.slots[srcCount-count : srcCount])
-	} else {
+	} else if !codeKeys[O, K]() {
 		dk, sk := dst.keyed(), src.keyed()
 		copy(dk[at+count:dstCount+count], dk[at:dstCount])
 		copy(dk[at:at+count], sk[from:from+count])

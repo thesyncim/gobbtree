@@ -53,7 +53,9 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 	}
 	var check func(h *gheader, low, high *K, depth int) int
 	check = func(h *gheader, low, high *K, depth int) int {
-		if word := h.latch.Load(); word&(latchExclusive|latchSharedMask) != 0 {
+		// Readers may still run, latching leaves shared where lookups
+		// don't read them optimistically; no writer may hold a node.
+		if word := h.latch.Load(); word&latchExclusive != 0 {
 			t.Fatalf("node held at rest: %x", word)
 		}
 		count := int(h.count.Load())
@@ -148,7 +150,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				if prefixed[O, K]() && n.text().slots[i] != (textSlot{}) {
 					t.Fatalf("leaf slot %d past count %d keeps a tail or key", i, count)
 				}
-				if !prefixed[O, K]() && !reflect.ValueOf(&n.keyed()[i]).Elem().IsZero() {
+				if !prefixed[O, K]() && !codeKeys[O, K]() && !reflect.ValueOf(&n.keyed()[i]).Elem().IsZero() {
 					t.Fatalf("leaf slot %d past count %d keeps a key", i, count)
 				}
 				if n.codes[i] != codePad || !reflect.ValueOf(&n.values[i]).Elem().IsZero() {
@@ -715,7 +717,7 @@ func TestGrowLeaf(t *testing.T) {
 			q = min(q, commonPrefix(k, base))
 		}
 		build := func() *gleaf[string, uint64] {
-			n := newGLeaf[string, uint64](true)
+			n := (&genericTree[string, uint64, natural[string]]{}).newLeaf()
 			total := 0
 			for _, k := range keys {
 				total += len(k)

@@ -38,6 +38,10 @@ func (t *genericTree[K, V, O]) ownerLeaf(key K, code uint64) *gleaf[K, V] {
 // any other goes to the leaf's search. A key without the shared prefix
 // routes anywhere, but it is in no leaf, and a writer admits its key first.
 func (t *genericTree[K, V, O]) ownerSeek(key K, code uint64) (n *gleaf[K, V], i int, found, fits bool) {
+	if t.wordCodes() {
+		h, i, ok := descendCode(plainPointer(&t.root), code)
+		return asLeaf[K, V](h), i, ok, false
+	}
 	if !prefixed[O, K]() {
 		n := t.ownerLeaf(key, code)
 		i, ok := t.find(n, key, code)
@@ -79,7 +83,7 @@ func (t *genericTree[K, V, O]) ownerGet(key K) (value V, found bool) {
 	}
 	code := uint64(0)
 	if !prefixed[O, K]() {
-		code = t.code(key)
+		code = numericKey[O](key)
 	}
 	if n, i, ok, _ := t.ownerSeek(key, code); ok {
 		return n.values[i&(nodeSize-1)], true
@@ -122,7 +126,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 	}
 	code := uint64(0)
 	if !prefixed[O, K]() {
-		code = t.code(key)
+		code = numericKey[O](key)
 	}
 	n, i, found, fits := t.ownerSeek(key, code)
 	if !found && prefixed[O, K]() {

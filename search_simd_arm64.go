@@ -120,6 +120,49 @@ func descendText(h *gheader, s string) (*gheader, int, int) {
 	return h, lo, textAbsent
 }
 
+// descendCode descends an owner's tree from h by code, the code of a key
+// that codes order exactly, with plain loads, and searches its leaf: the
+// leaf, the slot of the first code at least code, and whether it is code.
+// An internal node routes to its last child whose separator is at most
+// code, counting codes no greater; its first, 0, always is, and slots past
+// its count, codePad, are only for the largest code, which the count caps.
+func descendCode(h *gheader, code uint64) (*gheader, int, bool) {
+	if simd.Emulated() {
+		return descendCodeBy(h, code)
+	}
+	target := archsimd.BroadcastUint64x2(code)
+	for !h.leaf {
+		n := (*innerRoute)(unsafe.Pointer(h))
+		count := owned(&n.count)
+		codes := (*[nodeSize]uint64)(unsafe.Pointer(&n.codes))
+		a := countEightAtMost((*[8]uint64)(codes[0:8]), target)
+		b := countEightAtMost((*[8]uint64)(codes[8:16]), target)
+		c := countEightAtMost((*[8]uint64)(codes[16:24]), target)
+		d := countEightAtMost((*[8]uint64)(codes[24:32]), target)
+		sum := a.Add(b).Add(c.Add(d))
+		i := min(-int(sum.GetElem(0)+sum.GetElem(1)), count) - 1
+		h = plainPointer(&n.children[i&(nodeSize-1)])
+	}
+	n := (*leafRoute)(unsafe.Pointer(h))
+	count := owned(&n.count)
+	a := countEight((*[8]uint64)(n.codes[0:8]), target)
+	b := countEight((*[8]uint64)(n.codes[8:16]), target)
+	c := countEight((*[8]uint64)(n.codes[16:24]), target)
+	d := countEight((*[8]uint64)(n.codes[24:32]), target)
+	sum := a.Add(b).Add(c.Add(d))
+	lo := min(-int(sum.GetElem(0)+sum.GetElem(1)), count)
+	return h, lo, lo < count && n.codes[lo&(nodeSize-1)] == code
+}
+
+// countEightAtMost is countEight counting keys no greater than target.
+func countEightAtMost(keys *[8]uint64, target archsimd.Uint64x2) archsimd.Int64x2 {
+	a := archsimd.LoadUint64x2(keys[0:2]).LessEqual(target).ToInt64x2()
+	b := archsimd.LoadUint64x2(keys[2:4]).LessEqual(target).ToInt64x2()
+	c := archsimd.LoadUint64x2(keys[4:6]).LessEqual(target).ToInt64x2()
+	d := archsimd.LoadUint64x2(keys[6:8]).LessEqual(target).ToInt64x2()
+	return a.Add(b).Add(c.Add(d))
+}
+
 func countEight32(keys *[8]uint32, target archsimd.Uint32x4) archsimd.Int32x4 {
 	a := archsimd.LoadUint32x4(keys[0:4]).Less(target).ToInt32x4()
 	b := archsimd.LoadUint32x4(keys[4:8]).Less(target).ToInt32x4()

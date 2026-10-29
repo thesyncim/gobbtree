@@ -21,6 +21,16 @@ func seqLen[K, V any](seq iter.Seq2[K, V]) int {
 // upstream's check_invariants, and returns its entry count: keys sorted
 // within the bounds their separators give, padding past each count, tags,
 // minimum occupancy below the root, every latch let go, and the last leaf.
+// checkMap checks m's tree, a word tree or the generic one, and returns
+// its entry count.
+func checkMap[K any, V any, O keyOrder[K]](t testing.TB, m *mapCore[K, V, O]) int {
+	t.Helper()
+	if words := m.words.Load(); words != nil {
+		return checkLatchedTree(t, &words.tree)
+	}
+	return checkGenericTree(t, &m.generic)
+}
+
 func checkLatchedTree(t testing.TB, tr *latchedTree) int {
 	t.Helper()
 	root := tr.root.Load()
@@ -225,7 +235,7 @@ func TestLatchedChurn(t *testing.T) {
 					}
 				}
 			}
-			if got := checkLatchedTree(t, &m.words.Load().tree); got != want {
+			if got := checkMap(t, &m.mapCore); got != want {
 				t.Fatalf("tree holds %d entries, models %d", got, want)
 			}
 			if got := seqLen(m.All()); got != want {
@@ -269,7 +279,7 @@ func TestLatchedFillAndDrain(t *testing.T) {
 				})
 			}
 			wg.Wait()
-			if got := checkLatchedTree(t, &m.words.Load().tree); got != span*writers {
+			if got := checkMap(t, &m.mapCore); got != span*writers {
 				t.Fatalf("filled tree holds %d", got)
 			}
 			var popped atomic.Int64
@@ -304,11 +314,10 @@ func TestLatchedFillAndDrain(t *testing.T) {
 				})
 			}
 			wg.Wait()
-			tr := &m.words.Load().tree
-			if got := checkLatchedTree(t, tr); got != 0 {
+			if got := checkMap(t, &m.mapCore); got != 0 {
 				t.Fatalf("drained tree holds %d", got)
 			}
-			if tr.root.Load()&wordLeafID == 0 || !m.IsEmpty() {
+			if words := m.words.Load(); words != nil && words.tree.root.Load()&wordLeafID == 0 || !m.IsEmpty() {
 				t.Fatal("drained tree's root is not an empty leaf")
 			}
 		}
@@ -357,7 +366,7 @@ func TestLatchedHintsThroughStructure(t *testing.T) {
 						}
 					}
 				}
-				if got := checkLatchedTree(t, &m.words.Load().tree); got != len(want) {
+				if got := checkMap(t, &m.mapCore); got != len(want) {
 					t.Fatalf("%s: tree holds %d, want %d", stage, got, len(want))
 				}
 			}
@@ -429,7 +438,7 @@ func TestTreeHintsRandomized(t *testing.T) {
 			}
 		}
 		if i%1000 == 0 {
-			checkWordTree(t, tr.words, len(ref))
+			checkTree(t, tr)
 		}
 	}
 }

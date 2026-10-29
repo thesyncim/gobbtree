@@ -104,7 +104,7 @@ func TestConcurrentDuplicateInsert(t *testing.T) {
 	if seqLen(m.All()) != size || inserted.Load() != size-seeded {
 		t.Fatalf("duplicate insertion changed the count: len=%d new=%d", seqLen(m.All()), inserted.Load())
 	}
-	if got := checkLatchedTree(t, &m.words.Load().tree); got != size {
+	if got := checkMap(t, &m.mapCore); got != size {
 		t.Fatalf("tree holds %d entries, want %d", got, size)
 	}
 }
