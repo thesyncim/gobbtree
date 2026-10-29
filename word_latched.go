@@ -40,7 +40,11 @@ type latchedTree struct {
 	routes    atomic.Pointer[latchedRoutes]
 	// Every descent reads the words above; splits and merges write the
 	// pages below. Apart, a page taken costs no other core the line.
-	_        [128 - 24]byte
+	_ [128 - 24]byte
+	// appended is the largest key an append stored, which a run of them
+	// rewrites on its own line: a key above it tries the last leaf first.
+	appended atomic.Uint64
+	_        [128 - 8]byte
 	pages    latchedPages
 	starting sync.Mutex
 }

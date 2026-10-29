@@ -21,6 +21,15 @@ const (
 // to the key's leaf, latched exclusively, which takes the key if it has room;
 // otherwise the leaf splits.
 func (t *latchedTree) insert(key, value uint64, policy int, merge func(key, old, value uint64) uint64) (uint64, bool) {
+	// A key past the last appended one is likely past every key, as in an
+	// ascending run, which no hint names.
+	if key > t.appended.Load() {
+		if appended, full := t.append(key, value); appended {
+			return 0, false
+		} else if full {
+			return t.insertSplitting(key, value, policy, merge)
+		}
+	}
 	if leaf, leafID, version, i, ok := t.upgradeHinted(key); ok {
 		// A hint settles most keys; only a key no hint names may append.
 		old, found, done := insertAtReleasing(leaf, version, i, key, value, policy, merge)
@@ -165,6 +174,7 @@ func (t *latchedTree) append(key, value uint64) (appended, full bool) {
 	ok := t.rightmost.Load() == id && n.n > 0 && n.n < nodeSize && key > n.entries()[n.n-1].key
 	if ok {
 		insertFit(n, int(n.n), key, value)
+		t.appended.Store(key)
 	}
 	n.unlockExclusive(version)
 	return ok, false
