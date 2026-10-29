@@ -8,15 +8,6 @@ import (
 	"unsafe"
 )
 
-// numericCode keeps the common uint64 case small enough to inline into
-// numeric lookup and batch paths. All other key types retain the full codec.
-func numericCode[K cmp.Ordered](key K) uint64 {
-	if value, ok := any(key).(uint64); ok {
-		return value
-	}
-	return keyCode(key, 0)
-}
-
 // keyCode is an order-preserving, zero-padded eight-byte window. Equal
 // windows are always resolved against full keys (including embedded NULs).
 func keyCode[K cmp.Ordered](key K, offset int) uint64 {

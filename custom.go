@@ -191,54 +191,6 @@ func (s *keySearch[K, O]) fill(i int) uint64 {
 	return s.words[i]
 }
 
-// numeric is the key's leading window, as numericKey computes it.
-func (s *keySearch[K, O]) numeric() uint64 {
-	if !cachedWindows[O, K]() {
-		return numericKey[O](s.key)
-	}
-	return s.aligned(0)
-}
-
-// window is the key's window at offset.
-func (s *keySearch[K, O]) window(offset int) uint64 {
-	if !cachedWindows[O, K]() {
-		return windowKey[O](s.key, offset)
-	}
-	i, r := offset>>3, uint(offset&7)
-	if r == 0 {
-		return s.aligned(i)
-	}
-	return s.aligned(i)<<(8*r) | s.aligned(i+1)>>(64-8*r)
-}
-
-// comparePrefix orders the key's first prefix bytes against first's, whose
-// leading windows a node caches in head.
-func (s *keySearch[K, O]) comparePrefix(first *K, head *[2]uint64, prefix int) int {
-	if !cachedWindows[O, K]() {
-		return comparePrefix[O](s.key, *first, prefix)
-	}
-	for i := 0; 8*i < prefix; i++ {
-		x := s.aligned(i)
-		var y uint64
-		if i < len(head) {
-			y = head[i]
-		} else {
-			var o O
-			y = o.window(*first, 8*i)
-		}
-		if tail := 8*i + 8 - prefix; tail > 0 {
-			x, y = x>>(8*tail), y>>(8*tail)
-		}
-		if x != y {
-			if x < y {
-				return -1
-			}
-			return 1
-		}
-	}
-	return 0
-}
-
 // locate orders the key's first prefix bytes against a node's first key
 // and, when they match, returns the key's window past them: the node's
 // search code. Custom keys read each cached word once.
@@ -301,45 +253,4 @@ func prefixHead[O keyOrder[K], K any](first K, prefix int) (head [2]uint64) {
 		head[1] = o.window(first, 8)
 	}
 	return head
-}
-
-// Shared textual leaves with word values hold interned keys: their bytes,
-// preceded by their length, in a pointer-free allocation of their own.
-// Optimistic readers load only the data word of a stored key header.
-func internsText[K any, V any, O keyOrder[K]]() bool {
-	return seqlockPlainStores && directText[O, K]() && wordKind[V]() != 0
-}
-
-// storedKey is the key a container stores for a newly inserted key.
-func (t *treeCore[K, V, O]) storedKey(key K) K {
-	if t.shared && internsText[K, V, O]() {
-		return internText(key)
-	}
-	return ownKey[O](key)
-}
-
-func internText[K any](key K) K {
-	text := textView(&key)
-	// One byte past an empty key keeps the data pointer inside its block.
-	block := make([]byte, 8+max(len(text), 1))
-	*(*uint64)(unsafe.Pointer(&block[0])) = uint64(len(text))
-	copy(block[8:], text)
-	data := &block[8]
-	var out K
-	if unsafe.Sizeof(out) == unsafe.Sizeof("") {
-		*(*string)(unsafe.Pointer(&out)) = unsafe.String(data, len(text))
-	} else {
-		*(*[]byte)(unsafe.Pointer(&out)) = unsafe.Slice(data, len(text))
-	}
-	return out
-}
-
-// internedText reads a stored interned key through its data word alone. An
-// empty slot holds the zero key.
-func internedText[K any](slot *K) string {
-	data := *(*unsafe.Pointer)(unsafe.Pointer(slot))
-	if data == nil {
-		return ""
-	}
-	return unsafe.String((*byte)(data), *(*uint64)(unsafe.Add(data, -8)))
 }

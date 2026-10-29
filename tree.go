@@ -23,12 +23,10 @@ type Tree[K cmp.Ordered, V any] struct{ treeCore[K, V, natural[K]] }
 
 // treeCore implements Tree and TreeOf for one key ordering.
 type treeCore[K any, V any, O keyOrder[K]] struct {
-	root        *node[K, V, O]
-	words       *wordTree
-	arena       *nodeArena
-	length      int
-	shared      bool
-	routesDirty bool
+	root   *node[K, V, O]
+	words  *wordTree
+	arena  *nodeArena
+	length int
 }
 
 // NewTree creates an empty tree without synchronization.
@@ -40,7 +38,6 @@ func (t *treeCore[K, V, O]) Clear() {
 	t.words = nil
 	t.arena = nil
 	t.length = 0
-	t.routesDirty = false
 }
 
 // Get returns a copy of the value associated with key.
@@ -287,8 +284,7 @@ func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 	}
 	if t.root == nil {
 		t.arena = new(nodeArena)
-		t.root = newLeaf[K, V, O](t.shared, t.arena)
-		t.routesDirty = true
+		t.root = newLeaf[K, V, O](t.arena)
 	}
 	// Replacements should not split or allocate, even in a full leaf.
 	n := t.root
@@ -305,7 +301,7 @@ func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 	}
 	if equal {
 		old := n.leaf.values[i]
-		n.setValue(i, value)
+		n.leaf.values[i] = value
 		return old, true
 	}
 	if !full && n.n < nodeSize {
@@ -313,7 +309,7 @@ func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 			i = n.lower(key)
 		}
 		if i > 0 {
-			n.insertLeaf(i, t.storedKey(key), value)
+			n.insertLeaf(i, ownKey[O](key), value)
 			t.length++
 			var zero V
 			return zero, false
@@ -321,11 +317,10 @@ func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 	}
 	if t.root.n == nodeSize {
 		right := t.root.split()
-		root := newInner[K, V, O](t.shared, t.arena)
+		root := newInner[K, V, O](t.arena)
 		root.insertChild(0, t.root)
 		root.insertChild(1, right)
 		t.root = root
-		t.routesDirty = true
 	}
 	t.insertAbsent(t.root, &search, value)
 	t.length++
@@ -341,7 +336,7 @@ func (t *treeCore[K, V, O]) insertAbsent(n *node[K, V, O], search *keySearch[K, 
 		} else {
 			i = n.lower(key)
 		}
-		n.insertLeaf(i, t.storedKey(key), value)
+		n.insertLeaf(i, ownKey[O](key), value)
 		return
 	}
 	i := 0
@@ -353,7 +348,6 @@ func (t *treeCore[K, V, O]) insertAbsent(n *node[K, V, O], search *keySearch[K, 
 	if n.children[i].n == nodeSize {
 		right := n.children[i].split()
 		n.insertChild(i+1, right)
-		t.changedRoutes(n)
 		if compareKeys[O](key, right.keys[0]) >= 0 {
 			i++
 		}
@@ -362,7 +356,6 @@ func (t *treeCore[K, V, O]) insertAbsent(n *node[K, V, O], search *keySearch[K, 
 	if compareKeys[O](n.keys[i], n.children[i].keys[0]) != 0 {
 		n.keys[i] = n.children[i].keys[0]
 		n.refit()
-		t.changedRoutes(n)
 	}
 }
 
@@ -389,12 +382,10 @@ func (t *treeCore[K, V, O]) Delete(key K) (V, bool) {
 	if t.root.n == 0 {
 		t.root = nil
 		t.arena = nil
-		t.routesDirty = true
 	} else if t.root.children != nil && t.root.n == 1 {
 		oldRoot := t.root
 		t.root = t.root.children[0]
 		oldRoot.release()
-		t.routesDirty = true
 	}
 	return old, true
 }
@@ -420,11 +411,9 @@ func (t *treeCore[K, V, O]) remove(n *node[K, V, O], key K) (V, bool) {
 			n.keys[j] = n.children[j].keys[0]
 		}
 		n.refit()
-		t.changedRoutes(n)
 	} else if compareKeys[O](n.keys[i], child.keys[0]) != 0 {
 		n.keys[i] = child.keys[0]
 		n.refit()
-		t.changedRoutes(n)
 	}
 	return old, true
 }

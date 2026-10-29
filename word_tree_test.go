@@ -288,7 +288,6 @@ func TestWordNodePointerFree(t *testing.T) {
 	}
 	check(reflect.TypeFor[wordNode]())
 	check(reflect.TypeFor[numericColumns]())
-	check(reflect.TypeFor[atomicPairs]())
 	if unsafe.Sizeof(wordNode{}) != 576 || unsafe.Offsetof(wordNode{}.payload) != 64 {
 		t.Fatal("numeric node layout changed")
 	}
@@ -362,15 +361,9 @@ func routeScan(n *wordNode, key uint64) int {
 	return i
 }
 
-func TestConcurrentNumericLayout(t *testing.T) {
+func TestNumericNodeLayout(t *testing.T) {
 	if unsafe.Sizeof(uintptr(0)) == 8 && unsafe.Sizeof(node[uint64, uint64, natural[uint64]]{}) > 512 {
-		t.Fatal("numeric writer node exceeded the small-object scan threshold")
-	}
-	if unsafe.Offsetof(searchImage[uint64, uint64, natural[uint64]]{}.tags)+nodeSize > 64 {
-		t.Fatal("numeric reader tags spilled out of the hot header")
-	}
-	if unsafe.Offsetof(atomicPairs{}.entries) != 64 || unsafe.Sizeof(atomicPairs{}) != 576 {
-		t.Fatal("atomic pairs are not aligned inside their block")
+		t.Fatal("numeric node exceeded the small-object scan threshold")
 	}
 }
 

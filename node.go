@@ -1,10 +1,6 @@
 package gobbtree
 
-import (
-	"strings"
-	"sync"
-	"sync/atomic"
-)
+import "strings"
 
 const nodeSize = 32
 const minNodeSize = nodeSize / 2
@@ -20,46 +16,33 @@ type numericColumns struct {
 
 type node[K any, V any, O keyOrder[K]] struct {
 	*numericColumns
-	arena                    *nodeArena
-	children                 *[nodeSize]*node[K, V, O]
-	leaf                     *leaf[K, V, O]
-	directory                *[256]uint8
-	image                    atomic.Pointer[searchImage[K, V, O]]
-	parentSlot               *atomic.Pointer[searchImage[K, V, O]]
-	readEdges                *[nodeSize]atomic.Pointer[searchImage[K, V, O]]
-	n, prefix                int
-	prefixHead               [2]uint64
-	strings, shared, compact bool
-	level                    uint8
-	columnsID, pairsID       uint32
-	keys                     [nodeSize]K
+	arena            *nodeArena
+	children         *[nodeSize]*node[K, V, O]
+	leaf             *leaf[K, V, O]
+	directory        *[256]uint8
+	n, prefix        int
+	prefixHead       [2]uint64
+	strings, compact bool
+	columnsID        uint32
+	keys             [nodeSize]K
 }
 
 type leaf[K any, V any, O keyOrder[K]] struct {
-	sequence   atomic.Uint64
-	words      *atomicWords
-	pairs      *atomicPairs
-	wordKind   uint8
-	mu         sync.RWMutex
 	next, prev *node[K, V, O]
 	values     [nodeSize]V
 }
 
-func newLeaf[K any, V any, O keyOrder[K]](shared bool, arena *nodeArena) *node[K, V, O] {
-	n := &node[K, V, O]{arena: arena, leaf: new(leaf[K, V, O]), shared: shared}
+func newLeaf[K any, V any, O keyOrder[K]](arena *nodeArena) *node[K, V, O] {
+	n := &node[K, V, O]{arena: arena, leaf: new(leaf[K, V, O])}
 	n.numericColumns, n.columnsID = arena.columns.alloc()
 	*n.numericColumns = numericColumns{}
 	var order O
 	n.strings = order.textual()
-	initWordValues(n)
 	n.pad()
 	return n
 }
-func newInner[K any, V any, O keyOrder[K]](shared bool, arena *nodeArena) *node[K, V, O] {
-	n := &node[K, V, O]{arena: arena, children: new([nodeSize]*node[K, V, O]), shared: shared}
-	if shared {
-		n.readEdges = new([nodeSize]atomic.Pointer[searchImage[K, V, O]])
-	}
+func newInner[K any, V any, O keyOrder[K]](arena *nodeArena) *node[K, V, O] {
+	n := &node[K, V, O]{arena: arena, children: new([nodeSize]*node[K, V, O])}
 	n.numericColumns, n.columnsID = arena.columns.alloc()
 	*n.numericColumns = numericColumns{}
 	var order O
@@ -77,7 +60,7 @@ func (n *node[K, V, O]) pad() {
 
 // refit derives a prefix from the live keys, instead of upstream's ancestor
 // fences. Searches check that prefix before skipping it. This makes prefix
-// changes local and avoids reading mutable ancestors in the concurrent map.
+// changes local.
 func (n *node[K, V, O]) refit() {
 	n.prefix = 0
 	if n.strings && n.n > 1 {
@@ -91,7 +74,6 @@ func (n *node[K, V, O]) refit() {
 	}
 	n.pad()
 	n.refreshNumeric()
-	n.publish()
 }
 
 func (n *node[K, V, O]) lower(key K) int {
@@ -266,7 +248,6 @@ func (n *node[K, V, O]) insertLeaf(i int, key K, value V) {
 		n.highCodes[i] = uint32(n.codes[i] >> 32)
 		n.tags[i] = uint8(n.codes[i])
 		n.refreshNumeric()
-		n.publishFrom(i)
 	}
 }
 func (n *node[K, V, O]) deleteLeaf(i int) V {
@@ -287,7 +268,6 @@ func (n *node[K, V, O]) deleteLeaf(i int) V {
 		n.refit()
 	} else {
 		n.refreshNumeric()
-		n.publishFrom(i)
 	}
 	return old
 }
@@ -296,7 +276,7 @@ func (n *node[K, V, O]) deleteLeaf(i int) V {
 func (n *node[K, V, O]) split() *node[K, V, O] {
 	var right *node[K, V, O]
 	if n.leaf != nil {
-		right = newLeaf[K, V, O](n.shared, n.arena)
+		right = newLeaf[K, V, O](n.arena)
 		copy(right.leaf.values[:], n.leaf.values[minNodeSize:])
 		clear(n.leaf.values[minNodeSize:])
 		right.leaf.next = n.leaf.next
@@ -306,11 +286,10 @@ func (n *node[K, V, O]) split() *node[K, V, O] {
 		right.leaf.prev = n
 		n.leaf.next = right
 	} else {
-		right = newInner[K, V, O](n.shared, n.arena)
+		right = newInner[K, V, O](n.arena)
 		copy(right.children[:], n.children[minNodeSize:])
 		clear(n.children[minNodeSize:])
 	}
-	right.level = n.level
 	copy(right.keys[:], n.keys[minNodeSize:])
 	clear(n.keys[minNodeSize:])
 	n.n = minNodeSize
@@ -320,7 +299,6 @@ func (n *node[K, V, O]) split() *node[K, V, O] {
 	return right
 }
 func (n *node[K, V, O]) insertChild(i int, child *node[K, V, O]) {
-	n.level = child.level + 1
 	copy(n.keys[i+1:n.n+1], n.keys[i:n.n])
 	copy(n.children[i+1:n.n+1], n.children[i:n.n])
 	n.keys[i], n.children[i] = child.keys[0], child
@@ -367,12 +345,4 @@ func (n *node[K, V, O]) routeNumeric(code uint64) int {
 	return routeCode(&n.codes, n.n, code)
 }
 
-func (n *node[K, V, O]) release() {
-	if image := n.image.Load(); image != nil {
-		image.valid.Store(false)
-	}
-	n.arena.columns.release(n.columnsID)
-	if n.pairsID != 0 {
-		n.arena.pairs.release(n.pairsID)
-	}
-}
+func (n *node[K, V, O]) release() { n.arena.columns.release(n.columnsID) }

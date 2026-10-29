@@ -3,6 +3,7 @@ package gobbtree
 import (
 	"encoding/binary"
 	"math/bits"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -60,12 +61,30 @@ const (
 type latchedPages struct {
 	// A spin lock, as upstream's free lists': held only to take or give a
 	// page, it never parks a goroutine.
-	mu                storeLock
-	slabs             []*wordNode
-	used              int
-	freeLeaf          uint32
-	freeInner         uint32
-	littleEndianCount bool
+	mu        storeLock
+	slabs     []*wordNode
+	used      int
+	freeLeaf  uint32
+	freeInner uint32
+}
+
+// storeLock is a spin lock for the pages. Where stores stay ordered it is
+// released by a plain store instead of sync.Mutex's locked read-modify-write.
+// Waiters yield instead of parking.
+type storeLock struct{ state atomic.Uint32 }
+
+func (l *storeLock) TryLock() bool { return l.state.CompareAndSwap(0, 1) }
+func (l *storeLock) Lock() {
+	for !l.TryLock() {
+		runtime.Gosched()
+	}
+}
+func (l *storeLock) Unlock() {
+	if orderedStores {
+		*(*uint32)(unsafe.Pointer(&l.state)) = 0
+		return
+	}
+	l.state.Store(0)
 }
 
 func (t *latchedTree) dir() []*wordNode {

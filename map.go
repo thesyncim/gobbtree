@@ -343,10 +343,6 @@ func (m *mapCore[K, V, O]) scan(b *Bounds[K], reverse bool, visit func(K, V) boo
 	m.generic.walk(b, reverse, visit)
 }
 
-// scanLeaves bounds the leaves a scan copies per latch acquisition, and so
-// how long it can hold back a structural writer.
-const scanLeaves = 4
-
 // First returns the smallest entry, read like a scan.
 func (m *mapCore[K, V, O]) First() (key K, value V, ok bool) {
 	for key, value = range m.All() {

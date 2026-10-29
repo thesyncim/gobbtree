@@ -92,13 +92,9 @@ func (n *wordNode) exactEntryRacing(key uint64) int {
 	return n.lowerEntry(key)
 }
 
-// insertInto inserts into leaf, held exclusively, if it holds key or has
-// room; done is false when the leaf is full and must split.
-func insertInto(leaf *wordNode, key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
-	return insertIntoAt(leaf, leaf.exactEntry(key), key, value, policy, merge)
-}
-
-// insertIntoAt is insertInto given i, leaf.exactEntry(key).
+// insertIntoAt inserts into leaf, held exclusively, at i, leaf.exactEntry(key),
+// if it holds key or has room; done is false when the leaf is full and must
+// split.
 func insertIntoAt(leaf *wordNode, i int, key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
 	if i < int(leaf.n) && leaf.entries()[i].key == key {
 		old = leaf.entries()[i].value
@@ -289,7 +285,7 @@ func (t *latchedTree) redistribute(path *treePath, leaf *wordNode, key, value ui
 	return true
 }
 
-// insertIntoReleasing is insertInto that lets go of leaf if merge panics.
+// insertIntoReleasing is insertAtReleasing at leaf.exactEntry(key).
 func insertIntoReleasing(leaf *wordNode, version, key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
 	return insertAtReleasing(leaf, version, leaf.exactEntry(key), key, value, policy, merge)
 }

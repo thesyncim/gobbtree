@@ -2,7 +2,7 @@ package gobbtree
 
 // Stable, typed slabs contain numeric data only. Integer free lists permit
 // reuse without making the collector trace one allocation per search column.
-type numericSlabs[T numericColumns | atomicPairs] struct {
+type numericSlabs[T numericColumns] struct {
 	blocks [][]T
 	used   int
 	free   []uint32
@@ -34,5 +34,4 @@ func (a *numericSlabs[T]) release(id uint32) { a.free = append(a.free, id) }
 
 type nodeArena struct {
 	columns numericSlabs[numericColumns]
-	pairs   numericSlabs[atomicPairs]
 }

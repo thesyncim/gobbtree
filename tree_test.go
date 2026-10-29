@@ -463,8 +463,7 @@ func TestSteadyStateAllocations(t *testing.T) {
 	}
 }
 
-// Textual maps with non-word values read leaves under their latch, so leaf
-// writes publish no search image.
+// Textual maps' leaf writes and lookups allocate nothing.
 func TestTextualMapWritesDoNotAllocate(t *testing.T) {
 	m := New[string, [2]int]()
 	c := NewMapOf[textKey, [2]int]()
