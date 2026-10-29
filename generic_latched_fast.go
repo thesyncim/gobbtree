@@ -142,7 +142,7 @@ func codeLeafOrdered(root **gheader, code uint64, f *hintFrame) (*gheader, uint6
 	if *after(root, word) != h {
 		return nil, 0, false
 	}
-	low, high, edge := uint64(0), uint64(0), 0
+	low, high := uint64(0), uint64(0)
 	for depth := 0; depth < maxDepth; depth++ {
 		if word&latchExclusive != 0 {
 			return nil, 0, false
@@ -159,8 +159,7 @@ func codeLeafOrdered(root **gheader, code uint64, f *hintFrame) (*gheader, uint6
 		i := routeCode(codes, count, code)
 		acc := uint64(i) ^ uint64(count)<<8
 		if f != nil {
-			f.g, f.gLow, f.gHigh, f.edge = f.p, f.low, f.high, edge
-			f.p, f.low, f.high, edge = n, low, high, i
+			f.push(n, i, low, high)
 			if i > 0 {
 				low = codes[i&(nodeSize-1)]
 			}

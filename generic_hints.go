@@ -126,7 +126,7 @@ func currentHints(slot *atomic.Pointer[codeHints], making *atomic.Bool, root *gh
 
 // fillFrom fills code's cell from the leaf parent a descent recorded in f.
 func (r *codeHints) fillFrom(f *hintFrame, code uint64) {
-	if r == nil || f.p == nil {
+	if r == nil || f.depth == 0 {
 		return
 	}
 	if c := r.cell(code); c != nil {
@@ -142,14 +142,62 @@ type codeHints struct {
 	topCount int
 }
 
-// hintFrame is where a descent met a leaf's parent: p, with its fences,
-// reached from g, with g's, at edge; g is nil at the root. A high fence of
-// 0 is none: the node is on the tree's right border.
+// hintFrame is where a descent met a leaf's parent: the internal nodes it
+// passed, the root first, each with the edge it took, the last the leaf's
+// parent p, and p's fences. A high fence of 0 is none: p is on the tree's
+// right border.
 type hintFrame struct {
-	p, g        *innerRoute
-	low, high   uint64
-	gLow, gHigh uint64
-	edge        int
+	steps     [maxDepth]hintStep
+	depth     int
+	low, high uint64
+}
+
+type hintStep struct {
+	n    *innerRoute
+	edge int
+}
+
+// push records internal node n, of fences low and high, and the edge its
+// route took.
+func (f *hintFrame) push(n *innerRoute, edge int, low, high uint64) {
+	if f.depth < maxDepth {
+		f.steps[f.depth] = hintStep{n, edge}
+		f.depth++
+		f.low, f.high = low, high
+	}
+}
+
+// beside is the leaf parent beside p, to its left or right: under the
+// lowest node of the path whose route can turn that way, down that
+// subtree's nearer border; nil on the tree's border, or where a racing
+// read finds no such node.
+func (f *hintFrame) beside(left bool) *innerRoute {
+	for l := f.depth - 2; l >= 0; l-- {
+		s := f.steps[l]
+		edge := s.edge
+		if left && edge == 0 || !left && edge+1 >= racingCount(&s.n.gheader) {
+			continue
+		}
+		if left {
+			edge--
+		} else {
+			edge++
+		}
+		n := innerChild(s.n, edge)
+		for d := l + 1; n != nil && d < f.depth-1; d++ {
+			count := racingCount(&n.gheader)
+			if count == 0 {
+				return nil
+			}
+			next := 0
+			if left {
+				next = count - 1
+			}
+			n = innerChild(n, next)
+		}
+		return n
+	}
+	return nil
 }
 
 // racingCount is internal node n's count, read racing, at most nodeSize.
@@ -231,26 +279,39 @@ func settleCode(h *gheader, code uint64, place bool) (i int, found, settled bool
 }
 
 // fill names in cell c the leaves that hold key's region, up to four, and
-// otherwise, where descend, marks it to descend. They are children of f.p,
-// key's leaf's parent, and where the region crosses its fences, of the
-// parent beside it under f.g. Its reads race writers.
+// otherwise, where descend, marks it to descend. They are children of p,
+// key's leaf's parent, the last node of f's path, and where the region
+// crosses p's fences, of the leaf parent beside it. A region past the
+// tree's borders is marked without reading p's leaves, which cost a miss
+// each, as its every lookup refills it. Its reads race writers.
 func (r *codeHints) fill(c *hintCell, key uint64, f *hintFrame, descend bool) {
 	start, end := r.regionOf(key)
 	var span hintSpan
-	if start < f.low && f.g != nil && f.edge > 0 {
-		low := f.gLow
-		if f.edge > 1 {
-			low = routeCodes(f.g)[(f.edge-1)&(nodeSize-1)]
-		}
-		span.addCodes(innerChild(f.g, f.edge-1), low, f.low, start, f.low-1)
+	var left, right *innerRoute
+	if start < f.low {
+		left = f.beside(true)
+		span.broken = left == nil
 	}
-	span.addCodes(f.p, f.low, f.high, max(start, f.low), end)
-	if f.high != 0 && end >= f.high && f.g != nil && f.edge+1 < racingCount(&f.g.gheader) {
-		high := f.gHigh
-		if f.edge+2 < racingCount(&f.g.gheader) {
-			high = routeCodes(f.g)[(f.edge+2)&(nodeSize-1)]
-		}
-		span.addCodes(innerChild(f.g, f.edge+1), f.high, high, f.high, end)
+	if f.high != 0 && end >= f.high {
+		right = f.beside(false)
+		span.broken = span.broken || right == nil
+	}
+	if span.broken {
+		r.store(c, &span, start, end, descend)
+		return
+	}
+	if left != nil {
+		span.addCodes(left, 0, f.low, start, f.low-1)
+	}
+	// p holds the region up to its high fence; the parent beside it, the
+	// rest.
+	pEnd := end
+	if right != nil {
+		pEnd = f.high - 1
+	}
+	span.addCodes(f.steps[f.depth-1].n, f.low, f.high, max(start, f.low), pEnd)
+	if right != nil {
+		span.addCodes(right, f.high, 0, f.high, end)
 	}
 	r.store(c, &span, start, end, descend)
 }
@@ -327,7 +388,8 @@ func refreshCodeHints(slot *atomic.Pointer[codeHints], root *gheader) *codeHints
 		leaves, lo, hi := codeShape(n)
 		codes := routeCodes(n)
 		r.latchedRoutes = *newHintTable(min(codes[1], lo), max(codes[(count-1)&(nodeSize-1)], hi), span, leaves)
-		r.fillAll(n, 0, 0, nil, 0, 0, 0, 0)
+		var f hintFrame
+		r.fillAll(n, 0, 0, &f)
 	}
 	slot.Store(r)
 	return r
@@ -394,11 +456,11 @@ func sampleCodeSpan(root *innerRoute, count int) uint64 {
 }
 
 // fillAll fills every cell the leaves under internal node n hold, n having
-// fences low and high and been reached from g, with fences gLow and gHigh,
-// at edge (g nil at the root): about two fills a leaf, once per table.
-func (r *codeHints) fillAll(n *innerRoute, low, high uint64, g *innerRoute, gLow, gHigh uint64, edge, depth int) {
+// fences low and high and been reached by f's path: about two fills a
+// leaf, once per table.
+func (r *codeHints) fillAll(n *innerRoute, low, high uint64, f *hintFrame) {
 	count := racingCount(&n.gheader)
-	if count == 0 || depth > maxDepth {
+	if count == 0 || f.depth >= maxDepth-1 {
 		return
 	}
 	codes := routeCodes(n)
@@ -419,7 +481,9 @@ func (r *codeHints) fillAll(n *innerRoute, low, high uint64, g *innerRoute, gLow
 			if i+1 < count {
 				childHigh = codes[(i+1)&(nodeSize-1)]
 			}
-			r.fillAll(child, childLow, childHigh, n, low, high, i, depth+1)
+			f.push(n, i, low, high)
+			r.fillAll(child, childLow, childHigh, f)
+			f.depth--
 		}
 		return
 	}
@@ -433,15 +497,16 @@ func (r *codeHints) fillAll(n *innerRoute, low, high uint64, g *innerRoute, gLow
 		}
 		last = (*leafRoute)(unsafe.Pointer(leaf)).codes[(racingCount(leaf)-1)&(nodeSize-1)]
 	}
-	f := hintFrame{p: n, g: g, low: low, high: high, gLow: gLow, gHigh: gHigh, edge: edge}
 	if last < low {
 		return
 	}
+	f.push(n, 0, low, high)
+	defer func() { f.depth-- }()
 	step := uint64(1) << r.shift
 	start := r.base + ((max(low, r.base)-r.base)>>r.shift)<<r.shift
 	for key, regions := start, 0; key <= last && regions <= 4*nodeSize; key, regions = key+step, regions+1 {
 		if c := r.cell(max(key, low)); c != nil {
-			r.fill(c, max(key, low), &f, true)
+			r.fill(c, max(key, low), f, true)
 		}
 		if key+step < key {
 			return
@@ -454,15 +519,13 @@ func (r *codeHints) fillAll(n *innerRoute, low, high uint64, g *innerRoute, gLow
 // leaf's parent as it passes it.
 func descendCodeFilling(h *gheader, code uint64, r *codeHints, place bool) (*gheader, int, bool) {
 	var f hintFrame
-	low, high, edge := uint64(0), uint64(0), 0
+	low, high := uint64(0), uint64(0)
 	for !h.leaf {
 		n := (*innerRoute)(unsafe.Pointer(h))
 		count := racingCount(h)
 		codes := routeCodes(n)
 		i := routeCode(codes, count, code)
-		// n's parent, reached at edge, becomes its grandparent's place.
-		f.g, f.gLow, f.gHigh, f.edge = f.p, f.low, f.high, edge
-		f.p, f.low, f.high, edge = n, low, high, i
+		f.push(n, i, low, high)
 		if i > 0 {
 			low = codes[i&(nodeSize-1)]
 		}
