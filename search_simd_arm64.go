@@ -76,10 +76,10 @@ func lowerSummary(sums *[nodeSize]uint32, n int, t uint32) int {
 }
 
 // descendText descends an owner's tree from h by text key s, with plain
-// loads, to its leaf; or it stops at the internal node where s's summary
-// ties a separator's, for the separators to settle. The summaries are
-// counted inline: a call per level spills the descent's registers.
-func descendText(h *gheader, s string) (leaf, tie *gheader) {
+// loads, and searches s's leaf by its code: the node it stopped at, the
+// slot and what it found there, a text constant. The summaries and codes
+// are counted inline: a call per level spills the descent's registers.
+func descendText(h *gheader, s string) (*gheader, int, int) {
 	if simd.Emulated() {
 		return descendTextBy(h, s)
 	}
@@ -95,11 +95,29 @@ func descendText(h *gheader, s string) (leaf, tie *gheader) {
 		d := countEight32((*[8]uint32)(sums[24:32]), target)
 		lo := min(-int(a.Add(b).Add(c.Add(d)).ReduceSum()), count)
 		if lo < count && sums[lo&(nodeSize-1)] == sum {
-			return nil, h
+			return h, 0, textTie
 		}
 		h = plainPointer(&n.children[max(lo-1, 0)&(nodeSize-1)])
 	}
-	return h, nil
+	n := (*leafRoute)(unsafe.Pointer(h))
+	count, p := owned(&n.count), owned(&n.prefix)
+	// textFits, written out: as a call it spills what the search needs.
+	h0, h1 := *(*uint64)(unsafe.Pointer(&n.head[0])), *(*uint64)(unsafe.Pointer(&n.head[1]))
+	if !(p <= 16 && len(s) <= p+16 && len(s) < 255 && len(s) >= p && headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) == 0) {
+		return h, 0, textSearch
+	}
+	code := stringCode(s, p)
+	target := archsimd.BroadcastUint64x2(code)
+	a := countEight((*[8]uint64)(n.codes[0:8]), target)
+	b := countEight((*[8]uint64)(n.codes[8:16]), target)
+	c := countEight((*[8]uint64)(n.codes[16:24]), target)
+	d := countEight((*[8]uint64)(n.codes[24:32]), target)
+	sum := a.Add(b).Add(c.Add(d))
+	lo := min(-int(sum.GetElem(0)+sum.GetElem(1)), count)
+	if lo < count && n.codes[lo&(nodeSize-1)] == code {
+		return h, lo, textCode
+	}
+	return h, lo, textAbsent
 }
 
 func countEight32(keys *[8]uint32, target archsimd.Uint32x4) archsimd.Int32x4 {

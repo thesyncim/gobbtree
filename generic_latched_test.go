@@ -594,6 +594,16 @@ func TestHeadDiff(t *testing.T) {
 	}
 }
 
+// leafRoute lays out as every leaf begins.
+func TestLeafRouteLayout(t *testing.T) {
+	var r leafRoute
+	var a gleaf[string, uint64]
+	var b gleaf[Bytes, [3]string]
+	if unsafe.Offsetof(a.codes) != unsafe.Offsetof(r.codes) || unsafe.Offsetof(b.codes) != unsafe.Offsetof(r.codes) {
+		t.Fatalf("gleaf codes at %d and %d, leafRoute's at %d", unsafe.Offsetof(a.codes), unsafe.Offsetof(b.codes), unsafe.Offsetof(r.codes))
+	}
+}
+
 // innerRoute lays out as every internal node begins.
 func TestInnerRouteLayout(t *testing.T) {
 	var r innerRoute

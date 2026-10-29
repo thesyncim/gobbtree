@@ -45,37 +45,31 @@ func (t *genericTree[K, V, O]) ownerSeek(key K, code uint64) (*gleaf[K, V], int,
 	s := textView(&key)
 	h := plainPointer(&t.root)
 	for {
-		leaf, tie := descendText(h, s)
-		if tie == nil {
-			h = leaf
-			break
+		at, lo, found := descendText(h, s)
+		switch found {
+		case textTie:
+			// Summaries tie: the boxed separators settle it.
+			n := asInner[K](at)
+			i, _ := t.route(n, key, code, owned(&n.count), false)
+			h = plainPointer(&n.children[i&(nodeSize-1)])
+			continue
+		case textAbsent:
+			return asLeaf[K, V](at), lo, false
 		}
-		// Summaries tie: the boxed separators settle it.
-		n := asInner[K](tie)
-		i, _ := t.route(n, key, code, owned(&n.count), false)
-		h = plainPointer(&n.children[i&(nodeSize-1)])
+		n := asLeaf[K, V](at)
+		if found == textCode {
+			tail, ok := fastWindow(s, owned(&n.prefix)+8)
+			if !ok {
+				tail = stringCode(s, owned(&n.prefix)+8)
+			}
+			j := lo & (nodeSize - 1)
+			if text := n.text(); text.tails[j] == tail && text.lens[j] == textLen(s) {
+				return n, lo, true
+			}
+		}
+		i, ok := t.find(n, key, code)
+		return n, i, ok
 	}
-	n := asLeaf[K, V](h)
-	count, p := owned(&n.count), owned(&n.prefix)
-	h0, h1 := *(*uint64)(unsafe.Pointer(&n.head[0])), *(*uint64)(unsafe.Pointer(&n.head[1]))
-	if p <= 16 && len(s) <= p+16 && len(s) < 255 && len(s) >= p && headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) == 0 {
-		c := stringCode(s, p)
-		lo := lowerCode(&n.codes, count, c)
-		j := lo & (nodeSize - 1)
-		if lo >= count || n.codes[j] != c {
-			// No key of the code: absent, and lo is where it goes.
-			return n, lo, false
-		}
-		tail, ok := fastWindow(s, p+8)
-		if !ok {
-			tail = stringCode(s, p+8)
-		}
-		if text := n.text(); text.tails[j] == tail && text.lens[j] == textLen(s) {
-			return n, lo, true
-		}
-	}
-	i, ok := t.find(n, key, code)
-	return n, i, ok
 }
 
 func (t *genericTree[K, V, O]) ownerGet(key K) (value V, found bool) {
