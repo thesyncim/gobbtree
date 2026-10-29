@@ -10,35 +10,33 @@ import (
 )
 
 func TestWordArenaIDsAcrossSlabGrowth(t *testing.T) {
-	for _, shared := range []bool{false} {
-		tr := wordTree{}
-		live := make(map[uint32]uint64)
-		for i := 0; i < 16000; i++ {
-			leaf := i%23 != 0
-			id := tr.alloc(leaf)
-			if _, exists := live[id]; exists {
-				t.Fatalf("shared=%v: allocated live ID %d twice", shared, id)
-			}
-			n := tr.node(id)
-			if n.leaf != leaf || (id&wordLeafID != 0) != leaf {
-				t.Fatal("allocated node has the wrong kind")
-			}
-			value := uint64(i + 1)
-			if leaf {
-				n.entries()[0].key = value
-			} else {
-				n.keys[0] = value
-			}
-			live[id] = value
-			if i%7 == 0 {
-				tr.release(id)
-				delete(live, id)
-			}
+	tr := wordTree{}
+	live := make(map[uint32]uint64)
+	for i := 0; i < 16000; i++ {
+		leaf := i%23 != 0
+		id := tr.alloc(leaf)
+		if _, exists := live[id]; exists {
+			t.Fatalf("allocated live ID %d twice", id)
 		}
-		for id, value := range live {
-			if got := tr.node(id).keyAt(0); got != value {
-				t.Fatalf("ID %d changed during growth: got %d, want %d", id, got, value)
-			}
+		n := tr.node(id)
+		if n.leaf != leaf || (id&wordLeafID != 0) != leaf {
+			t.Fatal("allocated node has the wrong kind")
+		}
+		value := uint64(i + 1)
+		if leaf {
+			n.entries()[0].key = value
+		} else {
+			n.keys[0] = value
+		}
+		live[id] = value
+		if i%7 == 0 {
+			tr.release(id)
+			delete(live, id)
+		}
+	}
+	for id, value := range live {
+		if got := tr.node(id).keyAt(0); got != value {
+			t.Fatalf("ID %d changed during growth: got %d, want %d", id, got, value)
 		}
 	}
 }
@@ -368,64 +366,58 @@ func TestNumericNodeLayout(t *testing.T) {
 }
 
 func TestWordOuterLeafRedistribution(t *testing.T) {
-	for _, shared := range []bool{false} {
-		for _, test := range []struct {
-			name   string
-			counts []int
-			index  int
-			split  bool
-		}{
-			{"left", []int{24, 32, 32, 32, 32}, 2, false},
-			{"right", []int{32, 32, 32, 32, 24}, 2, false},
-			{"choose_left", []int{24, 32, 32, 32, 28}, 2, false},
-			{"choose_right", []int{28, 32, 32, 32, 24}, 2, false},
-			{"first", []int{32, 32, 17}, 0, false},
-			{"last", []int{24, 32, 32}, 2, false},
-			{"nearly_full", []int{31, 32, 32}, 2, true},
-			{"full", []int{32, 32, 32, 32, 32}, 2, true},
-			{"two", []int{32, 32}, 0, true},
-		} {
-			t.Run(test.name, func(t *testing.T) {
-				tr := wordTree{keyKind: 1, valueKind: 1}
-				tr.root = tr.alloc(false)
-				parent := tr.node(tr.root)
-				tr.rootNode = parent
-				want := make(map[uint64]uint64)
-				var previous uint32
-				for i, count := range test.counts {
-					id := tr.alloc(true)
-					leaf := tr.node(id)
-					for j := 0; j < count; j++ {
-						key := uint64(i*100 + j*2)
-						tr.insertLeaf(leaf, j, key, key+1)
-						want[key] = key + 1
-					}
-					leaf.prev = previous
-					if previous != 0 {
-						tr.node(previous).next = id
-					}
-					previous = id
-					tr.insertChild(parent, i, id)
+	for _, test := range []struct {
+		name   string
+		counts []int
+		index  int
+	}{
+		{"left", []int{24, 32, 32, 32, 32}, 2},
+		{"right", []int{32, 32, 32, 32, 24}, 2},
+		{"choose_left", []int{24, 32, 32, 32, 28}, 2},
+		{"choose_right", []int{28, 32, 32, 32, 24}, 2},
+		{"first", []int{32, 32, 17}, 0},
+		{"last", []int{24, 32, 32}, 2},
+		{"nearly_full", []int{31, 32, 32}, 2},
+		{"full", []int{32, 32, 32, 32, 32}, 2},
+		{"two", []int{32, 32}, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tr := wordTree{keyKind: 1, valueKind: 1}
+			tr.root = tr.alloc(false)
+			parent := tr.node(tr.root)
+			tr.rootNode = parent
+			want := make(map[uint64]uint64)
+			var previous uint32
+			for i, count := range test.counts {
+				id := tr.alloc(true)
+				leaf := tr.node(id)
+				for j := 0; j < count; j++ {
+					key := uint64(i*100 + j*2)
+					tr.insertLeaf(leaf, j, key, key+1)
+					want[key] = key + 1
 				}
-				key := uint64(test.index*100 + 1)
-				tr.makeLeafRoom(parent, test.index, key, key+1)
-				want[key] = key + 1
-				children := len(test.counts)
-				if test.split || !shared {
-					children++
+				leaf.prev = previous
+				if previous != 0 {
+					tr.node(previous).next = id
 				}
-				if int(parent.n) != children {
-					t.Fatalf("shared=%v: got %d leaves, want %d", shared, parent.n, children)
+				previous = id
+				tr.insertChild(parent, i, id)
+			}
+			key := uint64(test.index*100 + 1)
+			tr.makeLeafRoom(parent, test.index, key, key+1)
+			want[key] = key + 1
+			children := len(test.counts) + 1
+			if int(parent.n) != children {
+				t.Fatalf("got %d leaves, want %d", parent.n, children)
+			}
+			checkWordTree(t, &tr, len(want))
+			tree := Tree[uint64, uint64]{words: &tr, length: len(want)}
+			for key, value := range want {
+				if got, ok := tree.Get(key); !ok || got != value {
+					t.Fatalf("lookup %d = %d, %v; want %d", key, got, ok, value)
 				}
-				checkWordTree(t, &tr, len(want))
-				tree := Tree[uint64, uint64]{words: &tr, length: len(want)}
-				for key, value := range want {
-					if got, ok := tree.Get(key); !ok || got != value {
-						t.Fatalf("shared=%v: lookup %d = %d, %v; want %d", shared, key, got, ok, value)
-					}
-				}
-			})
-		}
+			}
+		})
 	}
 }
 
@@ -523,53 +515,51 @@ func TestWordLeafSearchBounds(t *testing.T) {
 }
 
 func TestWordInternalRoutingBounds(t *testing.T) {
-	for _, shared := range []bool{false} {
-		for distribution := 0; distribution < 6; distribution++ {
-			for count := 1; count <= nodeSize; count++ {
-				keys := make([]uint64, count)
-				for i := range keys {
-					switch distribution {
-					case 0:
-						keys[i] = uint64(i)
-					case 1:
-						keys[i] = math.MaxUint64 - uint64(i)
-					case 2:
-						keys[i] = uint64(i) << 47
-					case 3:
-						keys[i] = 0xa700000000000000 | uint64(i)<<16
-					case 4:
-						keys[i] = uint64(i)
-						if i == count-1 {
-							keys[i] = math.MaxUint64
-						}
-					case 5:
-						keys[i] = mixedKey(uint64(i))
+	for distribution := 0; distribution < 6; distribution++ {
+		for count := 1; count <= nodeSize; count++ {
+			keys := make([]uint64, count)
+			for i := range keys {
+				switch distribution {
+				case 0:
+					keys[i] = uint64(i)
+				case 1:
+					keys[i] = math.MaxUint64 - uint64(i)
+				case 2:
+					keys[i] = uint64(i) << 47
+				case 3:
+					keys[i] = 0xa700000000000000 | uint64(i)<<16
+				case 4:
+					keys[i] = uint64(i)
+					if i == count-1 {
+						keys[i] = math.MaxUint64
 					}
+				case 5:
+					keys[i] = mixedKey(uint64(i))
 				}
-				slices.Sort(keys)
-				n := &wordNode{n: uint8(count)}
-				copy(n.keys[:], keys)
-				tr := wordTree{}
-				tr.refit(n)
-				probes := []uint64{0, math.MaxUint64}
-				for _, key := range keys {
-					probes = append(probes, key, key-1, key+1)
+			}
+			slices.Sort(keys)
+			n := &wordNode{n: uint8(count)}
+			copy(n.keys[:], keys)
+			tr := wordTree{}
+			tr.refit(n)
+			probes := []uint64{0, math.MaxUint64}
+			for _, key := range keys {
+				probes = append(probes, key, key-1, key+1)
+			}
+			for i := 0; i < 100; i++ {
+				probes = append(probes, mixedKey(uint64(i+100)))
+			}
+			for _, key := range probes {
+				want := max(0, sort.Search(len(keys), func(i int) bool { return keys[i] > key })-1)
+				directory := n.directory
+				n.directory = 0
+				got := tr.route(n, key)
+				n.directory = directory
+				if got != want {
+					t.Fatalf("distribution=%d count=%d key=%x inline=%d want=%d", distribution, count, key, got, want)
 				}
-				for i := 0; i < 100; i++ {
-					probes = append(probes, mixedKey(uint64(i+100)))
-				}
-				for _, key := range probes {
-					want := max(0, sort.Search(len(keys), func(i int) bool { return keys[i] > key })-1)
-					directory := n.directory
-					n.directory = 0
-					got := tr.route(n, key)
-					n.directory = directory
-					if got != want {
-						t.Fatalf("shared=%v distribution=%d count=%d key=%x inline=%d want=%d", shared, distribution, count, key, got, want)
-					}
-					if got := tr.route(n, key); got != want {
-						t.Fatalf("shared=%v distribution=%d count=%d key=%x route=%d want=%d", shared, distribution, count, key, got, want)
-					}
+				if got := tr.route(n, key); got != want {
+					t.Fatalf("distribution=%d count=%d key=%x route=%d want=%d", distribution, count, key, got, want)
 				}
 			}
 		}
