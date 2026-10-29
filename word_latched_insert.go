@@ -1,6 +1,9 @@
 package gobbtree
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"unsafe"
+)
 
 // What an insert does where the tree holds the key already, upstream's
 // InsertPolicy: replace the value (insert), store merge's result
@@ -123,8 +126,18 @@ func insertIntoAt(leaf *wordNode, i int, key, value uint64, policy int, merge fu
 // exclusively changes the pointer to it, so a leaf the pointer still names
 // once latched is last, and stays so while held.
 func (t *latchedTree) append(key, value uint64) (appended, full bool) {
-	id := t.rightmost.Load()
-	n := t.node(id)
+	var id uint32
+	var n *wordNode
+	if seqlockPlainStores {
+		// Plain looks: the latch's compare-and-swap below settles them.
+		id = *(*uint32)(unsafe.Pointer(&t.rightmost))
+		if d := plainPointer(&t.blocks); d != nil {
+			n = nodeIn(*d, id)
+		}
+	} else {
+		id = t.rightmost.Load()
+		n = t.node(id)
+	}
 	if n == nil {
 		return false, false
 	}
@@ -133,11 +146,26 @@ func (t *latchedTree) append(key, value uint64) (appended, full bool) {
 	if count == 0 || count > nodeSize || key <= loadEntryKeyRacing(n, count-1) {
 		return false, false
 	}
+	var version uint64
+	locked := false
+	if seqlockPlainStores {
+		if word := *(*uint64)(unsafe.Pointer(&n.sequence)); word&(latchExclusive|latchSharedMask) == 0 && n.tryLockAt(word) {
+			version, locked = word, true
+		}
+	}
+	if !locked {
+		version = n.lockExclusive()
+	}
 	if count == nodeSize {
-		// The last leaf must split: the caller goes straight there.
+		// The last leaf must split: through its parent's hint if it can,
+		// else the caller goes straight to splitting.
+		if t.rightmost.Load() == id && n.n == nodeSize && key > n.entries()[nodeSize-1].key &&
+			t.splitAtParentHint(n, id, version, key, value) {
+			return true, false
+		}
+		n.unlockExclusive(version)
 		return false, true
 	}
-	version := n.lockExclusive()
 	ok := t.rightmost.Load() == id && n.n > 0 && n.n < nodeSize && key > n.entries()[n.n-1].key
 	if ok {
 		insertFit(n, int(n.n), key, value)
