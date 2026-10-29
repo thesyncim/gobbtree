@@ -296,6 +296,8 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 		fresh.push(&root.gheader, 0)
 		t.insertChild(root, 0, nil, t.root.Load())
 		t.insertChild(root, 1, separator, carried)
+		// Its fences are the tree's borders: it takes the shared prefix.
+		t.refitInner(root)
 		t.root.Store(&root.gheader)
 	}
 	held.unlock()
@@ -399,7 +401,28 @@ func (t *genericTree[K, V, O]) insertChild(n *ginner[K], i int, separator *K, ch
 	n.seps[i].Store(separator)
 	n.children[i].Store(child)
 	n.count.Store(int32(count + 1))
-	t.refitInner(n)
+	// A separator between n's fences moves neither (D26): the codes or
+	// summaries shift, and only the new one is read from its key.
+	if prefixed[O, K]() {
+		sums := n.sums()
+		for j := count; j > i; j-- {
+			storeSum(sums, j, loadSum(sums, j-1))
+		}
+		sum := uint32(0)
+		if i > 0 {
+			sum = summaryOf(textView(separator), int(n.prefix.Load()))
+		}
+		storeSum(sums, i, sum)
+		return
+	}
+	for j := count; j > i; j-- {
+		n.codes[j].Store(n.codes[j-1].Load())
+	}
+	code := uint64(0)
+	if i > 0 {
+		code = windowKey[O](*separator, 0)
+	}
+	n.codes[i].Store(code)
 }
 
 // removeChild removes internal node n's child i.
