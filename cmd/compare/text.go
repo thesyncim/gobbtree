@@ -8,13 +8,14 @@ import (
 	"github.com/thesyncim/gobbtree"
 )
 
-// textKey is the string key of a -text run for the pattern's key k,
-// matching text_key in the Rust driver.
-func textKey(k uint64) string { return fmt.Sprintf("user:%016x", k) }
+// textKey is the byte-string key of a -text run for the pattern's key k,
+// matching text_key in the Rust driver: a Bytes key, as Go code that keeps
+// byte strings in buffers it reuses has, the tree keeping its own copy.
+func textKey(k uint64) gobbtree.Bytes { return gobbtree.Bytes(fmt.Sprintf("user:%016x", k)) }
 
 func init() { runText = textCells }
 
-// textCells runs the string-keyed cells, matching text in the Rust driver: a
+// textCells runs the byte-string-keyed cells, matching text in the Rust driver: a
 // build from keys made beforehand; lookups that hit and miss; with
 // mutations, replacing values and deleting entries to insert them back; and
 // the Map's parallel lookups. No timed operation makes a key. Each value is
@@ -22,12 +23,12 @@ func init() { runText = textCells }
 func textCells(kind string, size, rounds, threads, queryCount int, mutations bool, keyAt func(uint64) uint64) {
 	doTree := kind == "all" || kind == "tree"
 	doMap := kind == "all" || kind == "map"
-	tree := gobbtree.NewTree[string, uint64]()
-	concurrent := gobbtree.New[string, uint64]()
+	tree := gobbtree.NewTreeOf[gobbtree.Bytes, uint64]()
+	concurrent := gobbtree.NewMapOf[gobbtree.Bytes, uint64]()
 	build := func(name string, start time.Time, sum uint64) {
 		fmt.Printf("%s %.3f ns/op checksum=%d\n", name, float64(time.Since(start).Nanoseconds())/float64(size), sum)
 	}
-	keys, codes := make([]string, size), make([]uint64, size)
+	keys, codes := make([]gobbtree.Bytes, size), make([]uint64, size)
 	for i := range keys {
 		codes[i] = keyAt(uint64(i))
 		keys[i] = textKey(codes[i])
@@ -53,7 +54,7 @@ func textCells(kind string, size, rounds, threads, queryCount int, mutations boo
 	}
 	keys, codes = nil, nil
 	runtime.GC()
-	queries, queryCodes := make([]string, queryCount), make([]uint64, queryCount)
+	queries, queryCodes := make([]gobbtree.Bytes, queryCount), make([]uint64, queryCount)
 	report := func(name string, start time.Time, sum uint64) {
 		fmt.Printf("%s %.3f ns/op checksum=%d\n", name, float64(time.Since(start).Nanoseconds())/float64(rounds*queryCount), sum)
 	}
