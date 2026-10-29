@@ -3,8 +3,10 @@ package gobbtree
 // walk visits entries in b in key order, or in reverse, a leaf at a time:
 // each leaf's entries are copied with the leaf latched shared and visited
 // once it is let go, as latchedTree.walk, keeping range_cloned's contract.
-// The walk goes on from the leaf's fence, the separator beside the edge its
-// descent took at the lowest level that has one.
+// The walk goes on from the leaf's fence, read while the leaf is held, which
+// keeps it: going back, its own head; going on, the next leaf's, through
+// the path, or, where a racing writer changed the node it reads it through,
+// from the leaf's last key.
 func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V) bool) {
 	if t.root.Load() == nil {
 		return
@@ -13,7 +15,8 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 	var values [nodeSize]V
 	var path gpath[K]
 	if !reverse {
-		seek, from, fenced := seekFirst, b.lower, false
+		// fenced skips keys below from, past also from itself.
+		seek, from, fenced, past := seekFirst, b.lower, false, false
 		if b.lowerKind != unbounded {
 			seek = seekKey
 		}
@@ -23,10 +26,14 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 				code = t.code(from)
 			}
 			n, _ := t.descend(from, code, seek, false, shared, &path)
-			count, done := 0, false
-			for i := 0; i < int(n.count.Load()); i++ {
+			count, done, held := 0, false, int(n.count.Load())
+			for i := 0; i < held; i++ {
 				k := t.key(n, i)
-				if fenced && t.compare(k, from) < 0 || !fenced && !aboveLower[K, O](b, k) {
+				if fenced {
+					if order := t.compare(k, from); order < 0 || past && order == 0 {
+						continue
+					}
+				} else if !aboveLower[K, O](b, k) {
 					continue
 				}
 				if !belowUpper[K, O](b, k) {
@@ -36,17 +43,28 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 				keys[count], values[count] = k, n.values[i]
 				count++
 			}
+			var next, last *K
+			ok := true
+			if !done {
+				if next, ok = t.nextFence(&path); !ok && held > 0 {
+					k := t.key(n, held-1)
+					last = &k
+				}
+			}
 			n.latch.unlockShared()
 			for i := 0; i < count; i++ {
 				if !visit(keys[i], values[i]) {
 					return
 				}
 			}
-			next := path.highFence()
-			if done || next == nil {
+			switch {
+			case done || ok && next == nil || !ok && last == nil:
 				return
+			case !ok:
+				seek, from, fenced, past = seekKey, *last, true, true
+			default:
+				seek, from, fenced, past = seekKey, *next, true, false
 			}
-			seek, from, fenced = seekKey, *next, true
 		}
 	}
 	seek, below, strict, fenced := seekLast, b.upper, b.upperKind == excluded, false
@@ -72,16 +90,22 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 			keys[count], values[count] = k, n.values[i]
 			count++
 		}
+		// The leaf's low fence: its first key, its head where it keeps one,
+		// none for the leftmost leaf, which no path turns right to.
+		var low *K
+		if path.separatorLevel() >= 0 && n.count.Load() > 0 {
+			k := t.firstKey(n)
+			low = &k
+		}
 		n.latch.unlockShared()
 		for i := 0; i < count; i++ {
 			if !visit(keys[i], values[i]) {
 				return
 			}
 		}
-		next := path.lowFence()
-		if done || next == nil {
+		if done || low == nil {
 			return
 		}
-		seek, below, strict, fenced = seekKey, *next, true, true
+		seek, below, strict, fenced = seekKey, *low, true, true
 	}
 }

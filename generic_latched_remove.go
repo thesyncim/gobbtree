@@ -104,58 +104,53 @@ func (t *genericTree[K, V, O]) takePromotion(path *gpath[K], level int, held *la
 // nodes whose fences move refit only where what the fences share changes,
 // which it rarely does, as the new separator is the old one's successor.
 func (t *genericTree[K, V, O]) promote(path *gpath[K], level int, n *gleaf[K, V]) {
-	sep := t.separator(n)
 	t.setHead(n)
+	sep := t.firstKey(n)
 	at := path.levels[level]
 	t.replaceSeparator(at.n, at.edge, sep)
 	// The right subtree's left border, n's path below the separator: their
-	// own separators, its low fences.
+	// low fences.
 	for l := level + 1; l < path.depth; l++ {
 		inner := path.levels[l].n
-		inner.seps[0].Store(sep)
-		if prefixed[O, K]() && t.fencePrefix(sep, inner.high.Load()) != int(inner.prefix.Load()) {
-			t.refitInner(inner)
+		if high := t.nodeHigh(path, l); prefixed[O, K]() && t.fencePrefix(&sep, high) != int(inner.prefix.Load()) {
+			t.refitInner(inner, high)
 		}
 	}
 	if path.depth > 0 {
 		last := path.levels[path.depth-1]
-		t.refitMoved(n, last.n, last.edge)
+		t.refitMoved(n, t.childHigh(path, path.depth-1, last.edge))
 	}
-	// The left subtree's right border: its high fences.
+	// The left subtree's right border: their high fences.
 	h := at.n.children[(at.edge-1)&(nodeSize-1)].Load()
-	parent, edge := at.n, at.edge-1
 	for !h.leaf {
 		inner := asInner[K](h)
-		inner.high.Store(sep)
-		if prefixed[O, K]() && t.fencePrefix(inner.seps[0].Load(), sep) != int(inner.prefix.Load()) {
-			t.refitInner(inner)
+		if prefixed[O, K]() && t.fencePrefix(t.lowFence(inner), &sep) != int(inner.prefix.Load()) {
+			t.refitInner(inner, &sep)
 		}
-		parent, edge = inner, int(inner.count.Load())-1
-		h = inner.children[edge&(nodeSize-1)].Load()
+		h = inner.children[(inner.count.Load()-1)&(nodeSize-1)].Load()
 	}
-	t.refitMoved(asLeaf[K, V](h), parent, edge)
+	t.refitMoved(asLeaf[K, V](h), &sep)
 }
 
-// replaceSeparator makes sep internal node n's separator i, held, where n's
-// fences stay: its prefix holds, and only code i changes.
-func (t *genericTree[K, V, O]) replaceSeparator(n *ginner[K], i int, sep *K) {
-	n.seps[i].Store(sep)
+// replaceSeparator makes sep, a held leaf's head, internal node n's
+// separator i, held, where n's fences stay: its prefix holds, and only code
+// i changes.
+func (t *genericTree[K, V, O]) replaceSeparator(n *ginner[K], i int, sep K) {
 	if prefixed[O, K]() {
-		storeSum(n.sums(), i, summaryOf(textView(sep), int(n.prefix.Load())))
+		storeSum(n.sums(), i, summaryOf(textView(&sep), int(n.prefix.Load())))
 		return
 	}
-	n.codes[i].Store(windowKey[O](*sep, 0))
+	n.codes[i].Store(windowKey[O](sep, 0))
 }
 
 // refitMoved refits text leaf n, held, whose windows are its keys' at its
-// prefix, where its fences in parent at edge, one of them moved, share
+// prefix, where its fences, its head and high, one of them moved, share
 // another.
-func (t *genericTree[K, V, O]) refitMoved(n *gleaf[K, V], parent *ginner[K], edge int) {
+func (t *genericTree[K, V, O]) refitMoved(n *gleaf[K, V], high *K) {
 	if !prefixed[O, K]() {
 		return
 	}
-	low, high := leafFences(parent, edge)
-	if p := t.fencePrefix(low, high); p != int(n.prefix.Load()) {
+	if p := t.fencePrefix(t.leafLow(n), high); p != int(n.prefix.Load()) {
 		t.refitLeaf(n, p)
 	}
 }
@@ -196,6 +191,15 @@ func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, code uint64, c
 			return k, v, false, false
 		}
 	}
+	// The nodes the removal refits take their fences from the path, the
+	// highest held at or above the highest node it changes.
+	changed := path.depth - fixes
+	if promoted >= 0 {
+		changed = min(changed, promoted)
+	}
+	if path.depth > 0 && !path.takeHighHolder(changed, &held) {
+		return k, v, false, false
+	}
 	k, v = t.removeEntry(n, i, handOut)
 	// The separator first, so that the fixes below find every separator a
 	// key the tree holds.
@@ -204,8 +208,7 @@ func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, code uint64, c
 	}
 	depth := path.depth
 	for fix := 0; fix < fixes; fix++ {
-		level := path.levels[depth-1-fix]
-		t.fixUnderfullChild(level.n, level.edge, fix == 0)
+		t.fixUnderfullChild(&path, depth-1-fix, fix == 0)
 	}
 	if fixes == depth && depth > 0 {
 		// The root lost a separator; one without any is popped.
@@ -257,71 +260,62 @@ func (t *genericTree[K, V, O]) takeFixes(path *gpath[K], leafLen int, held *latc
 	}
 }
 
-// fixUnderfullChild fixes parent's child at index, one entry short of its
-// minimum (D22): it merges the child with its fixing sibling when both fit
-// in one node, and otherwise moves one entry over. Every node it changes is
-// held; a merged node is left holding nothing.
-func (t *genericTree[K, V, O]) fixUnderfullChild(parent *ginner[K], index int, leaves bool) {
+// fixUnderfullChild fixes the child of path's node at level that the path
+// takes, one entry short of its minimum (D22): it merges the child with its
+// fixing sibling when both fit in one node, and otherwise moves one entry
+// over. Every node it changes is held; a merged node is left holding
+// nothing. The nodes whose fences change refit to them, their heads and the
+// separators the path tells.
+func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leaves bool) {
+	parent, index := path.levels[level].n, path.levels[level].edge
 	sibling := fixingSibling(index)
 	child, other := parent.children[index].Load(), parent.children[sibling].Load()
 	if fitMerged(int(child.count.Load()), int(other.count.Load())) {
 		left, right := min(index, sibling), max(index, sibling)
 		l, r := parent.children[left].Load(), parent.children[right].Load()
+		// The merged node spans both: l's low fence and r's high.
+		high := t.childHigh(path, level, right)
 		if leaves {
 			t.moveLeafEntries(asLeaf[K, V](l), int(l.count.Load()), asLeaf[K, V](r), 0, int(r.count.Load()))
-			// The merged leaf spans both: l's low fence and r's high.
-			low, _ := leafFences(parent, left)
-			_, high := leafFences(parent, right)
-			t.fitLeaf(asLeaf[K, V](l), low, high)
+			t.removeChild(parent, right)
+			t.fitLeaf(asLeaf[K, V](l), t.leafLow(asLeaf[K, V](l)), high)
 			t.clearHead(asLeaf[K, V](r))
 		} else {
-			// The merged node spans both: its fences are l's low and r's.
-			asInner[K](l).high.Store(asInner[K](r).high.Load())
 			t.moveChildEntries(asInner[K](l), int(l.count.Load()), asInner[K](r), 0, int(r.count.Load()))
+			t.removeChild(parent, right)
+			t.refitInner(asInner[K](l), high)
 		}
-		t.removeChild(parent, right)
 		r.freed()
 		return
 	}
+	// One entry crosses: the right one of the pair gets a new first key,
+	// the separator between them.
+	pairLeft, pairRight := min(index, sibling), max(index, sibling)
+	high := t.childHigh(path, level, pairRight)
 	switch {
 	case sibling < index && leaves:
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
 		t.moveLeafEntries(c, 0, o, int(o.count.Load())-1, 1)
-		t.setSeparator(parent, index, t.separator(c))
 		t.setHead(c)
-		t.fitChild(c, parent, index)
-		t.fitChild(o, parent, sibling)
 	case sibling < index:
 		c, o := asInner[K](child), asInner[K](other)
-		// o's last child moves to c: its separator divides them now.
-		o.high.Store(o.seps[int(o.count.Load())-1].Load())
 		t.moveChildEntries(c, 0, o, int(o.count.Load())-1, 1)
-		t.setSeparator(parent, index, c.seps[0].Load())
 	case leaves:
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
 		t.moveLeafEntries(c, int(c.count.Load()), o, 0, 1)
-		t.setSeparator(parent, sibling, t.separator(o))
 		t.setHead(o)
-		t.fitChild(c, parent, index)
-		t.fitChild(o, parent, sibling)
 	default:
 		c, o := asInner[K](child), asInner[K](other)
-		// o's first child moves to c: o's second's separator divides them.
-		c.high.Store(o.seps[1].Load())
 		t.moveChildEntries(c, int(c.count.Load()), o, 0, 1)
-		t.setSeparator(parent, sibling, o.seps[0].Load())
 	}
-}
-
-// box is a separator for key: a copy no one changes.
-func box[K any](key K) *K {
-	b := new(K)
-	*b = key
-	return b
-}
-
-// setSeparator makes separator i of internal node n, held, sep.
-func (t *genericTree[K, V, O]) setSeparator(n *ginner[K], i int, sep *K) {
-	n.seps[i].Store(sep)
-	t.refitInner(n)
+	l, r := parent.children[pairLeft].Load(), parent.children[pairRight].Load()
+	sep, _ := t.separatorKey(parent, pairRight)
+	t.replaceSeparator(parent, pairRight, sep)
+	if leaves {
+		t.fitLeaf(asLeaf[K, V](l), t.leafLow(asLeaf[K, V](l)), &sep)
+		t.fitLeaf(asLeaf[K, V](r), &sep, high)
+		return
+	}
+	t.refitInner(asInner[K](l), &sep)
+	t.refitInner(asInner[K](r), high)
 }

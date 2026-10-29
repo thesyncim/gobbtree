@@ -161,11 +161,25 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 		if h == root && count < 2 || h != root && count < innerMinLen {
 			t.Fatalf("internal node holds %d children", count)
 		}
-		if own := n.seps[0].Load(); (own == nil) != (low == nil) || own != nil && compareKeys[O](*own, *low) != 0 {
-			t.Fatal("internal node's own separator is not its parent's")
+		// Separator i is the first key of the leftmost leaf below child i
+		// (D49); the node keeps none, only their codes.
+		firstBelow := func(i int) K {
+			h := n.children[i].Load()
+			for !h.leaf {
+				h = asInner[K](h).children[0].Load()
+			}
+			return tree.key(asLeaf[K, V](h), 0)
 		}
-		if got := n.high.Load(); (got == nil) != (high == nil) || got != nil && compareKeys[O](*got, *high) != 0 {
-			t.Fatal("internal node's high fence is not its range's")
+		if low != nil && compareKeys[O](firstBelow(0), *low) != 0 {
+			t.Fatal("internal node's first key is not its low fence")
+		}
+		seps := make([]K, count)
+		for i := 1; i < count; i++ {
+			seps[i] = firstBelow(i)
+			inside(seps[i])
+			if i > 1 && compareKeys[O](seps[i-1], seps[i]) >= 0 {
+				t.Fatalf("separators out of order at %d", i)
+			}
 		}
 		// A text node's prefix is what its fences share (D26, D50), and its
 		// summaries the top halves of its separators' windows past it.
@@ -182,45 +196,30 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				case i == 0:
 					want = 0
 				case i < count:
-					want = summaryOf(textView(n.seps[i].Load()), p)
+					want = summaryOf(textView(&seps[i]), p)
 				}
 				if sums[i] != want {
 					t.Fatalf("summary %d is %x, want %x", i, sums[i], want)
 				}
 			}
-		} else if h.prefix.Load() != 0 || n.codes[0].Load() != 0 {
-			t.Fatal("internal code 0 is not 0, or a prefix without text keys")
+		} else {
+			if h.prefix.Load() != 0 || n.codes[0].Load() != 0 {
+				t.Fatal("internal code 0 is not 0, or a prefix without text keys")
+			}
+			for i := 1; i < count; i++ {
+				if n.codes[i].Load() != windowKey[O](seps[i], 0) {
+					t.Fatalf("separator %d code is stale", i)
+				}
+			}
 		}
 		total := 0
 		for i := 0; i < count; i++ {
-			sep := n.seps[i].Load()
-			if i > 0 {
-				if sep == nil {
-					t.Fatalf("separator %d missing", i)
-				}
-				// A separator is the first key of the leftmost leaf below
-				// its child (D49).
-				first := n.children[i].Load()
-				for !first.leaf {
-					first = asInner[K](first).children[0].Load()
-				}
-				if got := tree.key(asLeaf[K, V](first), 0); compareKeys[O](got, *sep) != 0 {
-					t.Fatalf("separator %d is not the first key below it: %v, the leaf's %v", i, *sep, got)
-				}
-				if !prefixed[O, K]() && n.codes[i].Load() != windowKey[O](*sep, 0) {
-					t.Fatalf("separator %d code is stale", i)
-				}
-				inside(*sep)
-				if prev := n.seps[i-1].Load(); prev != nil && compareKeys[O](*prev, *sep) >= 0 {
-					t.Fatalf("separators out of order at %d", i)
-				}
-			}
 			childLow, childHigh := low, high
 			if i > 0 {
-				childLow = sep
+				childLow = &seps[i]
 			}
 			if i+1 < count {
-				childHigh = n.seps[i+1].Load()
+				childHigh = &seps[i+1]
 			}
 			child := n.children[i].Load()
 			if child == nil {
@@ -229,7 +228,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 			total += check(child, childLow, childHigh, depth+1)
 		}
 		for i := count; i < nodeSize; i++ {
-			if n.seps[i].Load() != nil || n.children[i].Load() != nil || !prefixed[O, K]() && n.codes[i].Load() != codePad {
+			if n.children[i].Load() != nil || !prefixed[O, K]() && n.codes[i].Load() != codePad {
 				t.Fatalf("internal slot %d past count %d holds a child", i, count)
 			}
 		}
@@ -915,4 +914,67 @@ func TestSeparatorPromotion(t *testing.T) {
 	if tr.Len() != n-400 || tu.Len() != n-400 {
 		t.Fatalf("lengths %d and %d", tr.Len(), tu.Len())
 	}
+}
+
+// A Map's separators change while lookups race them: writers remove and put
+// back keys that are leaves' first keys, so their separators are promoted,
+// leaves borrow and merge, and readers settle ties against the heads of
+// path-like keys, which share long prefixes, and walk the leaves.
+func TestMapRacingSeparators(t *testing.T) {
+	m := New[string, int]()
+	const n = 4000
+	key := func(i int) string {
+		return fmt.Sprintf("/srv/tenants/objects/o%05d/part/t%02d", i, i%7)
+	}
+	for i := range n {
+		m.Insert(key(i), i)
+	}
+	var writers, readers sync.WaitGroup
+	stop := make(chan struct{})
+	for w := range 2 {
+		writers.Go(func() {
+			rng := rand.New(rand.NewPCG(uint64(w), 1))
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				i := rng.IntN(n)
+				m.Delete(key(i))
+				m.Insert(key(i), i)
+			}
+		})
+	}
+	for r := range 4 {
+		readers.Go(func() {
+			rng := rand.New(rand.NewPCG(uint64(r), 2))
+			for range 20000 {
+				i := rng.IntN(n)
+				if v, ok := m.Get(key(i)); ok && v != i {
+					t.Errorf("%s holds %d", key(i), v)
+					return
+				}
+				if rng.IntN(64) == 0 {
+					prev := ""
+					for k := range m.Range(key(i), key(min(i+200, n-1))) {
+						if k <= prev {
+							t.Errorf("walk went back: %q after %q", k, prev)
+							return
+						}
+						prev = k
+					}
+				}
+			}
+		})
+	}
+	readers.Wait()
+	close(stop)
+	writers.Wait()
+	for i := range n {
+		if v, ok := m.Get(key(i)); !ok || v != i {
+			t.Fatalf("%s: %d %v after the race", key(i), v, ok)
+		}
+	}
+	checkGenericTree(t, &m.generic)
 }

@@ -230,15 +230,6 @@ func (t *genericTree[K, V, O]) keyText(n *gleaf[K, V], i int) string {
 	return keyAt(c.buf, c.slots[i&(nodeSize-1)].ref)
 }
 
-// separator is leaf n's first key, boxed for a separator above it: a text
-// key copied, so that the separator keeps no leaf's buffer alive.
-func (t *genericTree[K, V, O]) separator(n *gleaf[K, V]) *K {
-	if prefixed[O, K]() {
-		return box(keyOfText[K](strings.Clone(t.keyText(n, 0))))
-	}
-	return box(n.keyed()[0])
-}
-
 // text is text leaf n's columns.
 func (n *gleaf[K, V]) text() *textColumns {
 	return (*textColumns)(unsafe.Add(unsafe.Pointer(n), unsafe.Offsetof(textLeaf[K, V]{}.textColumns)))
@@ -246,24 +237,81 @@ func (n *gleaf[K, V]) text() *textColumns {
 
 // An internal node: child i holds keys at least separator i, whose code,
 // its window at offset 0, routes without reading the key. Code 0 is 0 and
-// slots past the count hold codePad. Separator 0 is the node's own, nil on
-// the tree's left border; high is the separator above the node, nil on its
-// right border. Separators are boxed keys, never changed once boxed.
+// slots past the count hold codePad. The node keeps no keys (D49): separator
+// i, i > 0, is the head of the leftmost leaf below child i, and its fences
+// are the separators beside it in its ancestors, which a path tells.
 //
 // A text node routes as upstream's do (D26, D43, D50): its prefix is what its
 // fences share, a missing fence taken as the tree's shared prefix, so every
 // key under it begins with the prefix and a descent skips it unchecked; and
 // in place of codes it keeps 4-byte summaries, the top half of each
 // separator's window past the prefix, all 32 in the codes' first 128 bytes.
-// Summaries that tie are settled by comparing the boxed separators. Upstream
-// keeps no separator keys and latches the leaf whose head is one to compare
-// it; a boxed key, which the collector keeps whole, needs no latch.
+// Summaries that tie are settled by the heads below them.
 type ginner[K any] struct {
 	gheader
 	codes    [nodeSize]atomic.Uint64
 	children [nodeSize]atomic.Pointer[gheader]
-	seps     [nodeSize]atomic.Pointer[K]
-	high     atomic.Pointer[K]
+}
+
+// separatorKey is internal node n's separator i: the first key of the
+// leftmost leaf below child i, its head, or for keys of exact codes, which
+// keep no heads, the key itself, read only by a writer holding n, under
+// which neither changes. A racing reader's walk may meet a freed or emptied
+// node, and reports false; its version check settles the rest.
+func (t *genericTree[K, V, O]) separatorKey(n *ginner[K], i int) (K, bool) {
+	h := n.children[i&(nodeSize-1)].Load()
+	for depth := 0; h != nil && !h.leaf && depth < maxDepth; depth++ {
+		h = asInner[K](h).children[0].Load()
+	}
+	var k K
+	if h == nil || !h.leaf {
+		return k, false
+	}
+	leaf := asLeaf[K, V](h)
+	if headed[O, K]() {
+		return t.head(leaf)
+	}
+	if leaf.count.Load() == 0 {
+		return k, false
+	}
+	return leaf.keyed()[0], true
+}
+
+// lowFence is internal node n's low fence, the head of its leftmost leaf,
+// nil on the tree's left border; n is held.
+func (t *genericTree[K, V, O]) lowFence(n *ginner[K]) *K {
+	if k, ok := t.separatorKey(n, 0); ok {
+		return &k
+	}
+	return nil
+}
+
+// nodeHigh is the high fence of path's node at level: the separator right
+// of it at the lowest level above that has one, nil on the right border.
+// The node is held, which keeps it.
+func (t *genericTree[K, V, O]) nodeHigh(path *gpath[K], level int) *K {
+	for l := level - 1; l >= 0; l-- {
+		at := path.levels[l]
+		if at.edge+1 < int(at.n.count.Load()) {
+			if k, ok := t.separatorKey(at.n, at.edge+1); ok {
+				return &k
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+// childHigh is the high fence of child edge of path's node at level.
+func (t *genericTree[K, V, O]) childHigh(path *gpath[K], level, edge int) *K {
+	n := path.levels[level].n
+	if edge+1 < int(n.count.Load()) {
+		if k, ok := t.separatorKey(n, edge+1); ok {
+			return &k
+		}
+		return nil
+	}
+	return t.nodeHigh(path, level)
 }
 
 // sums is text node n's summaries, the first half of its codes.
@@ -414,11 +462,11 @@ func (t *genericTree[K, V, O]) route(n *ginner[K], key K, code uint64, count int
 	lo = max(lo, 1)
 	for lo < hi {
 		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
-		sep := n.seps[mid].Load()
-		if sep == nil {
+		sep, ok := t.separatorKey(n, mid)
+		if !ok {
 			return 0, false
 		}
-		order := t.compare(*sep, key)
+		order := t.compare(sep, key)
 		if order > 0 || strict && order == 0 {
 			hi = mid
 		} else {
@@ -443,14 +491,13 @@ func lowerSummaryAtomic(sums *[nodeSize]uint32, count int, s uint32) int {
 	return lo
 }
 
-// A descent's path: each internal node, its version, the edge taken, its
-// count, and the separators beside the edge, its subtree's fences.
+// A descent's path: each internal node, its version, the edge taken, and
+// its count.
 type gpathLevel[K any] struct {
-	n         *ginner[K]
-	version   uint64
-	edge      int
-	count     int
-	low, high *K
+	n       *ginner[K]
+	version uint64
+	edge    int
+	count   int
 }
 
 type gpath[K any] struct {
@@ -458,25 +505,48 @@ type gpath[K any] struct {
 	depth  int
 }
 
-// highFence is the lowest key past the leaf the path leads to, or nil.
-func (p *gpath[K]) highFence() *K {
-	for level := p.depth - 1; level >= 0; level-- {
-		if l := &p.levels[level]; l.edge+1 < l.count {
-			return l.high
+// highHolder is the level of path whose separator is the high fence of the
+// path's node at level, the lowest above it with a separator right of its
+// edge, or -1 on the right border. A writer whose changes need that fence
+// holds that node, the separator's, as upstream's take the nodes holding
+// their fences: the path above what it changes may change meanwhile.
+func (p *gpath[K]) highHolder(level int) int {
+	for l := level - 1; l >= 0; l-- {
+		if at := &p.levels[l]; at.edge+1 < at.count {
+			return l
 		}
 	}
-	return nil
+	return -1
 }
 
-// lowFence is the lowest key of the leaf the path leads to, or nil for the
-// first leaf.
-func (p *gpath[K]) lowFence() *K {
-	for level := p.depth - 1; level >= 0; level-- {
-		if l := &p.levels[level]; l.edge > 0 {
-			return l.low
-		}
+// takeHighHolder takes path's node at the high-fence holder of level, at
+// the version the descent read.
+func (p *gpath[K]) takeHighHolder(level int, held *latchSet) bool {
+	if h := p.highHolder(level); h >= 0 {
+		return held.takeAt(&p.levels[h].n.gheader, p.levels[h].version)
 	}
-	return nil
+	return true
+}
+
+// nextFence is the lowest key past the leaf path leads to, the head of the
+// next leaf, nil on the right border; false where a racing reader finds the
+// node it reads it through changed since its descent.
+func (t *genericTree[K, V, O]) nextFence(p *gpath[K]) (*K, bool) {
+	for level := p.depth - 1; level >= 0; level-- {
+		l := &p.levels[level]
+		if l.edge+1 >= l.count {
+			continue
+		}
+		k, ok := t.separatorKey(l.n, l.edge+1)
+		if !t.owner && !l.n.latch.isUnchanged(l.version) {
+			return nil, false
+		}
+		if !ok {
+			return nil, false
+		}
+		return &k, true
+	}
+	return nil, true
 }
 
 func latchHeader(h *gheader, mode int) uint64 {
@@ -553,20 +623,11 @@ restart:
 				}
 			}
 			child := n.children[i].Load()
-			var low, high *K
-			if path != nil {
-				if i > 0 {
-					low = n.seps[i].Load()
-				}
-				if i+1 < count {
-					high = n.seps[i+1].Load()
-				}
-			}
 			if child == nil || !h.latch.isUnchanged(v) {
 				continue restart
 			}
 			if path != nil {
-				path.levels[path.depth] = gpathLevel[K]{n: n, version: v, edge: i, count: count, low: low, high: high}
+				path.levels[path.depth] = gpathLevel[K]{n: n, version: v, edge: i, count: count}
 				path.depth++
 			}
 			if child.leaf {
@@ -662,20 +723,20 @@ func commonPrefix(a, b string) int {
 // so an insert never moves it; a split, merge or borrow does, and the leaves
 // it changes refit to their new fences.
 
-// leafFences is the fences of internal node n's child edge: the separator
-// it hangs from, and the next, or n's own where it is the first or last.
-func leafFences[K any](n *ginner[K], edge int) (low, high *K) {
-	low = n.seps[edge&(nodeSize-1)].Load()
-	if edge+1 < int(n.count.Load()) {
-		return low, n.seps[(edge+1)&(nodeSize-1)].Load()
+// firstKey is leaf n's first key, which it holds, for the tree's own use.
+func (t *genericTree[K, V, O]) firstKey(n *gleaf[K, V]) K {
+	if prefixed[O, K]() {
+		return keyOfText[K](t.keyText(n, 0))
 	}
-	return low, n.high.Load()
+	return n.keyed()[0]
 }
 
-// fitChild is fitLeaf for leaf n, internal node parent's child edge.
-func (t *genericTree[K, V, O]) fitChild(n *gleaf[K, V], parent *ginner[K], edge int) {
-	low, high := leafFences(parent, edge)
-	t.fitLeaf(n, low, high)
+// leafLow is leaf n's low fence, its head, nil for the leftmost leaf.
+func (t *genericTree[K, V, O]) leafLow(n *gleaf[K, V]) *K {
+	if k, ok := t.head(n); ok {
+		return &k
+	}
+	return nil
 }
 
 // fitLeaf refits text leaf n, held, to its fences low and high, from its
@@ -775,9 +836,10 @@ func slotOrder[K any, V any](n *gleaf[K, V], i int, k *textProbe, p int) (order 
 }
 
 // refitInner sets internal node n's prefix, for text keys what its fences
-// share, and recomputes its codes or summaries from its separators, padding
-// the slots past its count. n is held.
-func (t *genericTree[K, V, O]) refitInner(n *ginner[K]) {
+// share, its low the head of its leftmost leaf and high given, and
+// recomputes its codes or summaries from its separators, padding the slots
+// past its count. n is held.
+func (t *genericTree[K, V, O]) refitInner(n *ginner[K], high *K) {
 	count := int(n.count.Load())
 	if !prefixed[O, K]() {
 		for i := 0; i < nodeSize; i++ {
@@ -786,13 +848,14 @@ func (t *genericTree[K, V, O]) refitInner(n *ginner[K]) {
 			case i == 0 && count > 0:
 				code = 0
 			case i < count:
-				code = windowKey[O](*n.seps[i].Load(), 0)
+				sep, _ := t.separatorKey(n, i)
+				code = windowKey[O](sep, 0)
 			}
 			n.codes[i].Store(code)
 		}
 		return
 	}
-	p := t.fencePrefix(n.seps[0].Load(), n.high.Load())
+	p := t.fencePrefix(t.lowFence(n), high)
 	n.prefix.Store(int32(p))
 	sums := n.sums()
 	for i := 0; i < nodeSize; i++ {
@@ -801,7 +864,8 @@ func (t *genericTree[K, V, O]) refitInner(n *ginner[K]) {
 		case i == 0 && count > 0:
 			sum = 0
 		case i < count:
-			sum = summaryOf(textView(n.seps[i].Load()), p)
+			sep, _ := t.separatorKey(n, i)
+			sum = summaryOf(textView(&sep), p)
 		}
 		storeSum(sums, i, sum)
 	}
