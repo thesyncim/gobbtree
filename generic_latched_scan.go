@@ -28,13 +28,16 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 			n, _ := t.descend(from, code, seek, false, shared, &path)
 			count, done, held := 0, false, int(n.count.Load())
 			for i := 0; i < held; i++ {
+				// A walk resumed from a leaf's last key may meet keys
+				// below the bounds: every key is checked against them.
 				k := t.key(n, i)
+				if !aboveLower[K, O](b, k) {
+					continue
+				}
 				if fenced {
 					if order := t.compare(k, from); order < 0 || past && order == 0 {
 						continue
 					}
-				} else if !aboveLower[K, O](b, k) {
-					continue
 				}
 				if !belowUpper[K, O](b, k) {
 					done = true
@@ -79,7 +82,7 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 		count, done := 0, false
 		for i := int(n.count.Load()) - 1; i >= 0; i-- {
 			k := t.key(n, i)
-			if fenced && t.compare(k, below) >= 0 || !fenced && !belowUpper[K, O](b, k) {
+			if !belowUpper[K, O](b, k) || fenced && t.compare(k, below) >= 0 {
 				continue
 			}
 			if !aboveLower[K, O](b, k) {
