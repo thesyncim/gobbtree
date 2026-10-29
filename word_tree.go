@@ -91,9 +91,8 @@ type wordTree struct {
 	// routesTop is the highest route bucket filled since the last clearing.
 	routesTop int
 	// tail is the last leaf inserted into while it was the rightmost, for
-	// appends past the largest key: by Tree, or by a Map's serial writers
-	// before readers. A split that adds a leaf after it fails its next link
-	// check; release clears it.
+	// appends past the largest key. A split that adds a leaf after it fails
+	// its next link check; release clears it.
 	tail *wordNode
 	// A deletion that leaves ancestors unchanged can be undone without
 	// another descent. Every following mutation consumes or invalidates it.
