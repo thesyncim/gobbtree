@@ -122,13 +122,13 @@ func descendText(h *gheader, s string) (*gheader, int, int) {
 
 // descendCode descends an owner's tree from h by code, the code of a key
 // that codes order exactly, with plain loads, and searches its leaf: the
-// leaf, the slot of the first code at least code, and whether it is code.
-// An internal node routes to its last child whose separator is at most
+// leaf, its slot for code, and whether code is there (seekCode). An
+// internal node routes to its last child whose separator is at most
 // code, counting codes no greater; its first, 0, always is, and slots past
 // its count, codePad, are only for the largest code, which the count caps.
-func descendCode(h *gheader, code uint64) (*gheader, int, bool) {
+func descendCode(h *gheader, code uint64, place bool) (*gheader, int, bool) {
 	if simd.Emulated() {
-		return descendCodeBy(h, code)
+		return descendCodeBy(h, code, place)
 	}
 	target := archsimd.BroadcastUint64x2(code)
 	for !h.leaf {
@@ -143,15 +143,8 @@ func descendCode(h *gheader, code uint64) (*gheader, int, bool) {
 		i := min(-int(sum.GetElem(0)+sum.GetElem(1)), count) - 1
 		h = plainPointer(&n.children[i&(nodeSize-1)])
 	}
-	n := (*leafRoute)(unsafe.Pointer(h))
-	count := owned(&n.count)
-	a := countEight((*[8]uint64)(n.codes[0:8]), target)
-	b := countEight((*[8]uint64)(n.codes[8:16]), target)
-	c := countEight((*[8]uint64)(n.codes[16:24]), target)
-	d := countEight((*[8]uint64)(n.codes[24:32]), target)
-	sum := a.Add(b).Add(c.Add(d))
-	lo := min(-int(sum.GetElem(0)+sum.GetElem(1)), count)
-	return h, lo, lo < count && n.codes[lo&(nodeSize-1)] == code
+	i, ok := seekCode((*leafRoute)(unsafe.Pointer(h)), owned(&h.count), code, place)
+	return h, i, ok
 }
 
 // countEightAtMost is countEight counting keys no greater than target.

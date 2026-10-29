@@ -172,6 +172,55 @@ func (r *codeHints) leafFor(d *leafDir, code uint64) *gheader {
 	return d.leaf(id &^ wordLeafID)
 }
 
+// hintedCode settles code through r's hint in an owner's tree, with plain
+// loads and one call, to the tag search: the leaf the hint names, code's
+// slot there and whether code is there, settled where the leaf holds it or
+// it lies between the leaf's first key and its last. Where place is true,
+// an absent code's slot is the one it would take. The cell is read as
+// latchedRoutes.leafFor reads it, written out.
+func hintedCode(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, i int, found, settled bool) {
+	if r == nil {
+		return nil, 0, false, false
+	}
+	c := r.cell(code)
+	if c == nil {
+		return nil, 0, false, false
+	}
+	head, tail := c.head, c.tail
+	if head <= hintDescend {
+		return nil, 0, false, false
+	}
+	q := r.fraction(code)
+	id := head & hintIDMask
+	if q >= head>>48&1023 {
+		id = head >> 24 & hintIDMask
+	}
+	if q >= head>>58|(tail>>48&15)<<6 {
+		id = tail & hintIDMask
+	}
+	if q >= tail>>52&1023 {
+		id = tail >> 24 & hintIDMask
+	}
+	if h = d.leaf(uint32(id)); h == nil {
+		return nil, 0, false, false
+	}
+	n := (*leafRoute)(unsafe.Pointer(h))
+	count := owned(&n.count)
+	i = firstTag(&n.tags, count, code)
+	if i < count && n.codes[i&(nodeSize-1)] == code {
+		return h, i, true, true
+	}
+	if count == 0 || code < n.codes[0] || code > n.codes[(count-1)&(nodeSize-1)] {
+		return nil, 0, false, false
+	}
+	if i < count || place {
+		// Another code has its tag, or its slot is asked for.
+		i = lowerCode(&n.codes, count, code)
+		return h, i, n.codes[i&(nodeSize-1)] == code, true
+	}
+	return h, i, false, true
+}
+
 // fill names in cell c the leaves that hold key's region, up to four, and
 // otherwise, where descend, marks it to descend. They are children of f.p,
 // key's leaf's parent, and where the region crosses its fences, of the
@@ -394,7 +443,7 @@ func (r *codeHints) fillAll(n *innerRoute, low, high uint64, g *innerRoute, gLow
 // descendCodeFilling is descendCode by calls to the search kernels, for an
 // owner's lookup its hint didn't settle: it fills code's cell in r from the
 // leaf's parent as it passes it.
-func descendCodeFilling(h *gheader, code uint64, r *codeHints) (*gheader, int, bool) {
+func descendCodeFilling(h *gheader, code uint64, r *codeHints, place bool) (*gheader, int, bool) {
 	var f hintFrame
 	low, high, edge := uint64(0), uint64(0), 0
 	for !h.leaf {
@@ -414,8 +463,6 @@ func descendCodeFilling(h *gheader, code uint64, r *codeHints) (*gheader, int, b
 		h = plainPointer(&n.children[i&(nodeSize-1)])
 	}
 	r.fillFrom(&f, code)
-	n := (*leafRoute)(unsafe.Pointer(h))
-	count := racingCount(h)
-	lo := lowerCode(&n.codes, count, code)
-	return h, lo, lo < count && n.codes[lo&(nodeSize-1)] == code
+	i, ok := seekCode((*leafRoute)(unsafe.Pointer(h)), racingCount(h), code, place)
+	return h, i, ok
 }

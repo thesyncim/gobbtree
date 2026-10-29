@@ -84,6 +84,11 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 			}
 			leafIDs++
 			n := asLeaf[K, V](h)
+			for i := range n.tags {
+				if want := uint8(0); i < count && exactCodes[O, K]() && n.tags[i] != uint8(n.codes[i]) || (i >= count || !exactCodes[O, K]()) && n.tags[i] != want {
+					t.Fatalf("leaf tag %d is %x, its code %x", i, n.tags[i], n.codes[i])
+				}
+			}
 			// A leaf's head is its separator, its low fence, and its first
 			// key; the leftmost leaf, and leaves of exact codes, have none.
 			if head, ok := tree.head(n); ok != (headed[O, K]() && low != nil) {

@@ -18,6 +18,7 @@ type innerRoute struct {
 // laid out as every gleaf begins.
 type leafRoute struct {
 	gheader
+	tags  [nodeSize]uint8
 	codes [nodeSize]uint64
 }
 
@@ -41,10 +42,26 @@ func textFits(n *leafRoute, s string, p int) bool {
 	return p <= 16 && len(s) <= p+16 && len(s) >= p && headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) == 0
 }
 
+// seekCode finds code in leaf n, of count entries: its slot, by its tag
+// where it has one, and whether it is there. Where it isn't and place is
+// true, the slot it would take; where no tag is its and place is false,
+// count, without reading the codes.
+func seekCode(n *leafRoute, count int, code uint64, place bool) (int, bool) {
+	i := firstTag(&n.tags, count, code)
+	if i < count && n.codes[i&(nodeSize-1)] == code {
+		return i, true
+	}
+	if i == count && !place {
+		return count, false
+	}
+	lo := lowerCode(&n.codes, count, code)
+	return lo, lo < count && n.codes[lo&(nodeSize-1)] == code
+}
+
 // descendCodeBy is descendCode by calls to the search kernels. An internal
 // node's codes are its separators', the first 0: the route is the last
 // child whose separator is at most code.
-func descendCodeBy(h *gheader, code uint64) (*gheader, int, bool) {
+func descendCodeBy(h *gheader, code uint64, place bool) (*gheader, int, bool) {
 	for !h.leaf {
 		n := (*innerRoute)(unsafe.Pointer(h))
 		count := owned(&n.count)
@@ -55,9 +72,8 @@ func descendCodeBy(h *gheader, code uint64) (*gheader, int, bool) {
 		}
 		h = plainPointer(&n.children[(i-1)&(nodeSize-1)])
 	}
-	n := (*leafRoute)(unsafe.Pointer(h))
-	lo := lowerCode(&n.codes, owned(&n.count), code)
-	return h, lo, lo < owned(&n.count) && n.codes[lo&(nodeSize-1)] == code
+	i, ok := seekCode((*leafRoute)(unsafe.Pointer(h)), owned(&h.count), code, place)
+	return h, i, ok
 }
 
 // descendTextBy is descendText by calls to the search kernels.

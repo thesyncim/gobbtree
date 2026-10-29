@@ -76,8 +76,14 @@ type gheader struct {
 // the count hold codePad, as lowerCode's vector kernels count every slot.
 // Its keys follow it in one allocation: a keyed leaf's as they are, a text
 // leaf's as bytes. A leaf whose codes are its keys (codeKeys) keeps none.
+// A leaf whose codes order its keys exactly keeps a tag for each, its
+// code's low byte, beside its count: a
+// lookup finds its key's slot by its tag, in the header's line, and reads
+// its code and value at once, as the word trees' leaves do, instead of
+// every code's line before its value's.
 type gleaf[K any, V any] struct {
 	gheader
+	tags   [nodeSize]uint8
 	codes  [nodeSize]uint64
 	values [nodeSize]V
 }

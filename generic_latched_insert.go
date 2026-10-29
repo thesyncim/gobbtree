@@ -409,6 +409,10 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 			keys[i] = ownKey[O](key)
 		}
 		n.codes[i] = windowKey[O](key, p)
+		if exactCodes[O, K]() {
+			copy(n.tags[i+1:count+1], n.tags[i:count])
+			n.tags[i] = uint8(n.codes[i])
+		}
 	}
 	n.values[i] = value
 	n.count.Store(int32(count + 1))
@@ -540,6 +544,10 @@ func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int, handOut bool) 
 	copy(n.values[i:count-1], n.values[i+1:count])
 	var zv V
 	n.codes[count-1], n.values[count-1] = codePad, zv
+	if exactCodes[O, K]() {
+		copy(n.tags[i:count-1], n.tags[i+1:count])
+		n.tags[count-1] = 0
+	}
 	if prefixed[O, K]() {
 		c := n.text()
 		copy(c.slots[i:count-1], c.slots[i+1:count])
@@ -601,8 +609,23 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 		src.codes[j] = codePad
 	}
 	clear(src.values[srcCount-count : srcCount])
+	if exactCodes[O, K]() {
+		retag(dst, dstCount+count)
+		retag(src, srcCount-count)
+	}
 	dst.count.Store(int32(dstCount + count))
 	src.count.Store(int32(srcCount - count))
+}
+
+// retag sets leaf n's tags from its first count codes, the rest to 0: a
+// key may have the padding's code.
+func retag[K any, V any](n *gleaf[K, V], count int) {
+	for j := range n.tags {
+		n.tags[j] = 0
+		if j < count {
+			n.tags[j] = uint8(n.codes[j])
+		}
+	}
 }
 
 // splitLeafEntries is moveLeafEntries into dst, empty, for text leaves: the

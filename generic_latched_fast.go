@@ -197,14 +197,25 @@ func (t *genericTree[K, V, O]) readHintedCode(n *gleaf[K, V], code uint64) (valu
 	if count <= 0 || count > nodeSize {
 		return value, false, false
 	}
-	first, last := m.codes[0], m.codes[(count-1)&(nodeSize-1)]
-	if code < first || code > last {
-		return value, false, false
+	// Code's slot by its tag; where none is its, or another code has it,
+	// code is absent only between the leaf's first key and its last.
+	lo := firstTag(&m.tags, count, code)
+	c := m.codes[lo&(nodeSize-1)]
+	acc := uint64(count) ^ uint64(lo)<<8 ^ c
+	if lo == count || c != code {
+		first, last := m.codes[0], m.codes[(count-1)&(nodeSize-1)]
+		if code < first || code > last {
+			return value, false, false
+		}
+		acc ^= first<<1 ^ last<<2
+		if lo < count {
+			lo = lowerCode(&m.codes, count, code)
+			c = m.codes[lo&(nodeSize-1)]
+			acc ^= uint64(lo)<<16 ^ c<<3
+		}
 	}
-	lo := lowerCode(&m.codes, count, code) & (nodeSize - 1)
-	c := m.codes[lo]
-	acc := uint64(count) ^ uint64(lo)<<8 ^ c ^ first<<1 ^ last<<2
-	if c == code {
+	lo &= nodeSize - 1
+	if lo < count && c == code {
 		found = true
 		value = m.values[lo]
 		if unsafe.Sizeof(value) == 8 {
@@ -264,9 +275,17 @@ func (t *genericTree[K, V, O]) readCodeLeaf(n *gleaf[K, V], word, code uint64) (
 	if count < 0 || count > nodeSize {
 		return value, false, false
 	}
-	lo := lowerCode(&n.codes, count, code) & (nodeSize - 1)
-	c := n.codes[lo]
+	// Code's slot by its tag, all of which feed the check: where none is
+	// its, code is absent; where another code has it, the codes settle it.
+	lo := firstTag(&n.tags, count, code)
+	c := n.codes[lo&(nodeSize-1)]
 	acc := uint64(count) ^ uint64(lo)<<8 ^ c
+	if lo < count && c != code {
+		lo = lowerCode(&n.codes, count, code)
+		c = n.codes[lo&(nodeSize-1)]
+		acc ^= uint64(lo)<<16 ^ c<<3
+	}
+	lo &= nodeSize - 1
 	if lo < count && c == code {
 		found = true
 		value = n.values[lo]

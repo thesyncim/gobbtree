@@ -9,5 +9,7 @@ func descendText(h *gheader, s string) (*gheader, int, int) { return descendText
 
 // descendCode descends an owner's tree from h by code, the code of a key
 // that codes order exactly, with plain loads, and searches its leaf: the
-// leaf, the slot of the first code at least code, and whether it is code.
-func descendCode(h *gheader, code uint64) (*gheader, int, bool) { return descendCodeBy(h, code) }
+// leaf, its slot for code, and whether code is there (seekCode).
+func descendCode(h *gheader, code uint64, place bool) (*gheader, int, bool) {
+	return descendCodeBy(h, code, place)
+}
