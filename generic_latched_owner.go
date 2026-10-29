@@ -64,7 +64,7 @@ func (t *genericTree[K, V, O]) ownerSeek(key K, code uint64) (n *gleaf[K, V], i 
 				tail = stringCode(s, owned(&n.prefix)+8)
 			}
 			j := lo & (nodeSize - 1)
-			if text := n.text(); text.tails[j] == tail && text.lens[j] == textLen(s) {
+			if slot := &n.text().slots[j]; slot.tail == tail && refLen(slot.ref) == len(s) {
 				return n, lo, true, true
 			}
 		}

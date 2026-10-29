@@ -77,14 +77,14 @@ type keyedLeaf[K any, V any] struct {
 	keys [nodeSize]K
 }
 
-// A text leaf also keeps, for each key, its window past the code's (tails)
-// and its length, saturated at 255 (lens), upstream's inline key and hash
-// tag (D14, D36): a key no longer than the prefix and 16 bytes is then
-// compared within the leaf, without reading its bytes.
+// A text leaf also keeps, for each key, its window past the code's (its
+// slot's tail) and its length, upstream's inline key and hash tag (D14,
+// D36): a key no longer than the prefix and 16 bytes is then compared
+// within the leaf, without reading its bytes.
 //
 // It keeps its keys' bytes in a buffer of its own, which holds no pointer
-// for the collector to scan, each key's at the offset and length its ref
-// gives: the leaf holds one pointer where it held one a key. Bytes are
+// for the collector to scan, each key's at the offset and length its slot's
+// ref gives: the leaf holds one pointer where it held one a key. Bytes are
 // written once, as the keys the tree hands out read them: a key the leaf
 // drops keeps its bytes, and a leaf that fills its buffer takes a new one
 // of its live keys, which leaves the old to whatever still reads it.
@@ -94,9 +94,7 @@ type textLeaf[K any, V any] struct {
 }
 
 type textColumns struct {
-	tails [nodeSize]uint64
-	lens  [nodeSize]uint8
-	refs  [nodeSize]uint64
+	slots [nodeSize]textSlot
 	// buf holds size bytes, the first used of them written. In an owner's
 	// tree, hole is a removed key's ref, bytes the next key may take while
 	// the buffer's epoch is past the tree's handed one.
@@ -106,8 +104,16 @@ type textColumns struct {
 	hole       uint64
 }
 
+// A text slot: a key's tail, and its ref, which a lookup reads together.
+type textSlot struct {
+	tail, ref uint64
+}
+
 // keyRef is the ref of a key of length bytes at offset in its leaf's buffer.
 func keyRef(offset, length int) uint64 { return uint64(offset)<<32 | uint64(length) }
+
+// refLen is the length of the key ref refers to.
+func refLen(ref uint64) int { return int(uint32(ref)) }
 
 // keyAt is the text ref gives in buf. An empty key reads no byte, so that
 // it points nowhere, not past the buffer's end.
@@ -153,7 +159,7 @@ func (t *genericTree[K, V, O]) reusable(n *gleaf[K, V]) bool {
 // keyText is text leaf n's key i as text, n held or owned.
 func (t *genericTree[K, V, O]) keyText(n *gleaf[K, V], i int) string {
 	c := n.text()
-	return keyAt(c.buf, c.refs[i&(nodeSize-1)])
+	return keyAt(c.buf, c.slots[i&(nodeSize-1)].ref)
 }
 
 // separator is leaf n's first key, boxed for a separator above it: a text
@@ -599,7 +605,7 @@ func (t *genericTree[K, V, O]) refitLeaf(n *gleaf[K, V]) {
 	}
 	for i := 0; i < count; i++ {
 		s := t.keyText(n, i)
-		n.codes[i], n.text().tails[i], n.text().lens[i] = stringCode(s, p), stringCode(s, p+8), textLen(s)
+		n.codes[i], n.text().slots[i].tail = stringCode(s, p), stringCode(s, p+8)
 	}
 }
 
@@ -622,20 +628,20 @@ func (t *genericTree[K, V, O]) refitColumns(n *gleaf[K, V]) bool {
 	switch {
 	case n.codes[0] != n.codes[last]:
 		d = bits.LeadingZeros64(n.codes[0]^n.codes[last]) / 8
-	case c.tails[0] != c.tails[last]:
-		d = 8 + bits.LeadingZeros64(c.tails[0]^c.tails[last])/8
-	case int(c.lens[0]) > q+16 && int(c.lens[last]) > q+16:
+	case c.slots[0].tail != c.slots[last].tail:
+		d = 8 + bits.LeadingZeros64(c.slots[0].tail^c.slots[last].tail)/8
+	case refLen(c.slots[0].ref) > q+16 && refLen(c.slots[last].ref) > q+16:
 		return false
 	}
-	d = min(d, int(c.lens[0])-q, int(c.lens[last])-q)
+	d = min(d, refLen(c.slots[0].ref)-q, refLen(c.slots[last].ref)-q)
 	if d <= 0 {
 		return true
 	}
 	p := q + d
 	for i := 0; i < count; i++ {
-		code, tail := n.codes[i], c.tails[i]
-		switch l := int(c.lens[i]); {
-		case l > q+16 || l == 255:
+		code, tail := n.codes[i], c.slots[i].tail
+		switch l := refLen(c.slots[i].ref); {
+		case l > q+16:
 			s := t.keyText(n, i)
 			code, tail = stringCode(s, p), stringCode(s, p+8)
 		case d >= 8:
@@ -643,20 +649,17 @@ func (t *genericTree[K, V, O]) refitColumns(n *gleaf[K, V]) bool {
 		default:
 			code, tail = code<<(8*d)|tail>>(64-8*d), tail<<(8*d)
 		}
-		n.codes[i], c.tails[i] = code, tail
+		n.codes[i], c.slots[i].tail = code, tail
 	}
 	n.setPrefix(t.keyText(n, 0), p)
 	return true
 }
 
-// textLen is a text key's length as a leaf keeps it, saturated at 255.
-func textLen(s string) uint8 { return uint8(min(len(s), 255)) }
-
 // textProbe is a text key as a leaf at prefix p compares it: its code and
-// tail windows there, and its kept length.
+// tail windows there, and its length.
 type textProbe struct {
 	code, tail uint64
-	len        uint8
+	len        int
 	settles    bool
 }
 
@@ -665,7 +668,7 @@ func probeText(s string, p int) textProbe {
 	if !ok {
 		tail = stringCode(s, p+8)
 	}
-	return textProbe{stringCode(s, p), tail, textLen(s), len(s) <= p+16 && len(s) < 255}
+	return textProbe{stringCode(s, p), tail, len(s), len(s) <= p+16}
 }
 
 // slotOrder orders text leaf n's key at slot i, whose code equals k's, at
@@ -673,14 +676,15 @@ func probeText(s string, p int) textProbe {
 // where a key fits its windows, a longer key extending the other. settled
 // is false where neither key fits, and their bytes must be compared.
 func slotOrder[K any, V any](n *gleaf[K, V], i int, k *textProbe, p int) (order int, settled bool) {
-	if tail := n.text().tails[i&(nodeSize-1)]; tail != k.tail {
-		if tail < k.tail {
+	slot := &n.text().slots[i&(nodeSize-1)]
+	if slot.tail != k.tail {
+		if slot.tail < k.tail {
 			return -1, true
 		}
 		return 1, true
 	}
-	l := n.text().lens[i&(nodeSize-1)]
-	fits := int(l) <= p+16 && l < 255
+	l := refLen(slot.ref)
+	fits := l <= p+16
 	switch {
 	case fits && k.settles:
 		return cmp.Compare(l, k.len), true
@@ -884,7 +888,7 @@ func (t *genericTree[K, V, O]) getText(key K, code uint64) (value V, found, done
 				if !ok {
 					// The candidate's bytes are read once the version
 					// holds: a racing buffer and ref may not match.
-					buf, ref = n.text().buf, n.text().refs[slot]
+					buf, ref = n.text().buf, n.text().slots[slot].ref
 				}
 				break
 			}

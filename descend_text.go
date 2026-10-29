@@ -38,7 +38,7 @@ const (
 // them. Its loads are plain.
 func textFits(n *leafRoute, s string, p int) bool {
 	h0, h1 := *(*uint64)(unsafe.Pointer(&n.head[0])), *(*uint64)(unsafe.Pointer(&n.head[1]))
-	return p <= 16 && len(s) <= p+16 && len(s) < 255 && len(s) >= p && headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) == 0
+	return p <= 16 && len(s) <= p+16 && len(s) >= p && headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) == 0
 }
 
 // descendTextBy is descendText by calls to the search kernels.

@@ -89,7 +89,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 					// A text key's bytes lie in its leaf's buffer, among those
 					// written.
 					c := n.text()
-					if ref := c.refs[i]; ref>>32+uint64(uint32(ref)) > uint64(c.used) || c.used > c.size || uint32(ref) > 0 && c.buf == nil {
+					if ref := c.slots[i].ref; ref>>32+uint64(uint32(ref)) > uint64(c.used) || c.used > c.size || uint32(ref) > 0 && c.buf == nil {
 						t.Fatalf("leaf key %d at %#x past the %d bytes of %d its buffer holds", i, ref, c.used, c.size)
 					}
 					if s := tree.keyText(n, i); !strings.HasPrefix(s, tree.sharedText()) {
@@ -100,7 +100,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 					t.Fatalf("leaf code %d is stale", i)
 				}
 				if prefixed[O, K]() {
-					if k := probeText(tree.keyText(n, i), p); n.text().tails[i] != k.tail || n.text().lens[i] != k.len {
+					if k := probeText(tree.keyText(n, i), p); n.text().slots[i].tail != k.tail || refLen(n.text().slots[i].ref) != k.len {
 						t.Fatalf("leaf tail or length %d is stale", i)
 					}
 				}
@@ -113,7 +113,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				c := n.text()
 				spans := [][2]uint64{}
 				for i := 0; i < count; i++ {
-					if r := c.refs[i]; uint32(r) > 0 {
+					if r := c.slots[i].ref; uint32(r) > 0 {
 						spans = append(spans, [2]uint64{r >> 32, r>>32 + uint64(uint32(r))})
 					}
 				}
@@ -131,7 +131,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				}
 			}
 			for i := count; i < nodeSize; i++ {
-				if prefixed[O, K]() && (n.text().tails[i] != 0 || n.text().lens[i] != 0 || n.text().refs[i] != 0) {
+				if prefixed[O, K]() && n.text().slots[i] != (textSlot{}) {
 					t.Fatalf("leaf slot %d past count %d keeps a tail or key", i, count)
 				}
 				if !prefixed[O, K]() && !reflect.ValueOf(&n.keyed()[i]).Elem().IsZero() {
@@ -700,8 +700,8 @@ func TestRefitColumns(t *testing.T) {
 			}
 			tr.reserveKeys(n, total)
 			for i, k := range keys {
-				n.text().refs[i] = tr.appendKey(n, k)
-				n.codes[i], n.text().tails[i], n.text().lens[i] = stringCode(k, q), stringCode(k, q+8), textLen(k)
+				n.text().slots[i] = textSlot{stringCode(k, q+8), tr.appendKey(n, k)}
+				n.codes[i] = stringCode(k, q)
 			}
 			n.count.Store(int32(count))
 			n.setPrefix(keys[0], q)
@@ -716,8 +716,8 @@ func TestRefitColumns(t *testing.T) {
 			t.Fatalf("%q at %d: prefix %d, want %d", keys, q, a.prefix.Load(), b.prefix.Load())
 		}
 		for i := range count {
-			if a.codes[i] != b.codes[i] || a.text().tails[i] != b.text().tails[i] || a.text().lens[i] != b.text().lens[i] {
-				t.Fatalf("%q at %d: key %d windows %x %x, want %x %x", keys, q, i, a.codes[i], a.text().tails[i], b.codes[i], b.text().tails[i])
+			if a.codes[i] != b.codes[i] || a.text().slots[i].tail != b.text().slots[i].tail || tr.keyText(a, i) != tr.keyText(b, i) {
+				t.Fatalf("%q at %d: key %d windows %x %x, want %x %x", keys, q, i, a.codes[i], a.text().slots[i].tail, b.codes[i], b.text().slots[i].tail)
 			}
 		}
 	}

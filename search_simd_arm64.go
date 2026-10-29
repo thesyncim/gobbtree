@@ -103,7 +103,7 @@ func descendText(h *gheader, s string) (*gheader, int, int) {
 	count, p := owned(&n.count), owned(&n.prefix)
 	// textFits, written out: as a call it spills what the search needs.
 	h0, h1 := *(*uint64)(unsafe.Pointer(&n.head[0])), *(*uint64)(unsafe.Pointer(&n.head[1]))
-	if !(p <= 16 && len(s) <= p+16 && len(s) < 255 && len(s) >= p && headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) == 0) {
+	if !(p <= 16 && len(s) <= p+16 && len(s) >= p && headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) == 0) {
 		return h, 0, textSearch
 	}
 	code := stringCode(s, p)

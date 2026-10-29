@@ -86,23 +86,23 @@ func (t *genericTree[K, V, O]) readTextLeaf(n *gleaf[K, V], word uint64, key K) 
 	// Key has the leaf's prefix where its first p bytes are the head's.
 	shares := len(s) >= p && headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) == 0
 	if shares {
-		code, length := stringCode(s, p), textLen(s)
+		code := stringCode(s, p)
 		tail, fast := fastWindow(s, p+8)
 		if !fast {
 			tail = stringCode(s, p+8)
 		}
-		if len(s) > p+16 || length == 255 {
+		if len(s) > p+16 {
 			// Too long to settle by windows.
 			return value, false, false
 		}
 		lo := lowerCode(&n.codes, count, code) & (nodeSize - 1)
 		c := n.codes[lo]
 		text := n.text()
-		slotTail, slotLen := text.tails[lo], text.lens[lo]
-		acc ^= uint64(lo)<<40 ^ c ^ slotTail<<3 ^ uint64(slotLen)<<48
+		slotTail, slotRef := text.slots[lo].tail, text.slots[lo].ref
+		acc ^= uint64(lo)<<40 ^ c ^ slotTail<<3 ^ slotRef<<5
 		// A slot past the count holds the padding, a code a key may share.
 		if lo < count && c == code {
-			if slotTail != tail || slotLen != length {
+			if slotTail != tail || refLen(slotRef) != len(s) {
 				// Another key of the same code: key may follow it.
 				return value, false, false
 			}
