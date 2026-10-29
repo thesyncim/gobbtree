@@ -287,6 +287,10 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 		// The merged node spans both: l's low fence and r's high.
 		high := t.childHigh(path, level, right)
 		if leaves {
+			if t.wordCodes() {
+				_, high := bounds(r)
+				setHigh(l, high)
+			}
 			t.moveLeafEntries(asLeaf[K, V](l), int(l.count.Load()), asLeaf[K, V](r), 0, int(r.count.Load()))
 			t.removeChild(parent, right)
 			t.fitLeaf(asLeaf[K, V](l), t.leafLow(asLeaf[K, V](l)), high)
@@ -324,6 +328,9 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 	sep, _ := t.separatorKey(parent, pairRight)
 	t.replaceSeparator(parent, pairRight, sep)
 	if leaves {
+		if t.wordCodes() {
+			setHigh(l, t.code(sep))
+		}
 		t.fitLeaf(asLeaf[K, V](l), t.leafLow(asLeaf[K, V](l)), &sep)
 		t.fitLeaf(asLeaf[K, V](r), &sep, high)
 		return

@@ -34,7 +34,8 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 	checkPrefix := func(h *gheader, any bool, keys func() []string) int {
 		p := int(h.prefix.Load())
 		if !prefixed[O, K]() || !any {
-			if p != 0 || h.head[0].Load() != 0 || h.head[1].Load() != 0 {
+			// Exact codes' leaves keep their bounds in head, checked apart.
+			if bounded := h.leaf && exactCodes[O, K](); p != 0 || !bounded && (h.head[0].Load() != 0 || h.head[1].Load() != 0) {
 				t.Fatalf("prefix %d on a node without one", p)
 			}
 			return p
@@ -101,6 +102,19 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 			if prefixed[O, K]() && count > 0 {
 				if want := tree.fencePrefix(low, high); int(h.prefix.Load()) != want {
 					t.Fatalf("leaf prefix %d, fences share %d", h.prefix.Load(), want)
+				}
+			}
+			// A leaf of exact codes keeps its bounds in its head, for the
+			// prefix it has none of: its first code, and a high fence at
+			// most the separator above it, 0 only on the right border.
+			if exactCodes[O, K]() {
+				first := uint64(0)
+				if count > 0 {
+					first = n.codes[0]
+				}
+				gotFirst, fence := bounds(h)
+				if gotFirst != first || (fence == 0) != (high == nil) || high != nil && fence > windowKey[O](*high, 0) {
+					t.Fatalf("leaf bounds %x %x, its first code %x, fence %v", gotFirst, fence, first, high)
 				}
 			}
 			p := checkPrefix(h, count > 0, func() []string {

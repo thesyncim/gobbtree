@@ -21,8 +21,8 @@ import (
 // is made and taken back as it is merged away. Descents fill cells from the
 // leaves' parents as they pass them, with the fences their routes read, as
 // nodes keep none; a new table is filled whole, for a root that has none or
-// has doubled its children since. A tree without two levels of internal
-// nodes keeps an empty one: no level would be skipped.
+// has doubled its children since; a tree whose root is its leaves' parent
+// keeps one too, whose hints skip the root.
 
 // leafDir is a tree's leaves by ID, ID 0 naming none. The leaves live in
 // blocks of leafBlock, the word trees' slabs: a leaf's address is its
@@ -267,13 +267,13 @@ func settleCode(h *gheader, code uint64, place bool) (i int, found, settled bool
 	if i < count && n.codes[i&(nodeSize-1)] == code {
 		return i, true, true
 	}
-	if count == 0 || code < n.codes[0] || code > n.codes[(count-1)&(nodeSize-1)] {
+	if first, high := bounds(h); !owns(count, first, high, code) {
 		return 0, false, false
 	}
 	if i < count || place {
 		// Another code has its tag, or its slot is asked for.
 		i = lowerCode(&n.codes, count, code)
-		return i, n.codes[i&(nodeSize-1)] == code, true
+		return i, i < count && n.codes[i&(nodeSize-1)] == code, true
 	}
 	return i, false, true
 }
@@ -377,7 +377,7 @@ func refreshCodeHints(slot *atomic.Pointer[codeHints], root *gheader) *codeHints
 		return current
 	}
 	r := &codeHints{top: root, topCount: count}
-	if first := plainPointer(&n.children[0]); first != nil && !first.leaf {
+	if first := plainPointer(&n.children[0]); first != nil {
 		span := sampleCodeSpan(n, count)
 		if span == 0 {
 			return nil
@@ -431,6 +431,15 @@ func codeShape(root *innerRoute) (leaves int, first, last uint64) {
 // children. Its reads race writers.
 func sampleCodeSpan(root *innerRoute, count int) uint64 {
 	var gaps []uint64
+	if first := plainPointer(&root.children[0]); first != nil && first.leaf {
+		// The root is the leaf parent.
+		codes := routeCodes(root)
+		for i := 1; i+1 < count; i++ {
+			if codes[i+1] > codes[i] {
+				gaps = append(gaps, codes[i+1]-codes[i])
+			}
+		}
+	}
 	for j := 0; j < count && len(gaps) < 256; j += max(count/8, 1) {
 		h := plainPointer(&root.children[j&(nodeSize-1)])
 		for depth := 0; h != nil && !h.leaf && depth < maxDepth; depth++ {

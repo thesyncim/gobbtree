@@ -63,7 +63,10 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 // Text keys skip what a node's keys share: prefix bytes every key of a leaf,
 // or every separator of an internal node past its own, begins with, the
 // first 16 of which head holds as windows. Codes are windows past them, so
-// they tell a node's keys apart where the keys differ.
+// they tell a node's keys apart where the keys differ. A leaf of keys that
+// codes order exactly, which have no prefix, keeps its bounds in head
+// instead: what a lookup checks that its hint named the leaf holding its
+// key, in the line it reads first (bounds).
 type gheader struct {
 	latch  nodeLatch
 	count  atomic.Int32
@@ -403,6 +406,8 @@ func (t *genericTree[K, V, O]) newLeaf() (*gleaf[K, V], uint64) {
 			n.prefix.Store(0)
 			n.leaf, n.id = true, id
 			n.tags = [nodeSize]uint8{}
+			n.head[0].Store(0)
+			n.head[1].Store(0)
 			for i := range n.codes {
 				n.codes[i] = codePad
 			}
@@ -1080,6 +1085,36 @@ func (t *genericTree[K, V, O]) start() {
 		t.root.Store(&n.gheader)
 	}
 }
+
+// bounds is a leaf of exact codes' bounds, read plainly: its first code
+// and a high fence, a code no key under it reaches and none of the next
+// leaf's is below, 0 on the tree's right border. Every key from its first
+// to the fence is the leaf's (owns): its own separator is at most its first
+// key, and the next leaf's at least the fence. The fence is the separator
+// above it, set by the split, merge or borrow that moves it, which hold the
+// leaf; any other change only raises that separator, which leaves the
+// fence below it.
+func bounds(h *gheader) (first, high uint64) {
+	return *(*uint64)(unsafe.Pointer(&h.head[0])), *(*uint64)(unsafe.Pointer(&h.head[1]))
+}
+
+// owns reports whether a leaf of bounds first and high, holding count
+// keys, is code's.
+func owns(count int, first, high, code uint64) bool {
+	return count > 0 && first <= code && (high == 0 || code < high)
+}
+
+// setFirst sets exact-code leaf n's first code to its own, 0 where empty.
+func (t *genericTree[K, V, O]) setFirst(n *gleaf[K, V], count int) {
+	first := uint64(0)
+	if count > 0 {
+		first = n.codes[0]
+	}
+	storeOrdered(&n.head[0], first)
+}
+
+// setHigh sets leaf h's high fence.
+func setHigh(h *gheader, high uint64) { storeOrdered(&h.head[1], high) }
 
 // wholeCodes is codeKeys for the hot paths, as wordCodes is exactCodes.
 func (t *genericTree[K, V, O]) wholeCodes() bool { return wordSized[O, K]() && t.whole }

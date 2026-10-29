@@ -205,13 +205,13 @@ func hintedCode(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, 
 	if i < count && n.codes[i&(nodeSize-1)] == code {
 		return h, i, true, true
 	}
-	if count == 0 || code < n.codes[0] || code > n.codes[(count-1)&(nodeSize-1)] {
+	if first, high := bounds(h); !owns(count, first, high, code) {
 		return nil, 0, false, false
 	}
 	if i < count || place {
 		// Another code has its tag, or its slot is asked for.
 		i = lowerCode(&n.codes, count, code)
-		return h, i, n.codes[i&(nodeSize-1)] == code, true
+		return h, i, i < count && n.codes[i&(nodeSize-1)] == code, true
 	}
 	return h, i, false, true
 }

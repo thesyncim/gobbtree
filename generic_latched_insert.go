@@ -328,6 +328,12 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 	// fences.
 	separator := t.firstKey(right)
 	t.setHead(right)
+	if t.wordCodes() {
+		// The halves' fences: the separator between them, and the leaf's.
+		_, high := bounds(&leaf.gheader)
+		setHigh(&right.gheader, high)
+		setHigh(&leaf.gheader, right.codes[0])
+	}
 	if prefixed[O, K]() {
 		var high *K
 		if path.depth > 0 {
@@ -422,6 +428,9 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 		}
 	}
 	n.values[i] = value
+	if t.wordCodes() && i == 0 {
+		t.setFirst(n, count+1)
+	}
 	n.count.Store(int32(count + 1))
 }
 
@@ -554,6 +563,9 @@ func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int, handOut bool) 
 	if t.wordCodes() {
 		copy(n.tags[i:count-1], n.tags[i+1:count])
 		n.tags[count-1] = 0
+		if i == 0 {
+			t.setFirst(n, count-1)
+		}
 	}
 	if prefixed[O, K]() {
 		c := n.text()
@@ -619,6 +631,8 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 	if t.wordCodes() {
 		retag(dst, dstCount+count)
 		retag(src, srcCount-count)
+		t.setFirst(dst, dstCount+count)
+		t.setFirst(src, srcCount-count)
 	}
 	dst.count.Store(int32(dstCount + count))
 	src.count.Store(int32(srcCount - count))

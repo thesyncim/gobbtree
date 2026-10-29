@@ -207,11 +207,11 @@ func (t *genericTree[K, V, O]) readHintedAt(n *gleaf[K, V], word, code uint64) (
 	c := m.codes[lo&(nodeSize-1)]
 	acc := uint64(count) ^ uint64(lo)<<8 ^ c
 	if lo == count || c != code {
-		first, last := m.codes[0], m.codes[(count-1)&(nodeSize-1)]
-		if code < first || code > last {
+		first, high := bounds(&m.gheader)
+		if !owns(count, first, high, code) {
 			return value, false, false
 		}
-		acc ^= first<<1 ^ last<<2
+		acc ^= first<<1 ^ high<<2
 		if lo < count {
 			lo = lowerCode(&m.codes, count, code)
 			c = m.codes[lo&(nodeSize-1)]
@@ -324,11 +324,11 @@ func (t *genericTree[K, V, O]) seekHinted(code uint64) (n *gleaf[K, V], word uin
 	if i < count && m.codes[i&(nodeSize-1)] == code {
 		return n, word, count, i, true, true
 	}
-	if code <= m.codes[0] || code >= m.codes[(count-1)&(nodeSize-1)] {
+	if first, high := bounds(&m.gheader); !owns(count, first, high, code) {
 		return nil, 0, 0, 0, false, false
 	}
 	i = lowerCode(&m.codes, count, code)
-	return n, word, count, i, m.codes[i&(nodeSize-1)] == code, true
+	return n, word, count, i, i < count && m.codes[i&(nodeSize-1)] == code, true
 }
 
 // insertHinted is insert through key's hint, for a policy that runs no
@@ -389,7 +389,7 @@ func (t *genericTree[K, V, O]) hintedLatched(code uint64, mode int) (*gleaf[K, V
 	default:
 		return nil, 0, false
 	}
-	if count := int(n.count.Load()); count > 0 && n.codes[0] <= code && code <= n.codes[(count-1)&(nodeSize-1)] {
+	if first, high := bounds(&n.gheader); owns(int(n.count.Load()), first, high, code) {
 		return n, version, true
 	}
 	unlatchHeader(&n.gheader, mode, version)
