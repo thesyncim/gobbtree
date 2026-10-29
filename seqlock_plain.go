@@ -2,12 +2,12 @@
 
 package gobbtree
 
-// Numeric writers bracket every change that optimistic readers can observe
-// with sequence or epoch increments, which readers validate after atomic
-// loads. On these targets that increment is a full barrier (amd64 LOCK XADD;
-// arm64 LDADDAL, which every Apple core and every ARMv8.1 core provides), so
-// the stores between the increments need no ordering of their own: a reader
-// that observes any of them also observes the odd epoch and retries. Aligned
-// word stores cannot tear, and torn multiword states are only ever discarded.
-// The race detector cannot see this protocol, so race builds keep atomic stores.
+// Writers change a node only while they hold its latch exclusively. Taking
+// it is a compare-and-swap, a full barrier on these targets (amd64 LOCK
+// CMPXCHG; arm64 CASAL, which every Apple core and every ARMv8.1 core
+// provides), and letting go is a release store that moves its version, so
+// the stores between need no ordering of their own: a reader that observes
+// any of them fails its version check and retries. Aligned word stores
+// cannot tear, and torn multiword states are only ever discarded. The race
+// detector cannot see this protocol, so race builds keep atomic stores.
 const seqlockPlainStores = true

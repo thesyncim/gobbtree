@@ -27,7 +27,6 @@ func (t *wordTree) storeRoute(index int, id uint32) { t.routes.ids[index] = id }
 
 // Cache leaf-parent nodes. A mutation refreshes only its highest changed
 // ancestor's interval; a new root or key domain rebuilds the whole directory.
-// Shared readers validate the structural epoch around atomic cell loads.
 func (t *wordTree) rebuildRoutes() {
 	t.routesDirty = false
 	dirty := t.routeNode

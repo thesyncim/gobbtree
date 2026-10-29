@@ -8,12 +8,12 @@ import (
 
 // Map is a concurrent ordered map. Its zero value is ready to use.
 //
-// With word-sized keys and values it shares one tree as upstream's
-// BBTreeMap does: lookups descend optimistically, checking each node's
-// version, writers latch only the leaf they change, and splits and merges
-// take only the nodes they change. Other keys lock single leaves under a
-// structural lock that splits and merges take exclusively. Scans copy a leaf
-// at a time and visit the copy with nothing held.
+// It shares one tree as upstream's BBTreeMap does: lookups descend
+// optimistically, checking each node's version, writers latch only the
+// leaf they change, and splits and merges take only the nodes they change.
+// Word-sized keys and values have nodes of their own; other keys and values
+// share the protocol over nodes of any type. Scans copy a leaf at a time and
+// visit the copy with nothing held.
 //
 // Do not copy a Map after first use. Read, Update, UpdateOrInsert and DeleteIf
 // callbacks run under the entry's latch and must not reenter the same Map.
