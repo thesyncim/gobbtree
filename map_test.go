@@ -47,9 +47,8 @@ func TestConcurrentMutation(t *testing.T) {
 		if got := checkLatchedTree(t, &words.tree); got != seqLen(m.All()) {
 			t.Fatalf("tree holds %d entries, want %d", got, seqLen(m.All()))
 		}
-	} else {
-		m.tree.length = seqLen(m.All())
-		checkCore(t, &m.tree)
+	} else if got := checkGenericTree(t, &m.generic); got != seqLen(m.All()) {
+		t.Fatalf("tree holds %d entries, want %d", got, seqLen(m.All()))
 	}
 	// Same-key updates must not lose increments.
 	m.Insert(-1, 0)
@@ -156,9 +155,8 @@ func TestConcurrentReadsScansAndStructure(t *testing.T) {
 		if got := checkLatchedTree(t, &words.tree); got != seqLen(m.All()) {
 			t.Fatalf("tree holds %d entries, want %d", got, seqLen(m.All()))
 		}
-	} else {
-		m.tree.length = seqLen(m.All())
-		checkCore(t, &m.tree)
+	} else if got := checkGenericTree(t, &m.generic); got != seqLen(m.All()) {
+		t.Fatalf("tree holds %d entries, want %d", got, seqLen(m.All()))
 	}
 }
 func TestMapCallbacksAndBatch(t *testing.T) {

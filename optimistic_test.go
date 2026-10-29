@@ -7,25 +7,6 @@ import (
 	"testing"
 )
 
-func TestRetiredImageStaysInvalid(t *testing.T) {
-	m := New[float64, uint64]()
-	for k := float64(0); k < 40; k += 2 {
-		m.Insert(k, uint64(k)*10)
-	}
-	beforeInsert := m.root.Load()
-	m.Insert(15, 150)
-	beforeDelete := m.root.Load()
-	m.Delete(15)
-	for _, old := range []*searchImage[float64, uint64, natural[float64]]{beforeInsert, beforeDelete} {
-		if _, _, valid := old.readValue(16, numericCode(float64(16)), &m.version, m.version.Load()); valid {
-			t.Fatal("retired image accepted a reused value slot")
-		}
-	}
-	if value, ok := m.Get(16); !ok || value != 160 {
-		t.Fatal("current image rejected its value")
-	}
-}
-
 func TestOptimisticReferenceValues(t *testing.T) {
 	type value struct {
 		Text    string
