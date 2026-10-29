@@ -31,6 +31,159 @@ fn key_of(mut x: u64, size: u64, pattern: &str) -> u64 {
         _ => mix(x + miss * size),
     }
 }
+// The string key of a `text` run for the pattern's key k, matching textKey
+// in cmd/compare.
+fn text_key(k: u64) -> String {
+    format!("user:{k:016x}")
+}
+// String-keyed cells, as `text` asks, matching text.go in cmd/compare: a
+// build from owned keys made beforehand; lookups that hit and miss; with
+// mutations, replacing values in place and removing entries to insert them
+// back with the keys the removals return; and the shared map's parallel
+// lookups. No timed operation allocates a key. Each value is its key's
+// pattern code.
+fn text(
+    size: u64,
+    rounds: usize,
+    threads: usize,
+    query_count: usize,
+    kind: &str,
+    mutations: bool,
+    key: &impl Fn(u64) -> u64,
+) {
+    let do_tree = kind == "all" || kind == "tree";
+    let do_map = kind == "all" || kind == "map";
+    let mut tree = unsync::BBTreeMap::<String, u64>::new();
+    let concurrent = BBTreeMap::<String, u64>::new();
+    let build = |name: &str, start: Instant, sum: u64| {
+        let elapsed = start.elapsed().as_nanos() as f64 / size as f64;
+        println!("{name} {elapsed:.3} ns/op checksum={}", black_box(sum));
+    };
+    if do_tree {
+        let entries: Vec<(String, u64)> = (0..size).map(|i| (text_key(key(i)), key(i))).collect();
+        let mut sum = 0_u64;
+        let start = Instant::now();
+        for (k, v) in entries {
+            sum = sum.wrapping_add(v);
+            tree.insert(k, v);
+        }
+        build("text_tree_build", start, sum);
+    }
+    if do_map {
+        let entries: Vec<(String, u64)> = (0..size).map(|i| (text_key(key(i)), key(i))).collect();
+        let mut sum = 0_u64;
+        let start = Instant::now();
+        for (k, v) in entries {
+            sum = sum.wrapping_add(v);
+            concurrent.insert(k, v).unwrap();
+        }
+        build("text_map_build", start, sum);
+    }
+    let mut codes = vec![0_u64; query_count];
+    let mut queries = vec![String::new(); query_count];
+    for hit in [true, false] {
+        let label = if hit { "hit" } else { "miss" };
+        for (i, (q, c)) in queries.iter_mut().zip(codes.iter_mut()).enumerate() {
+            let mut x = mix(i as u64 + 17) % size;
+            if !hit {
+                x += size;
+            }
+            *c = key(x);
+            *q = text_key(*c);
+        }
+        if do_tree {
+            let mut sum = 0_u64;
+            let start = Instant::now();
+            for _ in 0..rounds {
+                for q in black_box(&queries) {
+                    sum = sum.wrapping_add(tree.get(q.as_str()).copied().unwrap_or(0));
+                }
+            }
+            report(&format!("text_tree_{label}"), start, sum, rounds, query_count);
+        }
+        if do_map {
+            let mut sum = 0_u64;
+            let start = Instant::now();
+            for _ in 0..rounds {
+                for q in black_box(&queries) {
+                    sum = sum.wrapping_add(concurrent.get_copied(q.as_str()).unwrap_or(0));
+                }
+            }
+            report(&format!("text_map_{label}"), start, sum, rounds, query_count);
+        }
+    }
+    // The hit queries again, for the parallel lookups and the mutations.
+    for (i, (q, c)) in queries.iter_mut().zip(codes.iter_mut()).enumerate() {
+        *c = key(mix(i as u64 + 17) % size);
+        *q = text_key(*c);
+    }
+    if threads > 0 && do_map {
+        let (elapsed, sum) = parallel(threads, |worker| {
+            let mut sum = 0_u64;
+            for _ in 0..rounds {
+                let queries = black_box(&queries);
+                for i in 0..query_count {
+                    let q = &queries[(i + worker * 113) & (query_count - 1)];
+                    sum = sum.wrapping_add(concurrent.get_copied(q.as_str()).unwrap_or(0));
+                }
+            }
+            sum
+        });
+        let elapsed = elapsed / (threads * rounds * query_count) as f64;
+        println!("text_map_parallel{threads}_hit {elapsed:.3} ns/op checksum={}", black_box(sum));
+    }
+    if !mutations {
+        return;
+    }
+    if do_tree {
+        let mut sum = 0_u64;
+        let start = Instant::now();
+        for r in 0..rounds {
+            for (q, c) in black_box(&queries).iter().zip(&codes) {
+                let v = tree.get_mut(q.as_str()).unwrap();
+                sum = sum.wrapping_add(std::mem::replace(v, c ^ (r as u64 & 1)));
+            }
+        }
+        report("text_tree_replace", start, sum, rounds, query_count);
+        for (q, c) in queries.iter().zip(&codes) {
+            *tree.get_mut(q.as_str()).unwrap() = *c;
+        }
+        let mut sum = 0_u64;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            for (q, c) in black_box(&queries).iter().zip(&codes) {
+                let (k, v) = tree.remove_entry(q.as_str()).unwrap();
+                sum = sum.wrapping_add(v);
+                tree.insert(k, *c);
+            }
+        }
+        report("text_tree_churn_pair", start, sum, rounds, query_count);
+    }
+    if do_map {
+        let mut sum = 0_u64;
+        let start = Instant::now();
+        for r in 0..rounds {
+            for (q, c) in black_box(&queries).iter().zip(&codes) {
+                let old = concurrent.update(q.as_str(), |_, v| std::mem::replace(v, c ^ (r as u64 & 1)));
+                sum = sum.wrapping_add(old.unwrap());
+            }
+        }
+        report("text_map_replace", start, sum, rounds, query_count);
+        for (q, c) in queries.iter().zip(&codes) {
+            concurrent.update(q.as_str(), |_, v| *v = *c).unwrap();
+        }
+        let mut sum = 0_u64;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            for (q, c) in black_box(&queries).iter().zip(&codes) {
+                let (k, v) = concurrent.remove_entry(q.as_str()).unwrap();
+                sum = sum.wrapping_add(v);
+                concurrent.insert(k, *c).unwrap();
+            }
+        }
+        report("text_map_churn_pair", start, sum, rounds, query_count);
+    }
+}
 fn report(name: &str, start: Instant, sum: u64, rounds: usize, queries: usize) {
     let elapsed = start.elapsed().as_nanos() as f64 / (rounds * queries) as f64;
     println!("{name} {elapsed:.3} ns/op checksum={}", black_box(sum));
@@ -106,6 +259,13 @@ fn main() {
         .unwrap_or("mixed");
     assert!(matches!(pattern, "mixed" | "sequential" | "clustered"));
     let key = |x: u64| key_of(x, size, pattern);
+    if args.iter().any(|arg| arg == "text") {
+        let threads: usize = args.get(3).map_or(0, |v| v.parse().unwrap());
+        let mutations = args.get(6).is_some_and(|arg| arg == "mutations");
+        println!("upstream 1c72bd2 allocator={ALLOCATOR_NAME} n={size} rounds={rounds} queries={query_count} kind={kind} keys={pattern} text");
+        text(size, rounds, threads, query_count, kind, mutations, &key);
+        return;
+    }
     let scale_mix = args.iter().find_map(|arg| arg.strip_prefix("scale="));
     let ops: usize = args
         .iter()

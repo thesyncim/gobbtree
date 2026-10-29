@@ -166,6 +166,7 @@ def main():
     parser.add_argument("--mutations", action="store_true")
     parser.add_argument("--distinct", action="store_true")
     parser.add_argument("--keys", choices=["mixed", "sequential", "clustered"], default="mixed")
+    parser.add_argument("--text", action="store_true", help="run the string-keyed cells instead: each key as user: and 16 hex digits")
     scaling = parser.add_argument_group("core scaling (Map only, one cell per process)")
     scaling.add_argument("--scaling", action="store_true", help="run the core-scaling matrix instead of the rows above")
     scaling.add_argument("--workers", nargs="+", type=int, default=[1, 2, 4, 8, 12])
@@ -191,6 +192,8 @@ def main():
         parser.error("queries must be a power of two, at least eight")
     if args.baseline and args.keys != "mixed":
         parser.error("the baseline harness predates key patterns; use it with mixed keys")
+    if args.text and (args.baseline or args.standard or args.distinct):
+        parser.error("--text runs Tree and Map cells only, without a baseline or distinct churn")
     checksums = {}
     if args.mutations:
         checksums["replace"] = replacement_checksum(args.size, args.queries, args.rounds, args.keys)
@@ -226,6 +229,8 @@ def main():
                     command.append("distinct" if language == "rust" else "-distinct")
                 if args.keys != "mixed":
                     command.append(f"keys={args.keys}" if language == "rust" else f"-keys={args.keys}")
+                if args.text:
+                    command.append("text" if language == "rust" else "-text")
                 output = subprocess.check_output(command, text=True)
                 lines = output.splitlines()
                 cases = []
@@ -242,7 +247,7 @@ def main():
                     cases.append({"name": name, "ns_per_op": float(elapsed), "checksum": checksum})
                 if not cases:
                     raise RuntimeError("benchmark returned no operations")
-                print(json.dumps({"language": language, "kind": kind, "repeat": repeat, "entries": args.size, "queries": args.queries, "rounds": args.rounds, "threads": args.threads, "mutations": args.mutations, "distinct": args.distinct, "keys": args.keys, "distinct_queries": distinct_queries, "distinct_rounds": distinct_rounds, "build": lines[0], "cases": cases}), flush=True)
+                print(json.dumps({"language": language, "kind": kind, "repeat": repeat, "entries": args.size, "queries": args.queries, "rounds": args.rounds, "threads": args.threads, "mutations": args.mutations, "distinct": args.distinct, "keys": args.keys, "text": args.text, "distinct_queries": distinct_queries, "distinct_rounds": distinct_rounds, "build": lines[0], "cases": cases}), flush=True)
 
 
 if __name__ == "__main__":

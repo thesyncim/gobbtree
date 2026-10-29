@@ -52,8 +52,12 @@ def main():
     go_version = report["toolchains"]["go"].removeprefix("go")
     rust_version = report["toolchains"]["rust"]
     report_link = args.report.resolve().relative_to(ROOT).as_posix()
-    cpu, rss = defaultdict(list), defaultdict(list)
+    cpu, rss, texts = defaultdict(list), defaultdict(list), defaultdict(list)
     for row in report["cpu"]:
+        if row.get("text"):
+            for case in row["cases"]:
+                texts[row["entries"], row["language"], case["name"]].append(case["ns_per_op"])
+            continue
         if row["language"] in ("go", "rust") and row["kind"] in ("tree", "map"):
             for case in row["cases"]:
                 name = case["name"][len(row["kind"]) + 1:]
@@ -237,6 +241,8 @@ def main():
         text += [f"![Go versus Rust peak RSS, {name}](benchmarks/memory{suffix}-arm64.svg)", ""]
         text += memory_table(pattern)
         text += ["", "</details>", ""]
+    if texts:
+        text += string_key_section(texts)
     text += [f"Small gaps are within run-to-run noise. The [raw report]({report_link}) adds Go's built-in `map` and `sync.Map`; "
              "amd64 results are [CI artifacts](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml).", ""]
     readme = ROOT / "README.md"
@@ -246,6 +252,42 @@ def main():
     updated = old[:start] + "\n".join(text) + "\n" + old[end:]
     updated = re.sub(r"use source checkpoint `[0-9a-f]+`", f"use source checkpoint `{go_short}`", updated)
     readme.write_text(updated)
+
+
+TEXT_CASES = [
+    ("build", "Build, per insert"), ("hit", "Read hit"), ("miss", "Read miss"),
+    ("replace", "Replace value"), ("churn_pair", "Delete + reinsert same key"),
+    ("parallel4_hit", "4 workers · reads"),
+]
+
+
+def string_key_section(texts):
+    """The string-keyed cells: Go / Rust ns/op and Go's change, per size."""
+    sizes = sorted({entries for entries, _, _ in texts})
+    labels = {s: l for s, l in zip(SIZES, LABELS)}
+    rows = ["### String keys", "",
+            "`string` keys against Rust's `String`, each mixed key written as `user:` and 16 hex digits, "
+            "with `uint64` values. Rust's containers own their keys and Go's share the caller's "
+            "immutable strings, so no timed operation allocates a key on either side: the build moves "
+            "keys made beforehand, Rust replaces values with `update` and `get_mut`, and its churn "
+            "inserts back the key its removal returned.", "",
+            "| Workload | " + " | ".join(f"{labels.get(s, s)}: Go / Rust, ns" for s in sizes) + " |",
+            "|---|" + "---:|" * len(sizes)]
+    for kind in ("tree", "map"):
+        for case, label in TEXT_CASES:
+            name = f"text_{kind}_{case}"
+            if not any((s, "go", name) in texts for s in sizes):
+                continue
+            cells = []
+            for size in sizes:
+                go, rust = texts.get((size, "go", name)), texts.get((size, "rust", name))
+                if not go or not rust:
+                    cells.append("—")
+                    continue
+                g, r = median(go), median(rust)
+                cells.append(f"{g:.1f} / {r:.1f} ({100*(g/r-1):+.0f}%)")
+            rows.append(f"| {kind.title()} · {label} | " + " | ".join(cells) + " |")
+    return rows + [""]
 
 
 if __name__ == "__main__":

@@ -50,6 +50,7 @@ func main() {
 	pattern := flag.String("keys", "mixed", "key pattern: mixed, sequential, or clustered")
 	scaleMix := flag.String("scale", "", "run only the core-scaling cell read, r90, r50, replace, churn or scan, with -threads workers, on -kind map (the default), syncmap, or builtin behind a sync.RWMutex")
 	ops := flag.Int("ops", 1<<20, "operations per worker in the core-scaling cell")
+	text := flag.Bool("text", false, "run only the string-keyed cells (text.go) on -kind tree, map or all")
 	flag.Parse()
 	if *size <= 0 || *rounds <= 0 {
 		panic("size and rounds must be positive")
@@ -87,7 +88,16 @@ func main() {
 	doBuiltin := *kind == "builtin" || (*kind == "all" && *standard)
 	doSync := *kind == "syncmap" || (*kind == "all" && *standard)
 	hardware, width := gobbtree.SIMD()
-	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d queries=%d kind=%s keys=%s procs=%d serial_thread=locked\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds, *queryCount, *kind, *pattern, runtime.GOMAXPROCS(0))
+	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d queries=%d kind=%s keys=%s procs=%d serial_thread=locked", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds, *queryCount, *kind, *pattern, runtime.GOMAXPROCS(0))
+	if *text {
+		fmt.Println(" text")
+		if !doTree && !doMap {
+			panic("text runs tree and map kinds only")
+		}
+		runText(*kind, *size, *rounds, *threads, *queryCount, *mutations, keyAt)
+		return
+	}
+	fmt.Println()
 	tree := gobbtree.NewTree[uint64, uint64]()
 	concurrent := gobbtree.New[uint64, uint64]()
 	var builtin map[uint64]uint64
