@@ -28,8 +28,10 @@ func checkLatchedTree(t testing.TB, tr *latchedTree) int {
 		return 0
 	}
 	entries, last := 0, uint32(0)
+	reachable := map[uint32]bool{}
 	var walk func(id uint32, low, high uint64, bounded bool, isRoot bool)
 	walk = func(id uint32, low, high uint64, bounded bool, isRoot bool) {
+		reachable[id] = true
 		n := tr.node(id)
 		if n == nil {
 			t.Fatalf("node %#x outside the arena", id)
@@ -98,6 +100,17 @@ func checkLatchedTree(t testing.TB, tr *latchedTree) int {
 	walk(root, 0, 0, false, true)
 	if got := tr.rightmost.Load(); got != last {
 		t.Fatalf("appends go to %#x, the last leaf is %#x", got, last)
+	}
+	// Free pages: unheld, unreachable, and holding nothing, so that a stale
+	// pointer or hint to one starts over.
+	for _, head := range []uint32{tr.pages.freeLeaf, tr.pages.freeInner} {
+		for id := head; id != 0; id = tr.node(id).directory {
+			n := tr.node(id)
+			if reachable[id] || n.n != 0 || n.sequence.Load()&(latchExclusive|latchSharedMask) != 0 {
+				t.Fatalf("free page %#x: reachable %v, %d entries, latch %#x", id, reachable[id], n.n, n.sequence.Load())
+			}
+			reachable[id] = true
+		}
 	}
 	return entries
 }
@@ -301,5 +314,122 @@ func TestLatchedFillAndDrain(t *testing.T) {
 		}
 		stop.Store(true)
 		readers.Wait()
+	}
+}
+
+// TestLatchedHintsThroughStructure fills the route hints, then changes the
+// structure under them: removals that merge leaves and lower the root, and
+// inserts that split them and grow it. Every key must read, replace and
+// remove correctly through hints made stale, for every key distribution.
+func TestLatchedHintsThroughStructure(t *testing.T) {
+	keyings := map[string]func(uint64) uint64{
+		"sequential": func(i uint64) uint64 { return i * 2 },
+		"clustered":  func(i uint64) uint64 { return mixedKey(i>>10)&^(1<<20-1) | (i&1023)<<1 },
+		"mixed":      mixedKey,
+	}
+	for name, keyAt := range keyings {
+		t.Run(name, func(t *testing.T) {
+			const n = 60000
+			m := New[uint64, uint64]()
+			want := map[uint64]uint64{}
+			check := func(stage string) {
+				t.Helper()
+				for i := uint64(0); i < n; i++ {
+					k := keyAt(i)
+					v, ok := m.Get(k)
+					w, had := want[k]
+					if ok != had || v != w {
+						t.Fatalf("%s: get %d = %d %v, want %d %v", stage, k, v, ok, w, had)
+					}
+				}
+				keys := make([]uint64, 0, 64)
+				dst := make([]Result[uint64], 64)
+				for i := uint64(0); i+64 <= n; i += 64 {
+					keys = keys[:0]
+					for j := uint64(0); j < 64; j++ {
+						keys = append(keys, keyAt((i+j)*7919%n))
+					}
+					m.GetMany(keys, dst)
+					for j, k := range keys {
+						w, had := want[k]
+						if dst[j].OK != had || dst[j].Value != w {
+							t.Fatalf("%s: GetMany %d = %v, want %d %v", stage, k, dst[j], w, had)
+						}
+					}
+				}
+				if got := checkLatchedTree(t, &m.words.Load().tree); got != len(want) {
+					t.Fatalf("%s: tree holds %d, want %d", stage, got, len(want))
+				}
+			}
+			for i := uint64(0); i < n; i++ {
+				m.Insert(keyAt(i), i)
+				want[keyAt(i)] = i
+			}
+			check("built")
+			// Replace through the hints.
+			for i := uint64(0); i < n; i += 3 {
+				k := keyAt(i)
+				if old, ok := m.Insert(k, ^i); !ok || old != want[k] {
+					t.Fatalf("replace %d: %d %v", k, old, ok)
+				}
+				want[k] = ^i
+			}
+			check("replaced")
+			// Remove most keys: leaves merge, levels go, the root lowers.
+			for i := uint64(0); i < n; i++ {
+				if i%17 == 0 {
+					continue
+				}
+				k := keyAt(i)
+				if old, ok := m.Delete(k); !ok || old != want[k] {
+					t.Fatalf("delete %d: %d %v", k, old, ok)
+				}
+				delete(want, k)
+			}
+			check("drained")
+			// Refill in another order: leaves split and the root grows.
+			for i := uint64(n); i > 0; i-- {
+				k := keyAt(i - 1)
+				_, had := want[k]
+				if _, ok := m.Insert(k, i); ok != had {
+					t.Fatalf("refill %d: replaced %v, had %v", k, ok, had)
+				}
+				want[k] = i
+			}
+			check("refilled")
+		})
+	}
+}
+
+// TestTreeHintsRandomized runs random inserts, deletes and lookups on a Tree
+// against a model, checking the tree as hints go stale.
+func TestTreeHintsRandomized(t *testing.T) {
+	tr := NewTree[uint64, uint64]()
+	ref := map[uint64]uint64{}
+	rng := rand.New(rand.NewPCG(31, 41))
+	for i := 0; i < 200000; i++ {
+		k := rng.Uint64N(3000)
+		switch op := rng.IntN(10); {
+		case op < 5 || i < 3000:
+			old, ok := tr.Insert(k, uint64(i))
+			if w, had := ref[k]; ok != had || ok && old != w {
+				t.Fatalf("op %d: insert %d = %d %v, want %d %v", i, k, old, ok, w, had)
+			}
+			ref[k] = uint64(i)
+		case op < 8:
+			old, ok := tr.Delete(k)
+			if w, had := ref[k]; ok != had || ok && old != w {
+				t.Fatalf("op %d: delete %d = %d %v, want %d %v", i, k, old, ok, w, had)
+			}
+			delete(ref, k)
+		default:
+			v, ok := tr.Get(k)
+			if w, had := ref[k]; ok != had || v != w {
+				t.Fatalf("op %d: get %d = %d %v, want %d %v", i, k, v, ok, w, had)
+			}
+		}
+		if i%1000 == 0 {
+			checkWordTree(t, tr.words, len(ref))
+		}
 	}
 }

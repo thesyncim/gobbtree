@@ -2,7 +2,6 @@ package gobbtree
 
 import (
 	"math/bits"
-	"sync/atomic"
 )
 
 // Each bucket names the deepest node, a leaf parent or above, below the root
@@ -24,20 +23,7 @@ func (r *wordRoutes) lookup(key uint64) uint32 {
 	}
 	return 0
 }
-func (r *wordRoutes) lookupAtomic(key uint64) uint32 {
-	index := (key - r.base) >> r.shift
-	if index < uint64(len(r.ids)) {
-		return atomic.LoadUint32(&r.ids[index])
-	}
-	return 0
-}
-func (t *wordTree) storeRoute(index int, id uint32) {
-	if t.shared {
-		atomic.StoreUint32(&t.routes.ids[index], id)
-	} else {
-		t.routes.ids[index] = id
-	}
-}
+func (t *wordTree) storeRoute(index int, id uint32) { t.routes.ids[index] = id }
 
 // Cache leaf-parent nodes. A mutation refreshes only its highest changed
 // ancestor's interval; a new root or key domain rebuilds the whole directory.
@@ -81,8 +67,7 @@ func (t *wordTree) rebuildRoutes() {
 			t.routesTop = 0
 		}
 		// A changed domain rebuilds every cell below. Reuse equal-sized
-		// storage; shared readers validate the structural epoch around atomic
-		// cell loads, just as they do for an ordinary partial repair.
+		// storage.
 		t.routes = wordRoutes{base: base, shift: shift, depth: depth, ids: ids}
 	}
 	id := t.root

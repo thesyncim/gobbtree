@@ -2,9 +2,9 @@ package gobbtree
 
 import "testing"
 
-func TestSharedSeparatorRefit(t *testing.T) {
-	for _, atomicWrites := range []bool{false, true} {
-		tr := wordTree{shared: true, atomicWrites: atomicWrites}
+func TestSeparatorRefit(t *testing.T) {
+	for _, atomicWrites := range []bool{false} {
+		tr := wordTree{}
 		for _, count := range []int{8, 16, 24, 32} {
 			for first := 1; first+1 < count-1; first++ {
 				n := &wordNode{n: uint8(count)}

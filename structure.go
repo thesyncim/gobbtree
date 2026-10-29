@@ -21,9 +21,9 @@ type structuralGates struct {
 	lanes    [structuralLanes]structuralLane
 }
 
-// storeLock is a mutex for short critical sections: the serial writer's
-// and each numeric leaf's. Where stores stay ordered it is released by a
-// plain store instead of sync.Mutex's locked read-modify-write. Waiters
+// storeLock is a mutex for short critical sections: the serial writer's,
+// and the latched tree's pages'. Where stores stay ordered it is released by
+// a plain store instead of sync.Mutex's locked read-modify-write. Waiters
 // yield instead of parking.
 type storeLock struct{ state atomic.Uint32 }
 

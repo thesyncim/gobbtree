@@ -15,8 +15,9 @@ type wordNode struct {
 	level                 uint8
 	directory, prev, next uint32
 	tags                  [nodeSize]uint8
-	sequence              atomic.Uint64
-	// A shared tree's node fence above its keys: the lower bound of the
+	// A latched tree's node latch (word_latch.go); a Tree's nodes leave it.
+	sequence atomic.Uint64
+	// A latched tree's node fence above its keys: the lower bound of the
 	// next node's, 0 on the tree's right border (word_latched_routes.go).
 	high    uint64
 	payload [nodeSize]uint64
@@ -79,8 +80,6 @@ var _ [unsafe.Sizeof([nodeSize]uint64{}) - unsafe.Sizeof(wordInner{})]byte
 type wordTree struct {
 	root, free              uint32
 	freeInner               uint32
-	shared, atomicWrites    bool
-	readBlocks              []atomic.Pointer[wordNode]
 	rootNode                *wordNode
 	slabs                   []*wordNode
 	leafCursor, innerCursor uint32
@@ -159,9 +158,6 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 			}
 			nodes := make([]wordNode, wordSlabSize(len(t.slabs)))
 			t.slabs = append(t.slabs, &nodes[0])
-			if t.shared {
-				t.readBlocks = appendWordBlock(t.readBlocks, nodes)
-			}
 			slab, used = len(t.slabs)-1, 0
 			*cursor = uint32(slab) << 9
 		}
@@ -172,50 +168,16 @@ func (t *wordTree) alloc(leaf bool) uint32 {
 		id |= wordLeafID
 	}
 	n := t.node(id)
-	// Once optimistic reads start, shared slots keep their kind and mutex.
-	// Before that barrier, the structural lock excludes every reader and writer.
-	if t.shared && t.atomicWrites {
-		n.n, n.leaf, n.shift, n.level, n.directory = 0, leaf, 0, 0, 0
-		if leaf {
-			n.prev, n.next = 0, 0
-		} else {
-			atomic.StoreUint64(n.prefixWord(), 0)
-		}
-		for i := range n.keys {
-			atomic.StoreUint64(&n.keys[i], 0)
-		}
-		if leaf {
-			for i := range n.payload {
-				atomic.StoreUint64(&n.payload[i], 0)
-			}
-		} else {
-			for i := 0; i < nodeSize; i++ {
-				t.storeChild(n, i, 0)
-			}
-			clear(n.inner().inline[:])
-		}
-		n.storeTags([nodeSize]uint8{})
-		n.sequence.Store(0)
-	} else if reused {
+	if reused {
 		*n = wordNode{leaf: leaf}
 	} else {
 		n.leaf = leaf
 	}
-	if !t.atomicWrites {
-		if leaf {
-			n.padLeafPlain(0, nodeSize)
-		} else {
-			for i := range n.keys {
-				n.keys[i] = ^uint64(0)
-			}
-		}
-	} else if leaf {
-		for i := range n.entries() {
-			t.storeEntry(n, i, wordEntry{key: ^uint64(0)})
-		}
+	if leaf {
+		n.padLeafPlain(0, nodeSize)
 	} else {
 		for i := range n.keys {
-			t.storeKey(n, i, ^uint64(0))
+			n.keys[i] = ^uint64(0)
 		}
 	}
 	return id
@@ -266,44 +228,14 @@ func (t *wordTree) invalidateRoutes(n *wordNode) {
 
 func (t *wordTree) refit(n *wordNode) {
 	count := int(n.n)
-	if n.leaf && !t.atomicWrites {
+	if n.leaf {
 		n.refitLeafPlain(count)
-		if t.shared {
-			// publishNumeric's leaf summary: shift zero and the new count.
-			sequence := n.sequence.Load()
-			n.sequence.Store(sequence&^(wordSequenceStep-2) | uint64(count)<<1)
-		}
 		return
 	}
 	t.invalidateRoutes(n)
-	if n.leaf {
-		for i := 0; i < count; i++ {
-			if !t.shared {
-				n.tags[i] = uint8(n.keyAt(i))
-			}
-		}
-		for i := count; i < nodeSize; i++ {
-			t.storeEntry(n, i, wordEntry{key: ^uint64(0)})
-			if !t.shared {
-				n.tags[i] = 0
-			}
-		}
-		if t.shared {
-			n.publishNumeric(t.atomicWrites)
-		}
-		return
-	}
-	// Internal routing reads the key, inline and directory columns. Only the
-	// writer routes this way in a shared tree; its optimistic readers search
-	// the keys.
-	if t.atomicWrites {
-		for i := count; i < nodeSize; i++ {
-			t.storeKey(n, i, ^uint64(0))
-		}
-	} else {
-		for i := count; i < nodeSize; i++ {
-			n.keys[i] = ^uint64(0)
-		}
+	// Internal routing reads the key, inline and directory columns.
+	for i := count; i < nodeSize; i++ {
+		n.keys[i] = ^uint64(0)
 	}
 
 	n.shift = 0
@@ -329,9 +261,6 @@ func (t *wordTree) refit(n *wordNode) {
 	} else if n.directory != 0 {
 		t.freeDirectories = append(t.freeDirectories, n.directory)
 		n.directory = 0
-	}
-	if t.shared {
-		n.publishNumeric(t.atomicWrites)
 	}
 }
 
@@ -401,41 +330,11 @@ func (n *wordNode) appendLeafPlain(key, value uint64) {
 
 func (t *wordTree) insertLeaf(n *wordNode, i int, key, value uint64) {
 	t.noteInsert(n, i, key)
-	if !t.atomicWrites {
-		n.insertLeafPlain(i, key, value)
-		if t.shared {
-			n.sequence.Store(uint64(n.n) << 1)
-		}
-		return
-	}
-	if seqlockPlainStores {
-		// Inside the caller's leaf write; keep the epoch and odd bits.
-		n.insertLeafPlain(i, key, value)
-		n.sequence.Store(n.sequence.Load()&^(wordSequenceStep-2) | uint64(n.n)<<1)
-		return
-	}
-	count := int(n.n)
-	t.moveEntries(n, i+1, i, count-i)
-	t.storeEntry(n, i, wordEntry{key, value})
-	n.n++
-	if t.shared {
-		if t.atomicWrites {
-			n.insertTag(i, key)
-		} else {
-			copy(n.tags[i+1:count+1], n.tags[i:count])
-			n.tags[i] = uint8(key)
-			n.sequence.Store(uint64(n.n) << 1)
-		}
-	} else {
-		copy(n.tags[i+1:count+1], n.tags[i:count])
-		n.tags[i] = uint8(key)
-	}
+	n.insertLeafPlain(i, key, value)
 }
 
 func (t *wordTree) insert(key, value uint64) (uint64, bool) {
-	if !t.shared {
-		t.deletedLeaf = nil
-	}
+	t.deletedLeaf = nil
 	if t.root == 0 {
 		t.root = t.alloc(true)
 		t.rootNode = t.node(t.root)
@@ -445,11 +344,7 @@ func (t *wordTree) insert(key, value uint64) (uint64, bool) {
 	i := n.exactEntry(key)
 	if i < int(n.n) && n.entries()[i].key == key {
 		old := n.entries()[i].value
-		if t.shared {
-			atomic.StoreUint64(&n.entries()[i].value, value)
-		} else {
-			n.entries()[i].value = value
-		}
+		n.entries()[i].value = value
 		return old, true
 	}
 	return t.insertNew(n, i, key, value)
@@ -469,7 +364,7 @@ func (t *wordTree) insertNew(n *wordNode, i int, key, value uint64) (uint64, boo
 	}
 	// A cached leaf parent can absorb a split or a new separator without
 	// visiting ancestors, provided its own minimum and capacity stay valid.
-	if !t.shared {
+	{
 		if id := t.routes.lookup(key); id != 0 {
 			parent := t.node(id)
 			if parent.n < nodeSize && key >= parent.keys[0] {
@@ -494,59 +389,6 @@ func (t *wordTree) insertNew(n *wordNode, i int, key, value uint64) (uint64, boo
 		t.rebuildRoutes()
 	}
 	return 0, false
-}
-
-// The shared insertion path can start at a cached leaf parent while holding
-// the structural lock. Recheck the key after acquiring that lock.
-func (t *wordTree) insertSharedAtRoute(key, value uint64) bool {
-	id := t.routes.lookup(key)
-	if id == 0 {
-		return false
-	}
-	parent := t.node(id)
-	for parent.level > 1 {
-		parent = t.node(parent.inner().children[t.route(parent, key)])
-	}
-	if parent.n == nodeSize {
-		return false
-	}
-	index := t.route(parent, key)
-	leaf := t.node(parent.inner().children[index])
-	if leaf.n != nodeSize || key < leaf.entries()[0].key {
-		return false
-	}
-	position := leaf.exactEntry(key)
-	if position < int(leaf.n) && leaf.entries()[position].key == key {
-		return false
-	}
-	t.makeLeafRoom(parent, index, key, value)
-	if t.routesDirty {
-		t.rebuildRoutes()
-	}
-	return true
-}
-
-// The caller holds the structural lock, reached leaf through parent's child
-// index, and found key absent. Insert into a full leaf, or below an interior
-// separator, without another descent; otherwise report false.
-func (t *wordTree) insertAtParent(parent *wordNode, index int, leaf *wordNode, key, value uint64) bool {
-	if leaf.n == nodeSize {
-		if parent.n == nodeSize || key < leaf.entries()[0].key {
-			return false
-		}
-		t.makeLeafRoom(parent, index, key, value)
-	} else {
-		if index == 0 || leaf.n == 0 || key > leaf.entries()[0].key {
-			return false
-		}
-		t.insertLeaf(leaf, 0, key, value)
-		t.lowerKey(parent, index, key)
-		t.refitSeparators(parent, index, index)
-	}
-	if t.routesDirty {
-		t.rebuildRoutes()
-	}
-	return true
 }
 
 func (t *wordTree) insertAbsent(id uint32, key, value uint64) {
@@ -630,9 +472,7 @@ func (t *wordTree) removeChild(n *wordNode, i int) {
 	t.refit(n)
 }
 func (t *wordTree) deleteOwner(key uint64) (uint64, bool) {
-	if !t.shared {
-		t.deletedLeaf = nil
-	}
+	t.deletedLeaf = nil
 	if t.root == 0 {
 		return 0, false
 	}
@@ -653,9 +493,7 @@ func (t *wordTree) deleteOwner(key uint64) (uint64, bool) {
 }
 
 func (t *wordTree) delete(key uint64) (uint64, bool) {
-	if !t.shared {
-		t.deletedLeaf = nil
-	}
+	t.deletedLeaf = nil
 	if t.root == 0 {
 		return 0, false
 	}
@@ -668,7 +506,6 @@ func (t *wordTree) delete(key uint64) (uint64, bool) {
 		t.dropHints()
 		t.root, t.free, t.freeInner = 0, 0, 0
 		t.leafCursor, t.innerCursor = 0, 0
-		t.readBlocks = nil
 		t.rootNode = nil
 		t.tail = nil
 		t.routes = wordRoutes{}
@@ -727,29 +564,14 @@ func (t *wordTree) remove(id uint32, key uint64, leftmost bool) (uint64, bool) {
 	return value, true
 }
 
-// The caller has already found the entry and holds any required leaf latch.
+// The caller has already found the entry.
 func (t *wordTree) removeLeaf(n *wordNode, i int) uint64 {
 	value := n.entries()[i].value
 	t.moveEntries(n, i, i+1, int(n.n)-i-1)
-	if !t.shared || t.plainWrites() {
-		copy(n.tags[i:n.n-1], n.tags[i+1:n.n])
-	}
+	copy(n.tags[i:n.n-1], n.tags[i+1:n.n])
 	n.n--
 	t.storeEntry(n, int(n.n), wordEntry{key: ^uint64(0)})
-	if t.shared {
-		if t.atomicWrites && seqlockPlainStores {
-			// Inside the caller's leaf write; keep the epoch and odd bits.
-			n.tags[n.n] = 0
-			n.sequence.Store(n.sequence.Load()&^(wordSequenceStep-2) | uint64(n.n)<<1)
-		} else if t.atomicWrites {
-			n.deleteTag(i)
-		} else {
-			n.tags[n.n] = 0
-			n.sequence.Store(uint64(n.n) << 1)
-		}
-	} else {
-		n.tags[n.n] = 0
-	}
+	n.tags[n.n] = 0
 	return value
 }
 
@@ -951,20 +773,9 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	}
 	leftID, rightID := children[leftIndex], children[leftIndex+1]
 	left, right := t.node(leftID), t.node(rightID)
-	borrowedOuter := false
 	if int(left.n)+int(right.n) > 2*nodeSize-pairRedistributionSlack {
-		borrowed := -1
-		if t.shared && int(left.n)+int(right.n) == 2*nodeSize {
-			borrowed = t.borrowOuterLeaf(parent, index)
-		}
-		if borrowed >= 0 {
-			borrowedOuter = true
-			leftIndex = borrowed
-			left, right = t.node(children[leftIndex]), t.node(children[leftIndex+1])
-		} else {
-			t.splitLeafPair(parent, leftIndex, key, value)
-			return
-		}
+		t.splitLeafPair(parent, leftIndex, key, value)
+		return
 	}
 	leftCount, rightCount := int(left.n), int(right.n)
 	rank := 0
@@ -978,37 +789,10 @@ func (t *wordTree) makeLeafRoom(parent *wordNode, index int, key, value uint64) 
 	if rank < cut {
 		before--
 	}
-	if !t.atomicWrites && !borrowedOuter {
-		t.redistributePlain(left, right, before, rank, cut, key, value)
-	} else {
-		if before < leftCount {
-			moved := leftCount - before
-			t.moveEntries(right, moved, 0, rightCount)
-			t.copyEntries(right, 0, left.entries()[before:leftCount])
-		} else if before > leftCount {
-			moved := before - leftCount
-			t.copyEntries(left, leftCount, right.entries()[:moved])
-			t.moveEntries(right, 0, moved, rightCount-moved)
-		}
-		left.n, right.n = uint8(before), uint8(leftCount+rightCount-before)
-		target, position := left, rank
-		if rank >= cut {
-			target, position = right, rank-before
-		}
-		t.moveEntries(target, position+1, position, int(target.n)-position)
-		t.storeEntry(target, position, wordEntry{key, value})
-		target.n++
-		t.refit(left)
-		t.refit(right)
-	}
+	t.redistributePlain(left, right, before, rank, cut, key, value)
 	t.lowerKey(parent, leftIndex, left.keyAt(0))
 	t.storeKey(parent, leftIndex+1, right.keyAt(0))
-	if borrowedOuter {
-		// Borrowing can also change the outer sibling's separator.
-		t.refit(parent)
-	} else {
-		t.refitSeparators(parent, leftIndex, leftIndex+1)
-	}
+	t.refitSeparators(parent, leftIndex, leftIndex+1)
 }
 
 // splitRun splits full leaf index where an ascending run inserts, at
@@ -1039,18 +823,11 @@ func (t *wordTree) splitRun(parent *wordNode, index, i int, key, value uint64) {
 	}
 	leaf.next = extraID
 	// Past the leaf's last key, only its next link changed.
-	if t.atomicWrites {
-		if i < nodeSize {
-			t.refit(leaf)
-		}
-		t.refit(extra)
-	} else {
-		if i < nodeSize {
-			t.settleLeafPlain(leaf, nodeSize)
-		}
-		// The new leaf is already padded.
-		t.settleLeafPlain(extra, 0)
+	if i < nodeSize {
+		t.settleLeafPlain(leaf, nodeSize)
 	}
+	// The new leaf is already padded.
+	t.settleLeafPlain(extra, 0)
 	t.insertChild(parent, index+1, extraID)
 	if i == nodeSize {
 		t.noteInsert(extra, 0, key)
@@ -1104,12 +881,6 @@ func (t *wordTree) redistributePlain(left, right *wordNode, before, rank, cut in
 	} else {
 		right.insertLeafPlain(rank-before, key, value)
 	}
-	if t.shared {
-		for _, n := range [2]*wordNode{left, right} {
-			sequence := n.sequence.Load()
-			n.sequence.Store(sequence&^(wordSequenceStep-2) | uint64(n.n)<<1)
-		}
-	}
 }
 
 // After a plain rewrite of a leaf's first n entries, derive their tags and pad
@@ -1121,10 +892,6 @@ func (t *wordTree) settleLeafPlain(n *wordNode, previous int) {
 		n.tags[i] = uint8(entries[i].key)
 	}
 	n.padLeafPlain(count, previous)
-	if t.shared {
-		sequence := n.sequence.Load()
-		n.sequence.Store(sequence&^(wordSequenceStep-2) | uint64(count)<<1)
-	}
 }
 func (n *wordNode) padLeafPlain(from, to int) {
 	entries := n.entries()
@@ -1132,56 +899,6 @@ func (n *wordNode) padLeafPlain(from, to int) {
 		entries[i] = wordEntry{key: ^uint64(0)}
 		n.tags[i] = 0
 	}
-}
-
-// Move some free space across a full sibling before allocating another leaf.
-// The adjacent pair is refitted by makeLeafRoom after the insertion.
-func (t *wordTree) borrowOuterLeaf(parent *wordNode, index int) int {
-	// Avoid repeatedly borrowing one or two slots from nearly full leaves.
-	const maxBorrowCount = 3 * nodeSize / 4
-	children := &parent.inner().children
-	outside := -1
-	if index >= 2 && t.node(children[index-2]).n <= maxBorrowCount {
-		outside = index - 2
-	}
-	if index+2 < int(parent.n) && t.node(children[index+2]).n <= maxBorrowCount &&
-		(outside < 0 || t.node(children[index+2]).n < t.node(children[outside]).n) {
-		outside = index + 2
-	}
-	if outside < 0 {
-		return -1
-	}
-	outer := t.node(children[outside])
-	count := int(outer.n)
-	// Balance the available space across all three leaves.
-	moved := (2*(nodeSize-count) + 1) / 3
-	pair := index
-	var middle *wordNode
-	if outside < index {
-		middle = t.node(children[index-1])
-		t.copyEntries(outer, count, middle.entries()[:moved])
-		t.moveEntries(middle, 0, moved, nodeSize-moved)
-		pair--
-	} else {
-		middle = t.node(children[index+1])
-		t.moveEntries(outer, moved, 0, count)
-		t.copyEntries(outer, 0, middle.entries()[nodeSize-moved:])
-	}
-	middle.n -= uint8(moved)
-	// The caller searches this leaf before refitting it, and leaf searches
-	// count padded unused slots.
-	for i := int(middle.n); i < nodeSize; i++ {
-		t.storeEntry(middle, i, wordEntry{key: ^uint64(0)})
-	}
-	outer.n += uint8(moved)
-	t.refit(outer)
-	if outside < index {
-		// The middle leaf's first entries moved out to the outer leaf.
-		t.storeKey(parent, index-1, middle.keyAt(0))
-	} else {
-		t.storeKey(parent, outside, outer.keyAt(0))
-	}
-	return pair
 }
 
 // Redistribute a full leaf only when its pair has this many free slots;
@@ -1220,16 +937,10 @@ func (t *wordTree) splitLeafPair(parent *wordNode, index int, key, value uint64)
 		t.node(right.next).prev = extraID
 	}
 	right.next = extraID
-	if t.atomicWrites {
-		t.refit(left)
-		t.refit(right)
-		t.refit(extra)
-	} else {
-		// The new leaf is already padded.
-		t.settleLeafPlain(left, leftCount)
-		t.settleLeafPlain(right, rightCount)
-		t.settleLeafPlain(extra, 0)
-	}
+	// The new leaf is already padded.
+	t.settleLeafPlain(left, leftCount)
+	t.settleLeafPlain(right, rightCount)
+	t.settleLeafPlain(extra, 0)
 	t.lowerKey(parent, index, left.keyAt(0))
 	t.storeKey(parent, index+1, right.keyAt(0))
 	t.insertChild(parent, index+2, extraID)

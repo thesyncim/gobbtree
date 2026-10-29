@@ -10,8 +10,8 @@ import (
 )
 
 func TestWordArenaIDsAcrossSlabGrowth(t *testing.T) {
-	for _, shared := range []bool{false, true} {
-		tr := wordTree{shared: shared, atomicWrites: shared}
+	for _, shared := range []bool{false} {
+		tr := wordTree{}
 		live := make(map[uint32]uint64)
 		for i := 0; i < 16000; i++ {
 			leaf := i%23 != 0
@@ -195,9 +195,6 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 				t.Fatal("stale numeric routing column")
 			}
 		}
-		if tr.shared && n.sequence.Load()>>1&63 != uint64(n.n) {
-			t.Fatal("stale shared count")
-		}
 		for i := int(n.n); i < nodeSize; i++ {
 			if n.keyAt(i) != math.MaxUint64 || n.leaf && n.tags[i] != 0 {
 				t.Fatal("invalid numeric padding")
@@ -263,6 +260,10 @@ func checkWordTree(t testing.TB, tr *wordTree, length int) {
 				t.Fatal("live or cyclic free node")
 			}
 			seen[id] = true
+			// Hints check a leaf by what it holds: a freed one holds nothing.
+			if n := tr.node(id); n.leaf && n.n != 0 {
+				t.Fatal("freed numeric leaf holds entries")
+			}
 		}
 	}
 	if total != length {
@@ -374,7 +375,7 @@ func TestConcurrentNumericLayout(t *testing.T) {
 }
 
 func TestWordOuterLeafRedistribution(t *testing.T) {
-	for _, shared := range []bool{false, true} {
+	for _, shared := range []bool{false} {
 		for _, test := range []struct {
 			name   string
 			counts []int
@@ -392,7 +393,7 @@ func TestWordOuterLeafRedistribution(t *testing.T) {
 			{"two", []int{32, 32}, 0, true},
 		} {
 			t.Run(test.name, func(t *testing.T) {
-				tr := wordTree{shared: shared, atomicWrites: shared, keyKind: 1, valueKind: 1}
+				tr := wordTree{keyKind: 1, valueKind: 1}
 				tr.root = tr.alloc(false)
 				parent := tr.node(tr.root)
 				tr.rootNode = parent
@@ -529,7 +530,7 @@ func TestWordLeafSearchBounds(t *testing.T) {
 }
 
 func TestWordInternalRoutingBounds(t *testing.T) {
-	for _, shared := range []bool{false, true} {
+	for _, shared := range []bool{false} {
 		for distribution := 0; distribution < 6; distribution++ {
 			for count := 1; count <= nodeSize; count++ {
 				keys := make([]uint64, count)
@@ -555,7 +556,7 @@ func TestWordInternalRoutingBounds(t *testing.T) {
 				slices.Sort(keys)
 				n := &wordNode{n: uint8(count)}
 				copy(n.keys[:], keys)
-				tr := wordTree{shared: shared, atomicWrites: shared}
+				tr := wordTree{}
 				tr.refit(n)
 				probes := []uint64{0, math.MaxUint64}
 				for _, key := range keys {

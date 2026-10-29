@@ -144,8 +144,11 @@ func (t *latchedTree) take(leaf bool) uint32 {
 				panic("gobbtree: numeric arena exhausted")
 			}
 			nodes := make([]wordNode, wordSlabSize(len(p.slabs)))
+			// Readers index only below the length they loaded, so a slab
+			// goes into spare capacity before a new header publishes it;
+			// the directory doubles, not copies, as it grows.
 			p.slabs = append(p.slabs, &nodes[0])
-			dir := append([]*wordNode(nil), p.slabs...)
+			dir := p.slabs
 			t.blocks.Store(&dir)
 			slab, p.used = len(p.slabs)-1, 0
 		}
