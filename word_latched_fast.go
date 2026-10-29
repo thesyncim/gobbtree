@@ -207,6 +207,10 @@ func (t *latchedTree) splitAtParentHint(leaf *wordNode, leafID uint32, version, 
 // move just changed which leaf holds what there, and otherwise the next
 // key in each would descend to learn it.
 func (t *latchedTree) refillAround(parent *wordNode, key, low, high uint64) {
+	if !seqlockPlainStores {
+		// Only plain builds use hints (word_latched_routes.go).
+		return
+	}
 	r, d := plainPointer(&t.routes), plainPointer(&t.blocks)
 	// A hashed table's regions, such as clustered keys', mostly cross the
 	// parent's fences, which refill leaves to a descent.
