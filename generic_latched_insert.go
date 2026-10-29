@@ -230,26 +230,42 @@ func (t *genericTree[K, V, O]) insertSplitting(key K, code uint64, value V, poli
 // nothing changed, if one changed or is held. Otherwise it lets go of
 // everything, leaf included.
 func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVersion uint64, key K, code uint64, value V) bool {
-	depth := path.depth
-	room := -1
-	for level := depth - 1; level >= 0; level-- {
-		if path.levels[level].count < nodeSize {
-			room = level
-			break
-		}
-	}
-	top := max(room, 0)
+	top := path.room()
 	var held latchSet
-	for level := top; level < depth; level++ {
+	for level := top; level < path.depth; level++ {
 		if !held.takeAt(&path.levels[level].n.gheader, path.levels[level].version) {
 			held.unlock()
 			return false
 		}
 	}
+	index, _ := t.find(leaf, key, code)
 	var fresh latchSet
+	t.splitHeld(path, top, leaf, index, key, value, &fresh)
+	held.unlock()
+	leaf.latch.unlockExclusive(leafVersion)
+	fresh.unlock()
+	return true
+}
+
+// room is the lowest level of the path with room for a child, from which
+// the split's separator stops rising, or 0, where the root splits too.
+func (p *gpath[K]) room() int {
+	for level := p.depth - 1; level >= 0; level-- {
+		if p.levels[level].count < nodeSize {
+			return level
+		}
+	}
+	return 0
+}
+
+// splitHeld is split's change, made with the path from top down and leaf
+// held, or in an owner's tree, where no other goroutine reads them: leaf
+// splits and takes key and value at index, and the separator rises to the
+// path's level top, splitting the full nodes below it, or the root. The
+// nodes it makes are latched in fresh.
+func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K, V], index int, key K, value V, fresh *latchSet) {
 	right := newGLeaf[K, V](prefixed[O, K]())
 	fresh.push(&right.gheader, 0)
-	index, _ := t.find(leaf, key, code)
 	// A key past the leaf's last leaves it nearly full, as an ascending
 	// run refills the new leaf.
 	minimum := leafMinLen
@@ -266,7 +282,7 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 	separator := new(K)
 	*separator = right.keys[0]
 	carried := &right.gheader
-	for level := depth - 1; level >= top && carried != nil; level-- {
+	for level := path.depth - 1; level >= top && carried != nil; level-- {
 		n, edge := path.levels[level].n, path.levels[level].edge+1
 		if int(n.count.Load()) < nodeSize {
 			t.insertChild(n, edge, separator, carried)
@@ -300,10 +316,6 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 		t.refitInner(root)
 		t.root.Store(&root.gheader)
 	}
-	held.unlock()
-	leaf.latch.unlockExclusive(leafVersion)
-	fresh.unlock()
-	return true
 }
 
 // Node changes, made with the node held exclusively. Racing readers of

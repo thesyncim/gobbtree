@@ -153,10 +153,34 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 	}
 	if owned(&n.count) < nodeSize {
 		t.insertEntry(n, i, ownKey[O](key), value, fits)
-		var zero V
-		return zero, false
+	} else {
+		t.ownerSplit(n, i, key, code, value)
 	}
-	return t.insertSplitting(key, code, value, policy, merge)
+	var zero V
+	return zero, false
+}
+
+// ownerSplit splits leaf n, full, as split does, and inserts key and value
+// at i, where they go: by a plain descent that records key's path, and
+// with no latches taken, which no other goroutine of an owner's tree
+// contends; the nodes it makes start latched, and it lets them go.
+func (t *genericTree[K, V, O]) ownerSplit(n *gleaf[K, V], i int, key K, code uint64, value V) {
+	var path gpath[K]
+	h := plainPointer(&t.root)
+	for !h.leaf {
+		inner := asInner[K](h)
+		count := owned(&inner.count)
+		edge, _ := t.route(inner, key, code, count, false)
+		path.levels[path.depth] = gpathLevel[K]{n: inner, edge: edge, count: count}
+		path.depth++
+		h = plainPointer(&inner.children[edge&(nodeSize-1)])
+	}
+	if h != &n.gheader {
+		panic("gobbtree: an owner's split lost its leaf")
+	}
+	var fresh latchSet
+	t.splitHeld(&path, path.room(), n, i, key, value, &fresh)
+	fresh.unlock()
 }
 
 // ownerRemove is remove from an owner's tree: from its leaf where the leaf
