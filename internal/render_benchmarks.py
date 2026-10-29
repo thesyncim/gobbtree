@@ -1,19 +1,16 @@
-"""Render the checked-in Go/Rust report as SVG charts and README tables.
+"""Render the checked-in Go/Rust report as README cards and tables.
 
-Requires matplotlib; run from the repository root.
+The cards are upstream's (bbtree's design/assets/readme-race.svg): one
+workload, a row per container, each a ball whose one-way trip takes 0.6 s
+times gobbtree's throughput over its own. Run from the repository root.
 """
 import argparse
 import json
-import math
 import re
 from collections import defaultdict
+from html import escape
 from pathlib import Path
 from statistics import median
-
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 
 ROOT = Path(__file__).resolve().parent.parent
 REPORT = ROOT / "benchmarks/arm64-2026-10-29.json"
@@ -38,7 +35,8 @@ PATTERN_NOTES = {
     "sequential": "consecutive even keys; misses and fresh keys fill the gaps",
     "clustered": "runs of 1,024 consecutive even keys at scattered bases",
 }
-INK, MUTED, GRID, BG = "#172b43", "#5e7084", "#e2e8ef", "#f7f9fc"
+# The cards' workloads: 5M mixed uint64 keys, as upstream's 10M UUIDs.
+CARD_SIZE = 5000000
 
 
 def main():
@@ -53,7 +51,12 @@ def main():
     rust_version = report["toolchains"]["rust"]
     report_link = args.report.resolve().relative_to(ROOT).as_posix()
     cpu, rss, texts = defaultdict(list), defaultdict(list), defaultdict(list)
+    # Every case of every row, Go's built-in maps' among them, by name.
+    cases_by_name = defaultdict(list)
     for row in report["cpu"]:
+        if not row.get("text"):
+            for case in row["cases"]:
+                cases_by_name[row.get("keys", "mixed"), row["entries"], row["language"], case["name"]].append(case["ns_per_op"])
         if row.get("text"):
             for case in row["cases"]:
                 texts[row["entries"], row["language"], case["name"]].append(case["ns_per_op"])
@@ -85,107 +88,29 @@ def main():
         index = {"built": 0, "read": 1, "settled": 2}[metric]
         return median(r["stages"][index]["rss_bytes"] for r in rows) / 1e6
 
-    plt.rcParams.update({
-        "font.family": "DejaVu Sans", "font.size": 16,
-        "text.color": INK, "axes.labelcolor": MUTED,
-        "xtick.color": MUTED, "ytick.color": INK,
-        "svg.fonttype": "path", "svg.hashsalt": "gobbtree-benchmarks",
-    })
+    def mops(language, name):
+        return 1000/median(cases_by_name["mixed", CARD_SIZE, language, name])
 
-    def save(fig, name, title):
-        path = ROOT / "benchmarks" / f"{name}.svg"
-        fig.savefig(path, facecolor=BG,
-                    metadata={"Date": None, "Title": title,
-                              "Creator": "gobbtree benchmark renderer"})
-        path.write_text("\n".join(line.rstrip() for line in path.read_text().splitlines()) + "\n")
+    hardware = "Apple M4 Max"
+    concurrent = race_card(
+        "race-concurrent-arm64", "concurrent get, 4 threads", f"5M uint64 keys · {hardware} · M ops/s",
+        [("gobbtree Map", mops("go", "map_parallel4_hit")), ("bbtree (Rust)", mops("rust", "map_parallel4_hit"))],
+        [("sync.Map (unordered)", mops("go", "syncmap_parallel4_hit"))],
+        f"Concurrent get on 5M mixed uint64 keys, 4 threads, {hardware}, in million operations per second",
+        f"{report_link}: mixed, 5M entries, map_parallel4_hit and syncmap_parallel4_hit, medians of 3 runs.")
+    single = race_card(
+        "race-single-arm64", "get, single thread", f"5M uint64 keys · {hardware} · M ops/s",
+        [("gobbtree Tree", mops("go", "tree_hit")), ("bbtree (Rust)", mops("rust", "tree_hit"))],
+        [("Go map (unordered)", mops("go", "builtin_hit"))],
+        f"Get on 5M mixed uint64 keys, one thread, {hardware}, in million operations per second",
+        f"{report_link}: mixed, 5M entries, tree_hit and builtin_hit, medians of 3 runs.")
+    for path in (concurrent, single):
         if args.preview_dir:
             args.preview_dir.mkdir(parents=True, exist_ok=True)
-            fig.savefig(args.preview_dir / f"{name}.png", facecolor=BG, dpi=100)
-        plt.close(fig)
-
-    # One figure, a column per container: a row per workload, each
-    # measurement Go's speed relative to Rust's on a log scale, 1x parity.
-    def ratio_rows(kind):
-        rows = [("head", "uint64 keys", [])]
-        for case, title in cases[kind]:
-            rows.append(("row", title, [(time(p, size, kind, "rust", case)/time(p, size, kind, "go", case), i)
-                                        for p, _, _ in patterns for i, size in enumerate(SIZES)]))
-        for metric, title in (("build", "Build"), ("peak", "Peak memory")):
-            rows.append(("row", title, [(memory(p, size, kind, "rust", metric)/memory(p, size, kind, "go", metric), i)
-                                        for p, _, _ in patterns for i, size in enumerate(SIZES)]))
-        if texts:
-            rows.append(("head", "string keys", []))
-            for case, title in TEXT_CASES:
-                name = f"text_{kind}_{case}"
-                points = [(median(texts[s, "rust", name])/median(texts[s, "go", name]), SIZES.index(s))
-                          for s in SIZES if (s, "go", name) in texts and (s, "rust", name) in texts]
-                if points:
-                    rows.append(("row", title.replace(", per insert", ""), points))
-        return rows
-
-    columns = [(kind, ratio_rows(kind)) for kind in ("tree", "map")]
-    step, head_step, top, bottom = 26, 34, 128, 104
-    body = max(sum(head_step if r[0] == "head" else step for r in rows) for _, rows in columns)
-    height = top + body + bottom
-    width = 1240
-    fig = plt.figure(figsize=(width/72, height/72))
-    ax = fig.add_axes([0, 0, 1, 1])
-    ax.set(xlim=(0, width), ylim=(height, 0))
-    ax.axis("off")
-    low, high = math.log(1/4), math.log(4)
-    shades = ["#9fd8c4", "#5fb39a", "#24806b", "#0b4f42"]
-    ax.text(30, 34, "Go vs Rust", fontsize=24, weight="bold", va="center")
-    ax.text(30, 66, "Go's speed relative to Rust: one dot per measurement, right of 1× means Go is faster; "
-            "memory compares peak RSS", fontsize=14, color=MUTED, va="center")
-    for i, (name, shade) in enumerate(zip(LABELS, shades)):
-        ax.plot([36 + 120*i], [98], "o", color=shade, markersize=8)
-        ax.text(50 + 120*i, 98, name + " entries", fontsize=13, va="center")
-    ax.plot([532, 532], [90, 106], color=INK, linewidth=2.2)
-    ax.text(546, 98, "geometric mean", fontsize=13, va="center")
-    for c, (kind, rows) in enumerate(columns):
-        x0 = 30 + c*610
-        left, right = x0 + 200, x0 + 520
-
-        def x_of(ratio):
-            return left + (math.log(min(max(ratio, 1/4), 4)) - low)/(high - low)*(right - left)
-
-        y = top
-        ax.text(x0, y + 2, ("Tree · single owner" if kind == "tree" else "Map · concurrent").upper(),
-                fontsize=14, weight="bold", va="center")
-        body_top = y + 16
-        y = body_top
-        for row, title, points in rows:
-            if row == "head":
-                y += head_step
-                ax.text(x0, y - 10, title, fontsize=12, weight="bold", color=MUTED, va="center")
-                continue
-            y += step
-            cy = y - step/2
-            ratios = [r for r, _ in points]
-            mean = math.exp(sum(math.log(r) for r in ratios)/len(ratios))
-            ax.text(x0, cy, title, fontsize=13, va="center")
-            ax.plot([x_of(min(ratios)), x_of(max(ratios))], [cy, cy], color="#cfd8e3", linewidth=6,
-                    solid_capstyle="round", zorder=1)
-            for r, i in points:
-                ax.plot([x_of(r)], [cy], "o", color=shades[i], markersize=5.5, zorder=2, alpha=.9)
-            ax.plot([x_of(mean)]*2, [cy - 8, cy + 8], color=INK, linewidth=2.2, zorder=3)
-            ink = "#095d48" if mean > 1.05 else "#922f12" if mean < 1/1.05 else "#405469"
-            ax.text(right + 14, cy, f"{mean:.2f}×", fontsize=13, weight="bold", color=ink, va="center")
-        body_bottom = y + 4
-        ax.add_patch(Rectangle((left, body_top), x_of(1) - left, body_bottom - body_top,
-                               facecolor="#fbeee8", edgecolor="none", zorder=0))
-        for tick in (1/4, 1/2, 1, 2, 4):
-            x = x_of(tick)
-            ax.plot([x, x], [body_top, body_bottom], color=INK if tick == 1 else GRID,
-                    linewidth=1.2 if tick == 1 else .8, zorder=.5)
-            label = "1×" if tick == 1 else f"{tick:g}×" if tick > 1 else f"1/{1/tick:g}×"
-            ax.text(x, body_bottom + 16, label, fontsize=12, color=MUTED, ha="center", va="center")
-        ax.text(left, body_bottom + 38, "◀ Rust faster", fontsize=12, color="#922f12", va="center")
-        ax.text(right, body_bottom + 38, "Go faster ▶", fontsize=12, color="#095d48", va="center", ha="right")
-    ax.text(30, height - 12, f"Apple M4 Max · medians of 3 runs · Go {go_version} / {go_short} · Rust {rust_version} / {rust_short} · "
-            "uint64 rows: 4K–50M entries, mixed, sequential and clustered keys · string rows: 262K and 5M",
-            fontsize=11, color=MUTED, va="center")
-    save(fig, "summary-arm64", "Go's speed relative to Rust per workload, Tree and Map, uint64 and string keys")
+            (args.preview_dir / path.name).write_text(path.read_text())
+    stale = ROOT / "benchmarks/summary-arm64.svg"
+    if stale.exists():
+        stale.unlink()
 
     def timing_tables(pattern):
         rows = []
@@ -214,8 +139,8 @@ def main():
             f"on an Apple M4 Max, from [Go `{go_short}`](https://github.com/thesyncim/gobbtree/commit/{go_source}) and "
             f"[Rust `{rust_short}`](https://github.com/XiangpengHao/bbtree/tree/{rust_source}): medians of three fresh-process runs "
             "over identical datasets, with checked results.", "",
-            "![Go's speed relative to Rust for each workload, Tree and Map, uint64 and string keys](benchmarks/summary-arm64.svg)", "",
-            "Each dot is one measurement; `uint64` rows cover 4K to 50M entries with " +
+            "![gobbtree's Tree against Rust bbtree's and Go's map, get throughput on one thread](benchmarks/race-single-arm64.svg)", "",
+            "`uint64` tables cover 4K to 50M entries with " +
             ", ".join(f"{heading.lower()} ({PATTERN_NOTES[pattern]})" for pattern, heading, _ in patterns) +
             ". Batches are per key, churn is one deletion and one insertion, and parallel rows use four workers. "
             "Memory is whole-process peak RSS, including the Go runtime and GC headroom.", ""]
@@ -236,8 +161,84 @@ def main():
     start = old.index("## Benchmarks")
     end = old.index("## Reproducing the benchmarks", start)
     updated = old[:start] + "\n".join(text) + "\n" + old[end:]
+    # The concurrent card leads, after the introduction's list, as upstream's.
+    hero = "![gobbtree's Map against Rust bbtree's and sync.Map, get throughput at 4 threads](benchmarks/race-concurrent-arm64.svg)\n\n"
+    updated = re.sub(r"!\[[^\]]*\]\(benchmarks/race-concurrent-arm64\.svg\)\n\n", "", updated)
+    quick = updated.index("## Quick start")
+    updated = updated[:quick] + hero + updated[quick:]
     updated = re.sub(r"source checkpoint `[0-9a-f]+`", f"source checkpoint `{go_short}`", updated)
     readme.write_text(updated)
+
+
+def race_card(name, title, subtitle, rows, baselines, label, source):
+    """Write benchmarks/<name>.svg as upstream's race card: rows of
+    (container, M ops/s), the first gobbtree's, highlighted; baselines,
+    unordered, below a dashed rule. Returns the path."""
+    ours = rows[0][1]
+
+    def value(v):
+        return f"{v:.0f}" if v >= 100 else f"{v:.3g}"
+
+    def width(text):
+        return round(len(text) * 10.83)
+
+    def ball(y, v, style):
+        return (f'  <circle class="ball" cx="269" cy="{y - 8}" r="11" {style} '
+                f'style="animation-duration: {0.6 * ours / v:.2f}s"/>')
+
+    y = 106
+    body = []
+    for i, (container, v) in enumerate(rows):
+        if i == 0:
+            body += [f'  <rect class="highlight" x="22" y="{y - 20}" width="{width(container) + 12}" height="26" rx="4"/>',
+                     f'  <rect class="highlight" x="{680 - width(value(v)) - 16}" y="{y - 20}" width="{width(value(v)) + 16}" height="26" rx="4"/>',
+                     f'  <text class="ours" x="28" y="{y}">{escape(container)}</text>',
+                     f'  <line class="track" x1="258" y1="{y - 8}" x2="590" y2="{y - 8}"/>',
+                     ball(y, v, 'fill="#ffd60a" stroke="#18181b" stroke-width="2.5"'),
+                     f'  <text class="ours value" x="672" y="{y}">{value(v)}</text>', ""]
+        else:
+            body += [f'  <text x="28" y="{y}">{escape(container)}</text>',
+                     f'  <line class="track" x1="258" y1="{y - 8}" x2="590" y2="{y - 8}"/>',
+                     ball(y, v, 'fill="#3f3f46"'),
+                     f'  <text class="value" x="672" y="{y}">{value(v)}</text>', ""]
+        y += 40
+    if baselines:
+        rule = y - 40 + 16
+        body += [f'  <line class="track dashed" x1="28" y1="{rule}" x2="672" y2="{rule}" stroke-width="1.5"/>', ""]
+        y = rule + 32
+        for container, v in baselines:
+            body += [f'  <text class="faint" x="28" y="{y}">{escape(container)}</text>',
+                     f'  <line class="track dashed" x1="258" y1="{y - 8}" x2="590" y2="{y - 8}"/>',
+                     ball(y, v, 'fill="none" stroke="#71717a" stroke-width="2.5"'),
+                     f'  <text class="faint value" x="672" y="{y}">{value(v)}</text>', ""]
+            y += 40
+    height = y - 40 + 22
+    aria = (f"{label}: " + ", ".join(f"{c} {value(v)}" for c, v in rows) +
+            "".join(f"; {c.replace(' (unordered)', '')}, unordered, {value(v)}" for c, v in baselines) + ".")
+    svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="700" height="{height}" viewBox="0 0 700 {height}" role="img" aria-label="{escape(aria)}">',
+           f"  <!-- {escape(source)}",
+           "       A ball's one-way trip takes 0.6 s × (gobbtree's throughput / its throughput). -->",
+           "  <style>",
+           "    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 18px; font-weight: 600; fill: #18181b; }",
+           "    .title { font-weight: 800; }",
+           "    .muted { fill: #52525b; }",
+           "    .faint { fill: #71717a; }",
+           "    .ours { font-weight: 800; }",
+           "    .value { text-anchor: end; }",
+           "    .highlight { fill: #ffd60a; }",
+           "    .track { stroke: #a1a1aa; stroke-width: 3; stroke-linecap: round; }",
+           "    .dashed { stroke-dasharray: 4 6; }",
+           "    .ball { animation: bounce linear infinite alternate; }",
+           "    @keyframes bounce { to { transform: translateX(310px); } }",
+           "  </style>",
+           f'  <rect x="0.5" y="0.5" width="699" height="{height - 1}" rx="12" fill="#fafafa" stroke="#d4d4d8"/>',
+           "",
+           f'  <text class="title" x="28" y="40">{escape(title)}</text>',
+           f'  <text class="muted" x="28" y="66">{escape(subtitle)}</text>',
+           ""] + body[:-1] + ["</svg>", ""]
+    path = ROOT / "benchmarks" / f"{name}.svg"
+    path.write_text("\n".join(svg))
+    return path
 
 
 TEXT_CASES = [

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="700" height="216" viewBox="0 0 700 216" role="img" aria-label="Concurrent get on 5M mixed uint64 keys, 4 threads, Apple M4 Max, in million operations per second: gobbtree Map 56.9, bbtree (Rust) 35.2; sync.Map, unordered, 25.6.">
+  <!-- benchmarks/arm64-2026-10-29.json: mixed, 5M entries, map_parallel4_hit and syncmap_parallel4_hit, medians of 3 runs.
+       A ball's one-way trip takes 0.6 s × (gobbtree's throughput / its throughput). -->
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 18px; font-weight: 600; fill: #18181b; }
+    .title { font-weight: 800; }
+    .muted { fill: #52525b; }
+    .faint { fill: #71717a; }
+    .ours { font-weight: 800; }
+    .value { text-anchor: end; }
+    .highlight { fill: #ffd60a; }
+    .track { stroke: #a1a1aa; stroke-width: 3; stroke-linecap: round; }
+    .dashed { stroke-dasharray: 4 6; }
+    .ball { animation: bounce linear infinite alternate; }
+    @keyframes bounce { to { transform: translateX(310px); } }
+  </style>
+  <rect x="0.5" y="0.5" width="699" height="215" rx="12" fill="#fafafa" stroke="#d4d4d8"/>
+
+  <text class="title" x="28" y="40">concurrent get, 4 threads</text>
+  <text class="muted" x="28" y="66">5M uint64 keys · Apple M4 Max · M ops/s</text>
+
+  <rect class="highlight" x="22" y="86" width="142" height="26" rx="4"/>
+  <rect class="highlight" x="621" y="86" width="59" height="26" rx="4"/>
+  <text class="ours" x="28" y="106">gobbtree Map</text>
+  <line class="track" x1="258" y1="98" x2="590" y2="98"/>
+  <circle class="ball" cx="269" cy="98" r="11" fill="#ffd60a" stroke="#18181b" stroke-width="2.5" style="animation-duration: 0.60s"/>
+  <text class="ours value" x="672" y="106">56.9</text>
+
+  <text x="28" y="146">bbtree (Rust)</text>
+  <line class="track" x1="258" y1="138" x2="590" y2="138"/>
+  <circle class="ball" cx="269" cy="138" r="11" fill="#3f3f46" style="animation-duration: 0.97s"/>
+  <text class="value" x="672" y="146">35.2</text>
+
+  <line class="track dashed" x1="28" y1="162" x2="672" y2="162" stroke-width="1.5"/>
+
+  <text class="faint" x="28" y="194">sync.Map (unordered)</text>
+  <line class="track dashed" x1="258" y1="186" x2="590" y2="186"/>
+  <circle class="ball" cx="269" cy="186" r="11" fill="none" stroke="#71717a" stroke-width="2.5" style="animation-duration: 1.33s"/>
+  <text class="faint value" x="672" y="194">25.6</text>
+</svg>

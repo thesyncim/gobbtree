@@ -13,6 +13,8 @@ A Go port of [XiangpengHao/bbtree](https://github.com/XiangpengHao/bbtree). Node
 - **On disk.** Write a snapshot, then query it in place with `mmap`.
 - **Pure Go.** No assembly, cgo or dependencies. SIMD comes from Go's `simd` package (Go 1.27).
 
+![gobbtree's Map against Rust bbtree's and sync.Map, get throughput at 4 threads](benchmarks/race-concurrent-arm64.svg)
+
 ## Quick start
 
 ```sh
@@ -197,9 +199,9 @@ The kernel is chosen at run time. `gobbtree.SIMD()` reports the choice, and `GOD
 
 Go 1.27.3 with `GOEXPERIMENT=simd` against the Rust original (1.99.1, native CPU tuning, full LTO, mimalloc) on an Apple M4 Max, from [Go `c55ab0c`](https://github.com/thesyncim/gobbtree/commit/c55ab0c8f7a943599570bade089bae583d719081) and [Rust `1c72bd2`](https://github.com/XiangpengHao/bbtree/tree/1c72bd27994ed0a38694b029618e80115e22644f): medians of three fresh-process runs over identical datasets, with checked results.
 
-![Go's speed relative to Rust for each workload, Tree and Map, uint64 and string keys](benchmarks/summary-arm64.svg)
+![gobbtree's Tree against Rust bbtree's and Go's map, get throughput on one thread](benchmarks/race-single-arm64.svg)
 
-Each dot is one measurement; `uint64` rows cover 4K to 50M entries with mixed keys (hashed keys spread over the full 64-bit range), sequential keys (consecutive even keys; misses and fresh keys fill the gaps), clustered keys (runs of 1,024 consecutive even keys at scattered bases). Batches are per key, churn is one deletion and one insertion, and parallel rows use four workers. Memory is whole-process peak RSS, including the Go runtime and GC headroom.
+`uint64` tables cover 4K to 50M entries with mixed keys (hashed keys spread over the full 64-bit range), sequential keys (consecutive even keys; misses and fresh keys fill the gaps), clustered keys (runs of 1,024 consecutive even keys at scattered bases). Batches are per key, churn is one deletion and one insertion, and parallel rows use four workers. Memory is whole-process peak RSS, including the Go runtime and GC headroom.
 
 <details>
 <summary>Times, mixed keys — Go / Rust, ns/op</summary>
