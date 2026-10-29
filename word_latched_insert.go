@@ -186,7 +186,7 @@ func (t *latchedTree) insertSplitting(key, value uint64, policy int, merge func(
 		leaf, leafID, version := t.descend(key, exclusive, &path)
 		if path.depth > 0 {
 			// Its parent, for the next split's hint; the leaf is held.
-			leaf.directory = path.levels[path.depth-1].id
+			setParentHint(leaf, path.levels[path.depth-1].id)
 		}
 		old, found, done := insertIntoReleasing(leaf, version, key, value, policy, merge)
 		if done {
@@ -458,7 +458,7 @@ func (t *latchedTree) split(path *treePath, leaf *wordNode, leafID uint32, leafV
 		if int(n.n) < nodeSize {
 			insertChildFit(n, edge, separator, carried)
 			if level == depth-1 {
-				right.directory = path.levels[level].id
+				setParentHint(right, path.levels[level].id)
 			}
 			carried = 0
 			break
@@ -476,13 +476,20 @@ func (t *latchedTree) split(path *treePath, leaf *wordNode, leafID uint32, leafV
 			insertChildFit(split, edge-cut, separator, carried)
 		}
 		if level == depth-1 {
-			// The leaves' parents, for the next splits' hints.
-			leaf.directory, right.directory = path.levels[level].id, path.levels[level].id
-			if edge-1 >= cut {
-				leaf.directory = splitID
+			// The leaves' parents, for the next splits' hints: the leaves
+			// moved to split, and the two this split made.
+			for j := 0; j < int(split.n); j++ {
+				if child := split.inner().children[j]; child != rightID {
+					setParentHint(t.node(child), splitID)
+				}
 			}
+			setParentHint(leaf, path.levels[level].id)
+			if edge-1 >= cut {
+				setParentHint(leaf, splitID)
+			}
+			setParentHint(right, path.levels[level].id)
 			if !left {
-				right.directory = splitID
+				setParentHint(right, splitID)
 			}
 		}
 		separator, carried = split.keys[0], splitID
@@ -498,7 +505,8 @@ func (t *latchedTree) split(path *treePath, leaf *wordNode, leafID uint32, leafV
 		insertChildFit(root, 0, 0, t.root.Load())
 		insertChildFit(root, 1, separator, carried)
 		if depth == 0 {
-			leaf.directory, right.directory = rootID, rootID
+			setParentHint(leaf, rootID)
+			setParentHint(right, rootID)
 		}
 		t.root.Store(rootID)
 	}

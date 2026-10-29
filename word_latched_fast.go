@@ -143,6 +143,13 @@ func (t *latchedTree) upgradeHinted(key uint64) (leaf *wordNode, leafID uint32, 
 	return n, id, word, i, true
 }
 
+// A leaf's parent hint, in its directory field: the internal node that held
+// it when a descent or a split last saw it, so that its next split finds the
+// parent without a descent. Whoever holds the leaf or its parent may store
+// one; splitAtParentHint checks it, so a stale one costs only a descent.
+func parentHint(n *wordNode) uint32       { return atomic.LoadUint32(&n.directory) }
+func setParentHint(n *wordNode, id uint32) { atomic.StoreUint32(&n.directory, id) }
+
 // splitAtParentHint makes room for key in leaf, full and held from version,
 // through the parent its hint names, without a descent: a split or a move
 // to a sibling needs only the parent while it has room. The parent is taken
@@ -151,7 +158,7 @@ func (t *latchedTree) upgradeHinted(key uint64) (leaf *wordNode, leafID uint32, 
 // meanwhile reports false, with nothing changed and the leaf still held.
 // Otherwise everything is let go.
 func (t *latchedTree) splitAtParentHint(leaf *wordNode, leafID uint32, version, key, value uint64) bool {
-	parentID := leaf.directory
+	parentID := parentHint(leaf)
 	if parentID == 0 || parentID&wordLeafID != 0 {
 		return false
 	}
@@ -182,10 +189,35 @@ func (t *latchedTree) splitAtParentHint(leaf *wordNode, leafID uint32, version, 
 	path.depth = 1
 	// A key past the leaf's last splits it nearly full, as insertSplitting.
 	if key < leaf.entries()[nodeSize-1].key && t.redistribute(&path, leaf, key, value) {
+		low, high := lowFence(leaf), highFence(leaf)
 		leaf.unlockExclusive(version)
+		t.refillAround(parent, key, low, high)
 		return true
 	}
-	return t.split(&path, leaf, leafID, version, key, value)
+	if !t.split(&path, leaf, leafID, version, key, value) {
+		return false
+	}
+	// The leaf's fences, read racing as hints are, bound what moved.
+	t.refillAround(parent, key, lowFence(leaf), highFence(leaf))
+	return true
+}
+
+// refillAround names, in the hint cells of key and of the fences of the
+// leaf it went to, the leaves of parent that hold them now: a split or a
+// move just changed which leaf holds what there, and otherwise the next
+// key in each would descend to learn it.
+func (t *latchedTree) refillAround(parent *wordNode, key, low, high uint64) {
+	r, d := plainPointer(&t.routes), plainPointer(&t.blocks)
+	// A hashed table's regions, such as clustered keys', mostly cross the
+	// parent's fences, which refill leaves to a descent.
+	if r == nil || d == nil || r.hashed {
+		return
+	}
+	r.refill(*d, key, parent)
+	r.refill(*d, low, parent)
+	if high != 0 {
+		r.refill(*d, high, parent)
+	}
 }
 
 // getOrdered is get's optimistic descent with plain loads only

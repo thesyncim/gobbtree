@@ -126,6 +126,19 @@ func (r *latchedRoutes) leafFor(c *hintCell, key uint64) uint32 {
 // under g, p's parent, which reached p at edge; g is nil at the root. Its
 // reads race writers; a hint is checked where used.
 func (r *latchedRoutes) fill(dir []*wordNode, c *hintCell, key uint64, p, g *wordNode, edge int) {
+	r.fillFrom(dir, c, key, p, g, edge, true)
+}
+
+// refill is fill after a split or a move between p's leaves, without p's
+// parent: it names the leaves only where p holds all of key's region, and
+// otherwise leaves the cell as it was.
+func (r *latchedRoutes) refill(dir []*wordNode, key uint64, p *wordNode) {
+	if c := r.cell(key); c != nil {
+		r.fillFrom(dir, c, key, p, nil, 0, false)
+	}
+}
+
+func (r *latchedRoutes) fillFrom(dir []*wordNode, c *hintCell, key uint64, p, g *wordNode, edge int, descend bool) {
 	start := r.base + ((key-r.base)>>r.shift)<<r.shift
 	end := start + (uint64(1)<<r.shift - 1)
 	if end < start {
@@ -141,7 +154,11 @@ func (r *latchedRoutes) fill(dir []*wordNode, c *hintCell, key uint64, p, g *wor
 		span.add(r, nodeOf(dir, g, edge+1), high, end)
 	}
 	head, tail := uint64(hintDescend), uint64(0)
-	if span.n > 0 && span.n <= 4 && span.covers(start, end) {
+	covered := span.n > 0 && span.n <= 4 && span.covers(start, end)
+	if !covered && !descend {
+		return
+	}
+	if covered {
 		ids, cuts := span.ids, [3]uint64{1023, 1023, 1023}
 		for i := span.n; i < 4; i++ {
 			ids[i] = ids[span.n-1]
