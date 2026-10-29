@@ -48,7 +48,7 @@ func (t *genericTree[K, V, O]) removeLatched(seek int, key K, code uint64, condi
 	n, version := t.leafLatched(key, code, seek, exclusive)
 	defer n.latch.unlockExclusive(version)
 	i, ok := t.target(n, seek, key, code)
-	if !ok || condition != nil && !condition(n.keys[i], n.values[i]) {
+	if !ok || condition != nil && !condition(t.key(n, i), n.values[i]) {
 		return k, v, false, true
 	}
 	if int(n.count.Load()) <= leafMinLen && t.root.Load() != &n.gheader {
@@ -73,7 +73,7 @@ func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, code uint64, c
 		}
 	}()
 	i, ok := t.target(n, seek, key, code)
-	if !ok || condition != nil && !condition(n.keys[i], n.values[i]) {
+	if !ok || condition != nil && !condition(t.key(n, i), n.values[i]) {
 		return k, v, false, true
 	}
 	// Another goroutine may have filled the leaf since.
@@ -166,7 +166,7 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(parent *ginner[K], index int, l
 	case sibling < index && leaves:
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
 		t.moveLeafEntries(c, 0, o, int(o.count.Load())-1, 1)
-		t.setSeparator(parent, index, box(c.keys[0]))
+		t.setSeparator(parent, index, t.separator(c))
 	case sibling < index:
 		c, o := asInner[K](child), asInner[K](other)
 		// o's last child moves to c: its separator divides them now.
@@ -176,7 +176,7 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(parent *ginner[K], index int, l
 	case leaves:
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
 		t.moveLeafEntries(c, int(c.count.Load()), o, 0, 1)
-		t.setSeparator(parent, sibling, box(o.keys[0]))
+		t.setSeparator(parent, sibling, t.separator(o))
 	default:
 		c, o := asInner[K](child), asInner[K](other)
 		// o's first child moves to c: o's second's separator divides them.

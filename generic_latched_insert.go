@@ -177,7 +177,7 @@ func (t *genericTree[K, V, O]) insertInto(n *gleaf[K, V], key K, code uint64, va
 		case insertReplace:
 			n.values[i] = value
 		case insertMerge:
-			n.values[i] = merge(n.keys[i], old, value)
+			n.values[i] = merge(t.key(n, i), old, value)
 		}
 		return old, true, true
 	}
@@ -279,8 +279,7 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 	} else {
 		t.insertEntry(right, index-cut, ownKey[O](key), value, false)
 	}
-	separator := new(K)
-	*separator = right.keys[0]
+	separator := t.separator(right)
 	carried := &right.gheader
 	for level := path.depth - 1; level >= top && carried != nil; level-- {
 		n, edge := path.levels[level].n, path.levels[level].edge+1

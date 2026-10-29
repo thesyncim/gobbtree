@@ -78,6 +78,17 @@ type textColumns struct {
 	lens  [nodeSize]uint8
 }
 
+// key is leaf n's key i, n held or owned.
+func (t *genericTree[K, V, O]) key(n *gleaf[K, V], i int) K { return n.keys[i&(nodeSize-1)] }
+
+// keyText is text leaf n's key i as text, n held or owned.
+func (t *genericTree[K, V, O]) keyText(n *gleaf[K, V], i int) string {
+	return textView(&n.keys[i&(nodeSize-1)])
+}
+
+// separator is leaf n's first key, boxed for a separator above it.
+func (t *genericTree[K, V, O]) separator(n *gleaf[K, V]) *K { return box(t.key(n, 0)) }
+
 // text is text leaf n's columns.
 func (n *gleaf[K, V]) text() *textColumns {
 	return (*textColumns)(unsafe.Add(unsafe.Pointer(n), unsafe.Offsetof(textLeaf[K, V]{}.textColumns)))
@@ -503,15 +514,15 @@ func (t *genericTree[K, V, O]) refitLeaf(n *gleaf[K, V]) {
 	}
 	count, p := int(n.count.Load()), 0
 	if count > 1 {
-		p = commonPrefix(textView(&n.keys[0]), textView(&n.keys[count-1]))
+		p = commonPrefix(t.keyText(n, 0), t.keyText(n, count-1))
 	}
 	if count > 0 {
-		n.setPrefix(textView(&n.keys[0]), p)
+		n.setPrefix(t.keyText(n, 0), p)
 	} else {
 		n.setPrefix("", 0)
 	}
 	for i := 0; i < count; i++ {
-		s := textView(&n.keys[i])
+		s := t.keyText(n, i)
 		n.codes[i], n.text().tails[i], n.text().lens[i] = stringCode(s, p), stringCode(s, p+8), textLen(s)
 	}
 }
@@ -549,7 +560,7 @@ func (t *genericTree[K, V, O]) refitColumns(n *gleaf[K, V]) bool {
 		code, tail := n.codes[i], c.tails[i]
 		switch l := int(c.lens[i]); {
 		case l > q+16 || l == 255:
-			s := textView(&n.keys[i])
+			s := t.keyText(n, i)
 			code, tail = stringCode(s, p), stringCode(s, p+8)
 		case d >= 8:
 			code, tail = tail<<(8*(d-8)), 0
@@ -558,7 +569,7 @@ func (t *genericTree[K, V, O]) refitColumns(n *gleaf[K, V]) bool {
 		}
 		n.codes[i], c.tails[i] = code, tail
 	}
-	n.setPrefix(textView(&n.keys[0]), p)
+	n.setPrefix(t.keyText(n, 0), p)
 	return true
 }
 
@@ -682,7 +693,7 @@ func (t *genericTree[K, V, O]) leafOrder(n *gleaf[K, V], key K, p int) int {
 	if p <= 16 {
 		return headOrder(textView(&key), p, n.head[0].Load(), n.head[1].Load())
 	}
-	return strings.Compare(prefixOf(textView(&key), p), textView(&n.keys[0])[:p])
+	return strings.Compare(prefixOf(textView(&key), p), t.keyText(n, 0)[:p])
 }
 
 // find is key's slot in leaf n, latched, and whether key is there.
@@ -705,7 +716,7 @@ func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K, code uint64) (int, bo
 			mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
 			o, settled := slotOrder(n, mid, &k, p)
 			if !settled {
-				o = t.compare(n.keys[mid], key)
+				o = t.compare(t.key(n, mid), key)
 			}
 			if o < 0 {
 				lo = mid + 1
@@ -725,13 +736,13 @@ func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K, code uint64) (int, bo
 	}
 	for lo < hi {
 		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
-		if t.compare(n.keys[mid], key) < 0 {
+		if t.compare(t.key(n, mid), key) < 0 {
 			lo = mid + 1
 		} else {
 			hi = mid
 		}
 	}
-	return lo, lo < count && t.compare(n.keys[lo&(nodeSize-1)], key) == 0
+	return lo, lo < count && t.compare(t.key(n, lo), key) == 0
 }
 
 // start makes the tree's root leaf, once.
@@ -877,7 +888,7 @@ func (t *genericTree[K, V, O]) read(key K, visit func(K, V)) bool {
 	defer n.latch.unlockShared()
 	i, ok := t.find(n, key, code)
 	if ok {
-		visit(n.keys[i], n.values[i])
+		visit(t.key(n, i), n.values[i])
 	}
 	return ok
 }
@@ -899,7 +910,7 @@ func (t *genericTree[K, V, O]) update(key K, change func(K, V) V) (V, bool) {
 	if !ok {
 		return zero, false
 	}
-	value := change(n.keys[i], n.values[i])
+	value := change(t.key(n, i), n.values[i])
 	n.values[i] = value
 	return value, true
 }

@@ -25,7 +25,7 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 			n, _ := t.descend(from, code, seek, false, shared, &path)
 			count, done := 0, false
 			for i := 0; i < int(n.count.Load()); i++ {
-				k := n.keys[i]
+				k := t.key(n, i)
 				if fenced && t.compare(k, from) < 0 || !fenced && !aboveLower[K, O](b, k) {
 					continue
 				}
@@ -61,7 +61,7 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 		n, _ := t.descend(below, code, seek, strict, shared, &path)
 		count, done := 0, false
 		for i := int(n.count.Load()) - 1; i >= 0; i-- {
-			k := n.keys[i]
+			k := t.key(n, i)
 			if fenced && t.compare(k, below) >= 0 || !fenced && !belowUpper[K, O](b, k) {
 				continue
 			}

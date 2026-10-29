@@ -94,7 +94,7 @@ func (t *genericTree[K, V, O]) ownerRead(key K, visit func(K, V)) bool {
 	code := t.code(key)
 	n, i, ok, _ := t.ownerSeek(key, code)
 	if ok {
-		visit(n.keys[i], n.values[i])
+		visit(t.key(n, i), n.values[i])
 	}
 	return ok
 }
@@ -109,7 +109,7 @@ func (t *genericTree[K, V, O]) ownerUpdate(key K, change func(K, V) V) (V, bool)
 	if !ok {
 		return zero, false
 	}
-	value := change(n.keys[i], n.values[i])
+	value := change(t.key(n, i), n.values[i])
 	n.values[i] = value
 	return value, true
 }
@@ -147,7 +147,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 		case insertReplace:
 			n.values[i] = value
 		case insertMerge:
-			n.values[i] = merge(n.keys[i], old, value)
+			n.values[i] = merge(t.key(n, i), old, value)
 		}
 		return old, true
 	}
@@ -204,7 +204,7 @@ func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V)
 		n, _ = t.descend(key, 0, seek, false, optimistic, nil)
 		i, ok = t.target(n, seek, key, 0)
 	}
-	if !ok || condition != nil && !condition(n.keys[i], n.values[i]) {
+	if !ok || condition != nil && !condition(t.key(n, i), n.values[i]) {
 		return k, v, false
 	}
 	if owned(&n.count) > leafMinLen || plainPointer(&t.root) == &n.gheader {
