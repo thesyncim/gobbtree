@@ -530,3 +530,33 @@ func TestStringCodeOffsets(t *testing.T) {
 		}()
 	}
 }
+
+// Keys whose windows are all ones share the code padding past a leaf's
+// count, and keys of equal codes differ past them: lookups still settle.
+func TestGenericTextWindowEdges(t *testing.T) {
+	var m Map[string, int]
+	var keys []string
+	for i := 0; i < 2000; i++ {
+		keys = append(keys,
+			fmt.Sprintf("\xff\xff\xff\xff\xff\xff\xff\xff%04d", i),
+			fmt.Sprintf("\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff%d", i),
+			fmt.Sprintf("same-code-%05d", i),
+			fmt.Sprintf("same-code-%05d\x00", i),
+		)
+	}
+	for i, k := range keys {
+		m.Insert(k, i)
+	}
+	for i, k := range keys {
+		if v, ok := m.Get(k); !ok || v != i {
+			t.Fatalf("get %q: %d, %v", k, v, ok)
+		}
+		if _, ok := m.Get(k + "\x00\x00"); ok {
+			t.Fatalf("found %q", k+"\x00\x00")
+		}
+	}
+	if _, ok := m.Get("\xff\xff\xff\xff\xff\xff\xff\xff\xff"); ok {
+		t.Fatal("found an absent all-ones key")
+	}
+	checkGenericTree(t, &m.generic)
+}

@@ -66,46 +66,48 @@ func (t *genericTree[K, V, O]) textLeafOrdered(key K) (*gleaf[K, V], uint64, boo
 
 // readTextLeaf settles text key in leaf n, whose latch word the caller
 // read: its value and whether key is there, or false where it can't. A
-// word-sized value feeds the closing check's address; a wider one is
+// lookup needs only equality: key, if it has the leaf's prefix and fits its
+// windows, is there exactly where a slot's code, tail and length are its.
+// A word-sized value feeds the closing check's address; a wider one is
 // ordered before it by a load fence.
 func (t *genericTree[K, V, O]) readTextLeaf(n *gleaf[K, V], word uint64, key K) (value V, found, ok bool) {
 	if word&latchExclusive != 0 {
 		return value, false, false
 	}
-	m := n
-	count := int(*(*int32)(unsafe.Pointer(&m.count)))
-	p := int(*(*int32)(unsafe.Pointer(&m.prefix)))
+	count := int(*(*int32)(unsafe.Pointer(&n.count)))
+	p := int(*(*int32)(unsafe.Pointer(&n.prefix)))
 	if count < 0 || count > nodeSize || p > 16 {
 		return value, false, false
 	}
 	s := textView(&key)
-	h0 := *(*uint64)(unsafe.Pointer(&m.head[0]))
-	h1 := *(*uint64)(unsafe.Pointer(&m.head[1]))
+	h0 := *(*uint64)(unsafe.Pointer(&n.head[0]))
+	h1 := *(*uint64)(unsafe.Pointer(&n.head[1]))
 	acc := uint64(count) ^ uint64(p)<<8 ^ h0 ^ h1<<1
-	if p == 0 || headOrder(s, p, h0, h1) == 0 {
-		k := probeText(s, p)
-		lo := lowerCode(&m.codes, count, k.code)
-		c0, c1 := m.codes[lo&(nodeSize-1)], m.codes[(lo+1)&(nodeSize-1)]
-		acc ^= uint64(lo)<<40 ^ c0 ^ c1<<2
-		if lo < count && c0 == k.code {
-			if lo+1 < count && c1 == k.code {
+	// Key has the leaf's prefix where its first p bytes are the head's.
+	shares := len(s) >= p && (stringCode(s, 0)^h0)&headMask(p) == 0 && (p <= 8 || (stringCode(s, 8)^h1)&headMask(p-8) == 0)
+	if shares {
+		code, tail, length := stringCode(s, p), stringCode(s, p+8), textLen(s)
+		if len(s) > p+16 || length == 255 {
+			// Too long to settle by windows.
+			return value, false, false
+		}
+		lo := lowerCode(&n.codes, count, code) & (nodeSize - 1)
+		c := n.codes[lo]
+		text := n.text()
+		slotTail, slotLen := text.tails[lo], text.lens[lo]
+		acc ^= uint64(lo)<<40 ^ c ^ slotTail<<3 ^ uint64(slotLen)<<48
+		// A slot past the count holds the padding, a code a key may share.
+		if lo < count && c == code {
+			if slotTail != tail || slotLen != length {
+				// Another key of the same code: key may follow it.
 				return value, false, false
 			}
-			text := m.text()
-			tail, length := text.tails[lo&(nodeSize-1)], text.lens[lo&(nodeSize-1)]
-			acc ^= tail<<3 ^ uint64(length)<<48
-			order, settled := slotOrder(m, lo, &k, p)
-			if !settled {
-				return value, false, false
-			}
-			if order == 0 {
-				found = true
-				value = m.values[lo&(nodeSize-1)]
-				if unsafe.Sizeof(value) == 8 {
-					acc ^= *(*uint64)(unsafe.Pointer(&value))
-				} else {
-					loadFence()
-				}
+			found = true
+			value = n.values[lo]
+			if unsafe.Sizeof(value) == 8 {
+				acc ^= *(*uint64)(unsafe.Pointer(&value))
+			} else {
+				loadFence()
 			}
 		}
 	}
