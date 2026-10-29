@@ -42,7 +42,7 @@ func (t *genericTree[K, V, O]) target(n *gleaf[K, V], seek int, key K, code uint
 }
 
 func (t *genericTree[K, V, O]) removeLatched(seek int, key K, code uint64, condition func(K, V) bool) (k K, v V, removed, done bool) {
-	n, version := t.descend(key, code, seek, false, exclusive, nil)
+	n, version := t.leafLatched(key, code, seek, exclusive)
 	defer n.latch.unlockExclusive(version)
 	i, ok := t.target(n, seek, key, code)
 	if !ok || condition != nil && !condition(n.keys[i], n.values[i]) {

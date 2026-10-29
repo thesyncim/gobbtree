@@ -159,7 +159,7 @@ func takeBorder[K any](held *latchSet, n *ginner[K], right bool) bool {
 }
 
 func (t *genericTree[K, V, O]) insertLatched(key K, code uint64, value V, policy int, merge func(K, V, V) V) (old V, found, done bool) {
-	n, version := t.descend(key, code, seekKey, false, exclusive, nil)
+	n, version := t.leafLatched(key, code, seekKey, exclusive)
 	defer n.latch.unlockExclusive(version)
 	return t.insertInto(n, key, code, value, policy, merge)
 }

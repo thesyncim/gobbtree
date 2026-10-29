@@ -119,3 +119,22 @@ func (t *genericTree[K, V, O]) readTextLeaf(n *gleaf[K, V], word uint64, key K) 
 	}
 	return value, true, true
 }
+
+// leafLatched is key's leaf latched in mode, shared or exclusive, and the
+// version held: through the ordered descent and a compare-and-swap at the
+// latch word it read, as the word tree's upgradeOrdered takes its leaf, or
+// else by a latching descent. A swap that succeeds finds the leaf as the
+// descent's checks vouched for it, so the leaf is still key's.
+func (t *genericTree[K, V, O]) leafLatched(key K, code uint64, seek int, mode int) (*gleaf[K, V], uint64) {
+	if optimisticText[O, K]() && seek == seekKey {
+		if n, word, ok := t.textLeafOrdered(key); ok {
+			switch {
+			case mode == exclusive && word&(latchExclusive|latchSharedMask) == 0 && n.latch.tryLockAt(word):
+				return n, word
+			case mode == shared && word&latchExclusive == 0 && n.latch.CompareAndSwap(word, word+latchSharedUnit):
+				return n, 0
+			}
+		}
+	}
+	return t.descend(key, code, seek, false, mode, nil)
+}

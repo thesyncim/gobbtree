@@ -784,7 +784,7 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 			}
 		}
 	}
-	n, _ := t.descend(key, code, seekKey, false, shared, nil)
+	n, _ := t.leafLatched(key, code, seekKey, shared)
 	if i, ok := t.find(n, key, code); ok {
 		value, found = n.values[i], true
 	} else {
@@ -802,7 +802,7 @@ func (t *genericTree[K, V, O]) read(key K, visit func(K, V)) bool {
 		return false
 	}
 	code := t.code(key)
-	n, _ := t.descend(key, code, seekKey, false, shared, nil)
+	n, _ := t.leafLatched(key, code, seekKey, shared)
 	defer n.latch.unlockShared()
 	i, ok := t.find(n, key, code)
 	if ok {
@@ -819,7 +819,7 @@ func (t *genericTree[K, V, O]) update(key K, change func(K, V) V) (V, bool) {
 		return zero, false
 	}
 	code := t.code(key)
-	n, version := t.descend(key, code, seekKey, false, exclusive, nil)
+	n, version := t.leafLatched(key, code, seekKey, exclusive)
 	defer n.latch.unlockExclusive(version)
 	i, ok := t.find(n, key, code)
 	if !ok {
