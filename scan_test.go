@@ -16,8 +16,35 @@ type scanMap struct {
 }
 
 func scanMaps() map[string]func() scanMap {
-	key := func(i int) string { return fmt.Sprintf("k%08d", i) }
-	var parse = func(s string) int { var i int; fmt.Sscanf(s, "k%08d", &i); return i }
+	textual := func(format string) func() scanMap {
+		key := func(i int) string { return fmt.Sprintf(format, i) }
+		parse := func(s string) int { var i int; fmt.Sscanf(s, format, &i); return i }
+		return func() scanMap {
+			m := New[string, [2]int]()
+			return scanMap{
+				insert: func(i int) { m.Insert(key(i), [2]int{i}) },
+				delete: func(i int) { m.Delete(key(i)) },
+				scan: func(lower, upper int, reverse bool, visit func(int) bool) {
+					f := m.Range
+					if reverse {
+						f = m.RangeReverse
+					}
+					for k := range f(key(lower), key(upper)) {
+						if !visit(parse(k)) {
+							return
+						}
+					}
+				},
+				all: func(visit func(int) bool) {
+					for k := range m.All() {
+						if !visit(parse(k)) {
+							return
+						}
+					}
+				},
+			}
+		}
+	}
 	return map[string]func() scanMap{
 		"numeric": func() scanMap {
 			m := New[uint64, uint64]()
@@ -44,31 +71,9 @@ func scanMaps() map[string]func() scanMap {
 				},
 			}
 		},
-		"textual": func() scanMap {
-			m := New[string, [2]int]()
-			return scanMap{
-				insert: func(i int) { m.Insert(key(i), [2]int{i}) },
-				delete: func(i int) { m.Delete(key(i)) },
-				scan: func(lower, upper int, reverse bool, visit func(int) bool) {
-					f := m.Range
-					if reverse {
-						f = m.RangeReverse
-					}
-					for k := range f(key(lower), key(upper)) {
-						if !visit(parse(k)) {
-							return
-						}
-					}
-				},
-				all: func(visit func(int) bool) {
-					for k := range m.All() {
-						if !visit(parse(k)) {
-							return
-						}
-					}
-				},
-			}
-		},
+		"textual": textual("k%08d"),
+		// Keys sharing more than a node head holds take the long-prefix paths.
+		"long prefix": textual("https://example.com/users/%08d"),
 	}
 }
 

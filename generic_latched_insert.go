@@ -240,7 +240,8 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 }
 
 // removeEntry removes leaf n's entry i, clearing the slot it frees so that
-// the collector can take what it held.
+// the collector can take what it held. An emptied leaf has no prefix: no key
+// is left to share one.
 func removeEntry[K any, V any](n *gleaf[K, V], i int) (K, V) {
 	count := int(n.count.Load())
 	key, value := n.keys[i], n.values[i]
@@ -251,6 +252,9 @@ func removeEntry[K any, V any](n *gleaf[K, V], i int) (K, V) {
 	var zv V
 	n.codes[count-1], n.keys[count-1], n.values[count-1] = codePad, zk, zv
 	n.count.Store(int32(count - 1))
+	if count == 1 {
+		n.setPrefix("", 0)
+	}
 	return key, value
 }
 

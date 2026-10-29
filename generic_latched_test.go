@@ -27,11 +27,10 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 	// prefix, which its head holds, and returns the prefix's length.
 	checkPrefix := func(h *gheader, any bool, keys func() []string) int {
 		p := int(h.prefix.Load())
-		if !prefixed[O, K]() && p != 0 {
-			t.Fatalf("prefix %d on a node without one", p)
-		}
 		if !prefixed[O, K]() || !any {
-			// An emptied root leaf may keep its prefix: no key has it.
+			if p != 0 || h.head[0].Load() != 0 || h.head[1].Load() != 0 {
+				t.Fatalf("prefix %d on a node without one", p)
+			}
 			return p
 		}
 		all := keys()
@@ -149,6 +148,16 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 	return check(root, nil, nil, 0)
 }
 
+// genericKeys are the key families the generic tests run over: lengths
+// around the eight-byte window, with codes that tie; and keys sharing more
+// than a node's head holds.
+var genericKeys = map[string]func(uint64) string{
+	"mixed": genericKey,
+	"long prefix": func(i uint64) string {
+		return fmt.Sprintf("https://example.com/users/%016x", mixedKey(i))
+	},
+}
+
 // genericKey spreads keys over lengths around the eight-byte window, with
 // long shared prefixes, so codes tie and separators are compared whole.
 func genericKey(i uint64) string {
@@ -164,6 +173,12 @@ func genericKey(i uint64) string {
 }
 
 func TestGenericChurn(t *testing.T) {
+	for name, genericKey := range genericKeys {
+		t.Run(name, func(t *testing.T) { testGenericChurn(t, genericKey) })
+	}
+}
+
+func testGenericChurn(t *testing.T, genericKey func(uint64) string) {
 	type value struct {
 		key  string
 		hits []int
@@ -242,6 +257,12 @@ func TestGenericChurn(t *testing.T) {
 // Filling and draining in order grows and shrinks the tree through every
 // height, splitting and merging at the borders.
 func TestGenericFillAndDrain(t *testing.T) {
+	for name, genericKey := range genericKeys {
+		t.Run(name, func(t *testing.T) { testGenericFillAndDrain(t, genericKey) })
+	}
+}
+
+func testGenericFillAndDrain(t *testing.T, genericKey func(uint64) string) {
 	var m Map[string, int]
 	const n = 20000
 	for _, order := range []string{"ascending", "descending", "mixed"} {
