@@ -33,6 +33,8 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	// tree's borders take it for the fence they lack.
 	shared   atomic.Pointer[string]
 	starting sync.Mutex
+	// owner marks a Tree's tree (generic_latched_owner.go).
+	owner bool
 }
 
 // A node's header. Its count is read racing; whether it is a leaf never
@@ -750,6 +752,9 @@ func (t *genericTree[K, V, O]) getText(key K, code uint64) (value V, found, done
 // get is key's value. With optimistic leaves it is read without latching
 // the leaf, a few times while writers change it, before it latches shared.
 func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
+	if t.owner {
+		return t.ownerGet(key)
+	}
 	if optimisticText[O, K]() {
 		// The ordered lookup needs no code; a nil root fails it.
 		if n, word, ok := t.textLeafOrdered(key); ok {
@@ -798,6 +803,9 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 // read runs visit on key's entry, its stored key and value, with its leaf
 // latched shared.
 func (t *genericTree[K, V, O]) read(key K, visit func(K, V)) bool {
+	if t.owner {
+		return t.ownerRead(key, visit)
+	}
 	if t.root.Load() == nil {
 		return false
 	}
@@ -814,6 +822,9 @@ func (t *genericTree[K, V, O]) read(key K, visit func(K, V)) bool {
 // update stores change's result as key's value, with its leaf latched
 // exclusively; a panicking change stores nothing.
 func (t *genericTree[K, V, O]) update(key K, change func(K, V) V) (V, bool) {
+	if t.owner {
+		return t.ownerUpdate(key, change)
+	}
 	var zero V
 	if t.root.Load() == nil {
 		return zero, false

@@ -270,7 +270,7 @@ func (t *treeCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 		if t.initWords() {
 			return t.Insert(key, value)
 		}
-		t.generic = new(genericTree[K, V, O])
+		t.generic = &genericTree[K, V, O]{owner: true}
 	}
 	old, found := t.generic.insert(key, value, insertReplace, nil)
 	if !found {

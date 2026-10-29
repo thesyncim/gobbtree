@@ -7,6 +7,9 @@ package gobbtree
 // path, takes the nodes its fixing changes without waiting, and fixes the
 // levels it leaves underfull.
 func (t *genericTree[K, V, O]) remove(seek int, key K, condition func(K, V) bool) (K, V, bool) {
+	if t.owner {
+		return t.ownerRemove(seek, key, condition)
+	}
 	var k K
 	var v V
 	if t.root.Load() == nil {

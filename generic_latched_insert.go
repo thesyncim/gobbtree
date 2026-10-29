@@ -71,6 +71,9 @@ func (s *latchSet) unlock() {
 // latchedTree.insert: the key's leaf, latched exclusively, takes it if it
 // has room; otherwise the leaf splits.
 func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, V, V) V) (V, bool) {
+	if t.owner {
+		return t.ownerInsert(key, value, policy, merge)
+	}
 	if t.root.Load() == nil {
 		t.start()
 	}
