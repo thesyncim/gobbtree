@@ -91,8 +91,8 @@ func main() {
 	fmt.Printf("%s %s/%s SIMD=%v width=%d n=%d rounds=%d queries=%d kind=%s keys=%s procs=%d serial_thread=locked", runtime.Version(), runtime.GOOS, runtime.GOARCH, hardware, width, *size, *rounds, *queryCount, *kind, *pattern, runtime.GOMAXPROCS(0))
 	if *text {
 		fmt.Println(" text")
-		if !doTree && !doMap {
-			panic("text runs tree and map kinds only")
+		if runText == nil || !doTree && !doMap {
+			panic("text needs text.go and the tree or map kind")
 		}
 		runText(*kind, *size, *rounds, *threads, *queryCount, *mutations, keyAt)
 		return
@@ -513,6 +513,10 @@ func verifyReplacements(name string, queries []uint64, rounds int, get func(uint
 		}
 	}
 }
+
+// runText runs the string-keyed cells (text.go); a baseline checkout that
+// predates them builds without it.
+var runText func(kind string, size, rounds, threads, queryCount int, mutations bool, keyAt func(uint64) uint64)
 
 // runScale runs one core-scaling cell (scale.go) on a *gobbtree.Map, a
 // *sync.Map or a built-in map; scale panics on an unknown mix.

@@ -12,12 +12,14 @@ import (
 // matching text_key in the Rust driver.
 func textKey(k uint64) string { return fmt.Sprintf("user:%016x", k) }
 
-// runText runs the string-keyed cells, matching text in the Rust driver: a
+func init() { runText = textCells }
+
+// textCells runs the string-keyed cells, matching text in the Rust driver: a
 // build from keys made beforehand; lookups that hit and miss; with
 // mutations, replacing values and deleting entries to insert them back; and
 // the Map's parallel lookups. No timed operation makes a key. Each value is
 // its key's pattern code.
-func runText(kind string, size, rounds, threads, queryCount int, mutations bool, keyAt func(uint64) uint64) {
+func textCells(kind string, size, rounds, threads, queryCount int, mutations bool, keyAt func(uint64) uint64) {
 	doTree := kind == "all" || kind == "tree"
 	doMap := kind == "all" || kind == "map"
 	tree := gobbtree.NewTree[string, uint64]()
