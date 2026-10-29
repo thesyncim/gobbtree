@@ -10,8 +10,8 @@ import (
 // HeldNodes, for the generic tree: internal nodes by a compare-and-swap at
 // a version, leaves exclusively, all without waiting.
 type latchSet struct {
-	nodes    [3*maxDepth + 4]*gheader
-	versions [3*maxDepth + 4]uint64
+	nodes    [5*maxDepth + 4]*gheader
+	versions [5*maxDepth + 4]uint64
 	len      int
 }
 

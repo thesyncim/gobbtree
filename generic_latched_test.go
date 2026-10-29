@@ -191,6 +191,15 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				if sep == nil {
 					t.Fatalf("separator %d missing", i)
 				}
+				// A separator is the first key of the leftmost leaf below
+				// its child (D49).
+				first := n.children[i].Load()
+				for !first.leaf {
+					first = asInner[K](first).children[0].Load()
+				}
+				if got := tree.key(asLeaf[K, V](first), 0); compareKeys[O](got, *sep) != 0 {
+					t.Fatalf("separator %d is not the first key below it: %v, the leaf's %v", i, *sep, got)
+				}
 				if !prefixed[O, K]() && n.codes[i].Load() != windowKey[O](*sep, 0) {
 					t.Fatalf("separator %d code is stale", i)
 				}
@@ -822,5 +831,81 @@ func TestHandedOutKeysKeepTheirBytes(t *testing.T) {
 	}
 	if len(keep) < 1000 || len(keepBytes) < 1000 {
 		t.Fatalf("kept %d and %d keys", len(keep), len(keepBytes))
+	}
+}
+
+// firstKeysOfLeaves is the first key of every leaf of tree but the
+// leftmost, the separators, those of leaves at their minimum first.
+func firstKeysOfLeaves[K any, V any, O keyOrder[K]](tree *genericTree[K, V, O]) []K {
+	var full, short []K
+	var walk func(h *gheader, leftmost bool)
+	walk = func(h *gheader, leftmost bool) {
+		if h.leaf {
+			n := asLeaf[K, V](h)
+			if leftmost || n.count.Load() == 0 {
+				return
+			}
+			if n.count.Load() <= leafMinLen {
+				short = append(short, tree.key(n, 0))
+			} else {
+				full = append(full, tree.key(n, 0))
+			}
+			return
+		}
+		inner := asInner[K](h)
+		for i := 0; i < int(inner.count.Load()); i++ {
+			walk(inner.children[i].Load(), leftmost && i == 0)
+		}
+	}
+	if root := tree.root.Load(); root != nil {
+		walk(root, true)
+	}
+	return append(short, full...)
+}
+
+// Removing a separator, a leaf's first key, promotes the leaf's next key,
+// also where the removal leaves the leaf to merge or borrow; the checker
+// holds every separator the first key below it.
+func TestSeparatorPromotion(t *testing.T) {
+	const n = 6000
+	tr := NewTree[string, int]()
+	m := New[string, int]()
+	var tu Tree[uint64, string]
+	for i := range n {
+		k := fmt.Sprintf("user:%016x", mixedKey(uint64(i)))
+		tr.Insert(k, i)
+		m.Insert(k, i)
+		tu.Insert(mixedKey(uint64(i)), k)
+	}
+	if tu.generic == nil {
+		t.Fatal("uint64 keys with string values left the generic tree")
+	}
+	for round := 0; round < 400; round++ {
+		if ks := firstKeysOfLeaves(tr.generic); len(ks) > 0 {
+			if _, ok := tr.Delete(strings.Clone(ks[0])); !ok {
+				t.Fatalf("tree separator %q missing", ks[0])
+			}
+		}
+		if ks := firstKeysOfLeaves(&m.generic); len(ks) > 0 {
+			if _, ok := m.Delete(strings.Clone(ks[0])); !ok {
+				t.Fatalf("map separator %q missing", ks[0])
+			}
+		}
+		if ks := firstKeysOfLeaves(tu.generic); len(ks) > 0 {
+			if _, ok := tu.Delete(ks[0]); !ok {
+				t.Fatalf("uint64 separator %d missing", ks[0])
+			}
+		}
+		if round%20 == 0 {
+			checkGenericTree(t, tr.generic)
+			checkGenericTree(t, &m.generic)
+			checkGenericTree(t, tu.generic)
+		}
+	}
+	checkGenericTree(t, tr.generic)
+	checkGenericTree(t, &m.generic)
+	checkGenericTree(t, tu.generic)
+	if tr.Len() != n-400 || tu.Len() != n-400 {
+		t.Fatalf("lengths %d and %d", tr.Len(), tu.Len())
 	}
 }

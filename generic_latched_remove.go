@@ -51,11 +51,112 @@ func (t *genericTree[K, V, O]) removeLatched(seek int, key K, code uint64, condi
 	if !ok || condition != nil && !condition(t.key(n, i), n.values[i]) {
 		return k, v, false, true
 	}
-	if int(n.count.Load()) <= leafMinLen && t.root.Load() != &n.gheader {
+	if t.root.Load() != &n.gheader && (int(n.count.Load()) <= leafMinLen || i == 0 && seek != seekFirst) {
+		// Underfull, or the leaf's first key, which may be a separator.
 		return k, v, false, false
 	}
 	k, v = t.removeEntry(n, i, true)
 	return k, v, true, true
+}
+
+// Separators are keys the tree holds (D49): separator i of an internal node
+// is the first key of the leftmost leaf below its child i. A removal of a
+// leaf's first key, where the leaf has one, the separator of the lowest
+// ancestor its path turns right at, promotes the leaf's next key: that
+// ancestor's separator, the own separators of the nodes between, and the
+// high fences of the left subtree's right border take it, and the nodes
+// whose fences it moves refit. The leftmost leaf has no separator.
+
+// separatorLevel is the level of path whose separator the first key of the
+// path's leaf is, or -1 for the tree's leftmost leaf.
+func (p *gpath[K]) separatorLevel() int {
+	for level := p.depth - 1; level >= 0; level-- {
+		if p.levels[level].edge > 0 {
+			return level
+		}
+	}
+	return -1
+}
+
+// takePromotion takes what promoting the separator at level of path
+// changes: the path's nodes from it down, and the right border, leaf
+// included, of the subtree left of the separator.
+func (t *genericTree[K, V, O]) takePromotion(path *gpath[K], level int, held *latchSet) bool {
+	for l := level; l < path.depth; l++ {
+		if !held.takeAt(&path.levels[l].n.gheader, path.levels[l].version) {
+			return false
+		}
+	}
+	at := path.levels[level]
+	left := at.n.children[(at.edge-1)&(nodeSize-1)].Load()
+	if left == nil {
+		return false
+	}
+	if left.leaf {
+		return held.takeLeaf(left)
+	}
+	return held.takeInternal(left) && takeBorder(held, asInner[K](left), true)
+}
+
+// promote makes leaf n's first key, its old one removed, the separator at
+// level of path, held as takePromotion took it. The separator's node keeps
+// its fences and so its prefix, and takes the new key's code alone; the
+// nodes whose fences move refit only where what the fences share changes,
+// which it rarely does, as the new separator is the old one's successor.
+func (t *genericTree[K, V, O]) promote(path *gpath[K], level int, n *gleaf[K, V]) {
+	sep := t.separator(n)
+	at := path.levels[level]
+	t.replaceSeparator(at.n, at.edge, sep)
+	// The right subtree's left border, n's path below the separator: their
+	// own separators, its low fences.
+	for l := level + 1; l < path.depth; l++ {
+		inner := path.levels[l].n
+		inner.seps[0].Store(sep)
+		if prefixed[O, K]() && t.fencePrefix(sep, inner.high.Load()) != int(inner.prefix.Load()) {
+			t.refitInner(inner)
+		}
+	}
+	if path.depth > 0 {
+		last := path.levels[path.depth-1]
+		t.refitMoved(n, last.n, last.edge)
+	}
+	// The left subtree's right border: its high fences.
+	h := at.n.children[(at.edge-1)&(nodeSize-1)].Load()
+	parent, edge := at.n, at.edge-1
+	for !h.leaf {
+		inner := asInner[K](h)
+		inner.high.Store(sep)
+		if prefixed[O, K]() && t.fencePrefix(inner.seps[0].Load(), sep) != int(inner.prefix.Load()) {
+			t.refitInner(inner)
+		}
+		parent, edge = inner, int(inner.count.Load())-1
+		h = inner.children[edge&(nodeSize-1)].Load()
+	}
+	t.refitMoved(asLeaf[K, V](h), parent, edge)
+}
+
+// replaceSeparator makes sep internal node n's separator i, held, where n's
+// fences stay: its prefix holds, and only code i changes.
+func (t *genericTree[K, V, O]) replaceSeparator(n *ginner[K], i int, sep *K) {
+	n.seps[i].Store(sep)
+	if prefixed[O, K]() {
+		storeSum(n.sums(), i, summaryOf(textView(sep), int(n.prefix.Load())))
+		return
+	}
+	n.codes[i].Store(windowKey[O](*sep, 0))
+}
+
+// refitMoved refits text leaf n, held, whose windows are its keys' at its
+// prefix, where its fences in parent at edge, one of them moved, share
+// another.
+func (t *genericTree[K, V, O]) refitMoved(n *gleaf[K, V], parent *ginner[K], edge int) {
+	if !prefixed[O, K]() {
+		return
+	}
+	low, high := leafFences(parent, edge)
+	if p := t.fencePrefix(low, high); p != int(n.prefix.Load()) {
+		t.refitLeaf(n, p)
+	}
 }
 
 // removeRebalancing is one try of a removal that leaves its leaf underfull;
@@ -76,16 +177,30 @@ func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, code uint64, c
 	if !ok || condition != nil && !condition(t.key(n, i), n.values[i]) {
 		return k, v, false, true
 	}
+	promoted := -1
+	if i == 0 && seek != seekFirst {
+		promoted = path.separatorLevel()
+	}
 	// Another goroutine may have filled the leaf since.
-	if int(n.count.Load()) > leafMinLen || t.root.Load() == &n.gheader {
+	if promoted < 0 && (int(n.count.Load()) > leafMinLen || t.root.Load() == &n.gheader) {
 		k, v = t.removeEntry(n, i, handOut)
 		return k, v, true, true
 	}
-	fixes, ok := t.takeFixes(&path, int(n.count.Load())-1, &held)
-	if !ok {
+	if promoted >= 0 && !t.takePromotion(&path, promoted, &held) {
 		return k, v, false, false
 	}
+	fixes := 0
+	if t.root.Load() != &n.gheader {
+		if fixes, ok = t.takeFixes(&path, int(n.count.Load())-1, &held); !ok {
+			return k, v, false, false
+		}
+	}
 	k, v = t.removeEntry(n, i, handOut)
+	// The separator first, so that the fixes below find every separator a
+	// key the tree holds.
+	if promoted >= 0 {
+		t.promote(&path, promoted, n)
+	}
 	depth := path.depth
 	for fix := 0; fix < fixes; fix++ {
 		level := path.levels[depth-1-fix]

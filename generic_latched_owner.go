@@ -160,12 +160,8 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 	return zero, false
 }
 
-// ownerSplit splits leaf n, full, as split does, and inserts key and value
-// at i, where they go: by a plain descent that records key's path, and
-// with no latches taken, which no other goroutine of an owner's tree
-// contends; the nodes it makes start latched, and it lets them go.
-func (t *genericTree[K, V, O]) ownerSplit(n *gleaf[K, V], i int, key K, code uint64, value V) {
-	var path gpath[K]
+// ownerPath records key's path to leaf n, by a plain descent.
+func (t *genericTree[K, V, O]) ownerPath(path *gpath[K], n *gleaf[K, V], key K, code uint64) {
 	h := plainPointer(&t.root)
 	for !h.leaf {
 		inner := asInner[K](h)
@@ -176,8 +172,17 @@ func (t *genericTree[K, V, O]) ownerSplit(n *gleaf[K, V], i int, key K, code uin
 		h = plainPointer(&inner.children[edge&(nodeSize-1)])
 	}
 	if h != &n.gheader {
-		panic("gobbtree: an owner's split lost its leaf")
+		panic("gobbtree: an owner's descent lost its leaf")
 	}
+}
+
+// ownerSplit splits leaf n, full, as split does, and inserts key and value
+// at i, where they go: by a plain descent that records key's path, and
+// with no latches taken, which no other goroutine of an owner's tree
+// contends; the nodes it makes start latched, and it lets them go.
+func (t *genericTree[K, V, O]) ownerSplit(n *gleaf[K, V], i int, key K, code uint64, value V) {
+	var path gpath[K]
+	t.ownerPath(&path, n, key, code)
 	var fresh latchSet
 	t.splitHeld(&path, path.room(), n, i, key, value, &fresh)
 	fresh.unlock()
@@ -207,8 +212,19 @@ func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V)
 	if !ok || condition != nil && !condition(t.key(n, i), n.values[i]) {
 		return k, v, false
 	}
-	if owned(&n.count) > leafMinLen || plainPointer(&t.root) == &n.gheader {
+	if plainPointer(&t.root) == &n.gheader || owned(&n.count) > leafMinLen && (i > 0 || seek == seekFirst) {
 		k, v = t.removeEntry(n, i, handOut)
+		return k, v, true
+	}
+	if owned(&n.count) > leafMinLen && seek == seekKey {
+		// The leaf's first key, which may be a separator, from a leaf that
+		// keeps its minimum: the path, plainly, and no latches.
+		var path gpath[K]
+		t.ownerPath(&path, n, key, code)
+		k, v = t.removeEntry(n, 0, handOut)
+		if level := path.separatorLevel(); level >= 0 {
+			t.promote(&path, level, n)
+		}
 		return k, v, true
 	}
 	for {
