@@ -259,16 +259,10 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 		return total
 	}
 	total := check(root, nil, nil, 0)
-	// The directory holds the tree's leaves and nothing else.
-	if ids := tree.leaves.ids.Load(); tree.exact && ids != nil {
-		held := 0
-		for i := range *ids {
-			if (*ids)[i].Load() != nil {
-				held++
-			}
-		}
-		if held != leafIDs {
-			t.Fatalf("leaf directory holds %d leaves, the tree %d", held, leafIDs)
+	// The leaf blocks hold the tree's leaves, and free slots.
+	if tree.exact {
+		if held := int(tree.leaves.next) - len(tree.leaves.free); held != leafIDs {
+			t.Fatalf("leaf blocks hold %d leaves, the tree %d", held, leafIDs)
 		}
 	}
 	return total
@@ -811,7 +805,7 @@ func TestGrowLeaf(t *testing.T) {
 			q = min(q, commonPrefix(k, base))
 		}
 		build := func() *gleaf[string, uint64] {
-			n := (&genericTree[string, uint64, natural[string]]{}).newLeaf()
+			n, _ := (&genericTree[string, uint64, natural[string]]{}).newLeaf()
 			total := 0
 			for _, k := range keys {
 				total += len(k)

@@ -312,8 +312,8 @@ func (p *gpath[K]) room() int {
 // path's level top, splitting the full nodes below it, or the root. The
 // nodes it makes are latched in fresh.
 func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K, V], index int, key K, value V, fresh *latchSet) {
-	right := t.newLeaf()
-	fresh.push(&right.gheader, 0)
+	right, version := t.newLeaf()
+	fresh.push(&right.gheader, version)
 	// A key past the leaf's last leaves it nearly full, as an ascending
 	// run refills the new leaf.
 	minimum := leafMinLen

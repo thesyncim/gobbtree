@@ -188,7 +188,12 @@ func codeLeafOrdered(root **gheader, code uint64, f *hintFrame) (*gheader, uint6
 // plainly, and feeds the addresses of the words it guards, which all feed
 // the closing check's, as the word trees' readHinted orders them.
 func (t *genericTree[K, V, O]) readHintedCode(n *gleaf[K, V], code uint64) (value V, found, ok bool) {
-	word := *(*uint64)(unsafe.Pointer(&n.latch))
+	return t.readHintedAt(n, *(*uint64)(unsafe.Pointer(&n.latch)), code)
+}
+
+// readHintedAt is readHintedCode at latch word word, which the caller
+// loaded plainly.
+func (t *genericTree[K, V, O]) readHintedAt(n *gleaf[K, V], word, code uint64) (value V, found, ok bool) {
 	if word&latchExclusive != 0 {
 		return value, false, false
 	}
@@ -233,6 +238,62 @@ func (t *genericTree[K, V, O]) readHintedCode(n *gleaf[K, V], code uint64) (valu
 		return zero, false, true
 	}
 	return value, true, true
+}
+
+// getMany8 looks up eight integer keys at once, as the word trees'
+// getMany8 and upstream's get_many_copied: each stage runs for every key
+// before the next, so their misses overlap, from the hint cells to the
+// leaves' directory slots, their latch words and their entries. Each
+// result is consistent on its own; a key its hint doesn't settle is looked
+// up alone.
+func (t *genericTree[K, V, O]) getMany8(keys *[batchLanes]K, dst *[batchLanes]Result[V]) {
+	var codes [batchLanes]uint64
+	var ids [batchLanes]uint32
+	var leaves [batchLanes]*gheader
+	for j := range keys {
+		codes[j] = numericKey[O](keys[j])
+	}
+	if r := plainPointer(&t.hints); r != nil && (t.owner || seqlockPlainStores) {
+		for j, code := range codes {
+			ids[j] = r.hintID(code)
+		}
+		for j, id := range ids {
+			if id != 0 {
+				leaves[j] = t.leaves.leaf(id)
+			}
+		}
+	}
+	if t.owner {
+		for j, h := range leaves {
+			if h != nil {
+				if i, found, settled := settleCode(h, codes[j], false); settled {
+					var value V
+					if found {
+						value = asLeaf[K, V](h).values[i&(nodeSize-1)]
+					}
+					dst[j] = Result[V]{value, found}
+					continue
+				}
+			}
+			dst[j].Value, dst[j].OK = t.ownerGet(keys[j])
+		}
+		return
+	}
+	var words [batchLanes]uint64
+	for j, h := range leaves {
+		if h != nil {
+			words[j] = *(*uint64)(unsafe.Pointer(&h.latch))
+		}
+	}
+	for j, h := range leaves {
+		if h != nil {
+			if value, found, ok := t.readHintedAt(asLeaf[K, V](h), words[j], codes[j]); ok {
+				dst[j] = Result[V]{value, found}
+				continue
+			}
+		}
+		dst[j].Value, dst[j].OK = t.get(keys[j])
+	}
 }
 
 // seekHinted searches the leaf code's hint names, with plain loads after

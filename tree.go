@@ -490,6 +490,14 @@ func (t *treeCore[K, V, O]) GetMany(keys []K, dst []Result[V]) {
 		return
 	}
 
+	if g := t.generic; g != nil && g.wordCodes() {
+		// Whole groups of eight go through the batched lookup.
+		start := 0
+		for ; start+batchLanes <= len(keys); start += batchLanes {
+			g.getMany8((*[batchLanes]K)(keys[start:]), (*[batchLanes]Result[V])(dst[start:]))
+		}
+		keys, dst = keys[start:], dst[start:]
+	}
 	for i, key := range keys {
 		dst[i].Value, dst[i].OK = t.Get(key)
 	}

@@ -24,19 +24,31 @@ import (
 // has doubled its children since. A tree without two levels of internal
 // nodes keeps an empty one: no level would be skipped.
 
-// leafDir is a tree's leaves by ID, ID 0 naming none. Writers that make or
-// merge away a leaf take its lock; readers load slots racing, and check the
-// leaf a slot holds where they use it.
+// leafDir is a tree's leaves by ID, ID 0 naming none. The leaves live in
+// blocks of leafBlock, the word trees' slabs: a leaf's address is its
+// block's plus its place in it, so a hint reaches its leaf without loading
+// a slot from a table the size of the tree's leaves. A leaf merged away
+// gives its slot back, and the next leaf made takes it: its latch's
+// version goes on from the old one's, so a reader still on the old leaf
+// finds it changed. Writers that make or merge away a leaf take the lock;
+// readers load the blocks racing, and check the leaf they reach.
 type leafDir struct {
-	mu   storeLock
-	ids  atomic.Pointer[[]atomic.Pointer[gheader]]
-	free []uint32
-	next uint32
+	mu     storeLock
+	blocks atomic.Pointer[[]unsafe.Pointer]
+	free   []uint32
+	next   uint32
+	// stride is a leaf's size in its block, and newBlock makes a block of
+	// leafBlock leaves of the tree's type, which the collector scans as
+	// that type.
+	stride   uintptr
+	newBlock func() unsafe.Pointer
 }
 
-// add gives leaf h, not yet published, an ID, none once every one a cell
-// can name is taken.
-func (d *leafDir) add(h *gheader) {
+const leafBlock = 256
+
+// alloc is a slot for a new leaf and its ID: a merged-away leaf's, or the
+// next; nil once every ID a cell can name is taken.
+func (d *leafDir) alloc() (*gheader, uint32) {
 	d.mu.Lock()
 	id := uint32(0)
 	if n := len(d.free); n > 0 {
@@ -45,44 +57,33 @@ func (d *leafDir) add(h *gheader) {
 		d.next++
 		id = d.next
 	}
-	if id != 0 {
-		ids := d.ids.Load()
-		if ids == nil || int(id) >= len(*ids) {
-			ids = d.grow(ids, int(id))
-		}
-		h.id = id
-		(*ids)[id].Store(h)
+	if id == 0 {
+		d.mu.Unlock()
+		return nil, 0
 	}
+	blocks := d.blocks.Load()
+	if blocks == nil || int(id/leafBlock) >= len(*blocks) {
+		// A reader of the old blocks misses the leaves made since, which
+		// descend.
+		var grown []unsafe.Pointer
+		if blocks != nil {
+			grown = append(grown, *blocks...)
+		}
+		grown = append(grown, d.newBlock())
+		d.blocks.Store(&grown)
+		blocks = &grown
+	}
+	h := (*gheader)(unsafe.Add((*blocks)[id/leafBlock], uintptr(id%leafBlock)*d.stride))
 	d.mu.Unlock()
+	return h, id
 }
 
-// grow publishes a directory with room for ID id, holding ids' leaves. A
-// reader of the old one misses the leaves made since, which descend.
-func (d *leafDir) grow(ids *[]atomic.Pointer[gheader], id int) *[]atomic.Pointer[gheader] {
-	size := 64
-	if ids != nil {
-		size = 2 * len(*ids)
-	}
-	for size <= id {
-		size *= 2
-	}
-	grown := make([]atomic.Pointer[gheader], size)
-	if ids != nil {
-		for i := range *ids {
-			grown[i].Store((*ids)[i].Load())
-		}
-	}
-	d.ids.Store(&grown)
-	return &grown
-}
-
-// remove takes back leaf h's ID, for a leaf merged away.
+// remove gives leaf h's slot back, for a leaf merged away.
 func (d *leafDir) remove(h *gheader) {
 	if h.id == 0 {
 		return
 	}
 	d.mu.Lock()
-	(*d.ids.Load())[h.id].Store(nil)
 	d.free = append(d.free, h.id)
 	d.mu.Unlock()
 }
@@ -90,18 +91,19 @@ func (d *leafDir) remove(h *gheader) {
 // reset forgets every leaf, for a tree cleared.
 func (d *leafDir) reset() {
 	d.mu.Lock()
-	d.ids.Store(nil)
+	d.blocks.Store(nil)
 	d.free, d.next = nil, 0
 	d.mu.Unlock()
 }
 
-// leaf is the leaf of ID id, read racing, or nil.
+// leaf is the slot of ID id, read racing, or nil: a leaf, or one merged
+// away, which holds nothing.
 func (d *leafDir) leaf(id uint32) *gheader {
-	ids := plainPointer(&d.ids)
-	if ids == nil || int(id) >= len(*ids) {
+	blocks := plainPointer(&d.blocks)
+	if blocks == nil || int(id/leafBlock) >= len(*blocks) {
 		return nil
 	}
-	return plainPointer(&(*ids)[id])
+	return (*gheader)(unsafe.Add((*blocks)[id/leafBlock], uintptr(id%leafBlock)*d.stride))
 }
 
 // currentHints is the tree's hint table, made anew where its root has
@@ -182,13 +184,23 @@ func hintedCode(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, 
 	if r == nil {
 		return nil, 0, false, false
 	}
+	if h = d.leaf(r.hintID(code)); h == nil {
+		return nil, 0, false, false
+	}
+	i, found, settled = settleCode(h, code, place)
+	return h, i, found, settled
+}
+
+// hintID is the ID of the leaf code's hint names, 0 for none, its cell
+// read as latchedRoutes.leafFor reads it, written out.
+func (r *codeHints) hintID(code uint64) uint32 {
 	c := r.cell(code)
 	if c == nil {
-		return nil, 0, false, false
+		return 0
 	}
 	head, tail := c.head, c.tail
 	if head <= hintDescend {
-		return nil, 0, false, false
+		return 0
 	}
 	q := r.fraction(code)
 	id := head & hintIDMask
@@ -201,24 +213,26 @@ func hintedCode(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, 
 	if q >= tail>>52&1023 {
 		id = tail >> 24 & hintIDMask
 	}
-	if h = d.leaf(uint32(id)); h == nil {
-		return nil, 0, false, false
-	}
+	return uint32(id)
+}
+
+// settleCode is hintedCode's search of the leaf h its hint named.
+func settleCode(h *gheader, code uint64, place bool) (i int, found, settled bool) {
 	n := (*leafRoute)(unsafe.Pointer(h))
 	count := owned(&n.count)
 	i = firstTag(&n.tags, count, code)
 	if i < count && n.codes[i&(nodeSize-1)] == code {
-		return h, i, true, true
+		return i, true, true
 	}
 	if count == 0 || code < n.codes[0] || code > n.codes[(count-1)&(nodeSize-1)] {
-		return nil, 0, false, false
+		return 0, false, false
 	}
 	if i < count || place {
 		// Another code has its tag, or its slot is asked for.
 		i = lowerCode(&n.codes, count, code)
-		return h, i, n.codes[i&(nodeSize-1)] == code, true
+		return i, n.codes[i&(nodeSize-1)] == code, true
 	}
-	return h, i, false, true
+	return i, false, true
 }
 
 // fill names in cell c the leaves that hold key's region, up to four, and

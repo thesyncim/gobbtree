@@ -391,7 +391,29 @@ func (h *gheader) freed() { h.count.Store(0) }
 
 // newLeaf and newGInner make a node latched exclusively, at version 0,
 // until the operation making it lets go.
-func (t *genericTree[K, V, O]) newLeaf() *gleaf[K, V] {
+//
+// A leaf of exact codes takes a slot in its tree's leaf blocks, perhaps a
+// merged-away leaf's, at the version its latch had: newLeaf returns it.
+func (t *genericTree[K, V, O]) newLeaf() (*gleaf[K, V], uint64) {
+	if t.exact {
+		if h, id := t.leaves.alloc(); h != nil {
+			version := h.latch.lockExclusive()
+			n := asLeaf[K, V](h)
+			n.count.Store(0)
+			n.prefix.Store(0)
+			n.leaf, n.id = true, id
+			n.tags = [nodeSize]uint8{}
+			for i := range n.codes {
+				n.codes[i] = codePad
+			}
+			clear(n.values[:])
+			if !codeKeys[O, K]() {
+				clear(n.keyed()[:])
+				(*keyedLeaf[K, V])(unsafe.Pointer(n)).head.Store(nil)
+			}
+			return n, version
+		}
+	}
 	var n *gleaf[K, V]
 	switch {
 	case prefixed[O, K]():
@@ -401,15 +423,23 @@ func (t *genericTree[K, V, O]) newLeaf() *gleaf[K, V] {
 	default:
 		n = &new(keyedLeaf[K, V]).gleaf
 	}
-	if t.exact {
-		t.leaves.add(&n.gheader)
-	}
 	n.leaf = true
 	for i := range n.codes {
 		n.codes[i] = codePad
 	}
 	n.latch.Store(latchExclusive)
-	return n
+	return n, 0
+}
+
+// setupLeaves sets an exact tree's leaf blocks to its leaves' type.
+func (t *genericTree[K, V, O]) setupLeaves() {
+	if codeKeys[O, K]() {
+		t.leaves.stride = unsafe.Sizeof(gleaf[K, V]{})
+		t.leaves.newBlock = func() unsafe.Pointer { return unsafe.Pointer(new([leafBlock]gleaf[K, V])) }
+		return
+	}
+	t.leaves.stride = unsafe.Sizeof(keyedLeaf[K, V]{})
+	t.leaves.newBlock = func() unsafe.Pointer { return unsafe.Pointer(new([leafBlock]keyedLeaf[K, V])) }
 }
 
 func newGInner[K any]() *ginner[K] {
@@ -1042,8 +1072,11 @@ func (t *genericTree[K, V, O]) start() {
 				t.flip = 1 << 63
 			}
 		}
-		n := t.newLeaf()
-		n.latch.unlockExclusive(0)
+		if t.exact {
+			t.setupLeaves()
+		}
+		n, version := t.newLeaf()
+		n.latch.unlockExclusive(version)
 		t.root.Store(&n.gheader)
 	}
 }

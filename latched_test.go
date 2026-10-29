@@ -46,7 +46,9 @@ func checkLatchedTree(t testing.TB, tr *latchedTree) int {
 		if n == nil {
 			t.Fatalf("node %#x outside the arena", id)
 		}
-		if word := n.sequence.Load(); word&(latchExclusive|latchSharedMask) != 0 {
+		// Readers may still run, latching leaves shared where their
+		// lookups fall back to it; no writer may hold a node.
+		if word := n.sequence.Load(); word&latchExclusive != 0 {
 			t.Fatalf("node %#x still held: %#x", id, word)
 		}
 		count := int(n.n)

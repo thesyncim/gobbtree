@@ -258,6 +258,14 @@ func (m *mapCore[K, V, O]) GetMany(keys []K, dst []Result[V]) {
 		}
 		return
 	}
+	if seqlockPlainStores && m.generic.wordCodes() {
+		// Whole groups of eight go through the batched lookup.
+		start := 0
+		for ; start+batchLanes <= len(keys); start += batchLanes {
+			m.generic.getMany8((*[batchLanes]K)(keys[start:]), (*[batchLanes]Result[V])(dst[start:]))
+		}
+		keys, dst = keys[start:], dst[start:]
+	}
 	for i, key := range keys {
 		dst[i].Value, dst[i].OK = m.generic.get(key)
 	}
