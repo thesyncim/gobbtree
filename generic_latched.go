@@ -48,6 +48,9 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	leaves leafDir
 	hints  atomic.Pointer[codeHints]
 	making atomic.Bool
+	// removed is where an owner's last removal of an integer key left a
+	// gap, its leaf, slot and code, for the key going back in.
+	removed removedSlot
 	// An owner's text leaves reuse their buffers' bytes, a removed key's for
 	// the next to go in and a full buffer's for its live keys, while no key
 	// read over them is out: epoch is the generation of buffers the writer
