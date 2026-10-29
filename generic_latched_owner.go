@@ -58,7 +58,7 @@ func (t *genericTree[K, V, O]) ownerFind(n *gleaf[K, V], key K, code uint64) (in
 		p := owned(&n.prefix)
 		s := textView(&key)
 		if p <= 16 && len(s) <= p+16 && len(s) < 255 {
-			if len(s) < p || (stringCode(s, 0)^*(*uint64)(unsafe.Pointer(&n.head[0])))&headMask(p) != 0 || p > 8 && (stringCode(s, 8)^*(*uint64)(unsafe.Pointer(&n.head[1])))&headMask(p-8) != 0 {
+			if !sharesHead(s, p, *(*uint64)(unsafe.Pointer(&n.head[0])), *(*uint64)(unsafe.Pointer(&n.head[1]))) {
 				return t.find(n, key, code)
 			}
 			c := stringCode(s, p)

@@ -575,3 +575,19 @@ func TestFastWindow(t *testing.T) {
 		}
 	}
 }
+
+// sharesHead agrees with a byte comparison for every prefix length.
+func TestSharesHead(t *testing.T) {
+	prefixes := []string{"", "u", "user:", "user:3a", "user:3a4f", "user:3a4f5b6c7d", "user:3a4f5b6c7d8"}
+	keys := []string{"", "u", "user", "user:", "user:3", "user:3a", "user:3a4", "user:3a4f", "user:3a4f5b6c7d", "user:3a4f5b6c7d8e9f", "user:3b", "usex:3a4f5b6c7d8e", "user:3a4f5b6c7d8f"}
+	for _, prefix := range prefixes {
+		var h gheader
+		h.setPrefix(prefix, len(prefix))
+		for _, k := range keys {
+			want := len(k) >= len(prefix) && k[:len(prefix)] == prefix
+			if got := sharesHead(k, len(prefix), h.head[0].Load(), h.head[1].Load()); got != want {
+				t.Fatalf("%q against %q: %v, want %v", k, prefix, got, want)
+			}
+		}
+	}
+}

@@ -451,12 +451,18 @@ func headOrder(s string, p int, h0, h1 uint64) int {
 	return 0
 }
 
-// headMask keeps a window's first p bytes, of at most 8.
-func headMask(p int) uint64 {
-	if p >= 8 {
-		return ^uint64(0)
-	}
-	return ^(^uint64(0) >> (8 * p))
+// headMask keeps a window's first p bytes, all eight from 8 up. It doesn't
+// branch: a shift past the word gives 0, and a leaf's prefix length, which
+// varies from leaf to leaf, would mispredict.
+func headMask(p int) uint64 { return ^(^uint64(0) >> (8 * uint(p))) }
+
+// sharesHead reports whether text s begins with the p bytes, at most 16,
+// whose windows at 0 and 8, cut to p bytes, are h0 and h1: both windows
+// compared, without a branch on p.
+func sharesHead(s string, p int, h0, h1 uint64) bool {
+	// fastWindow at 8 is stringCode's there wherever it declines: no bytes.
+	w1, _ := fastWindow(s, 8)
+	return len(s) >= p && ((stringCode(s, 0)^h0)&headMask(p)|(w1^h1)&headMask(max(p-8, 0))) == 0
 }
 
 // setPrefix makes h's prefix the first p bytes of key.
