@@ -147,6 +147,75 @@ func descendCode(h *gheader, code uint64, place bool) (*gheader, int, bool) {
 	return h, i, ok
 }
 
+// hintedCode settles code through r's hint in an owner's tree, with plain
+// loads: the leaf the hint names, code's slot there and whether code is
+// there, settled where the leaf holds it or it lies between the leaf's
+// first key and its last. Where place is true, an absent code's slot is
+// the one it would take. The cell, the leaf's block and its tags are read
+// written out, as hintedCodeBy's calls would: a lookup's calls cost it the
+// lookups the core would otherwise overlap with it.
+func hintedCode(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, i int, found, settled bool) {
+	if simd.Emulated() {
+		return hintedCodeBy(r, d, code, place)
+	}
+	if r == nil || len(r.cells) == 0 {
+		return nil, 0, false, false
+	}
+	region := (code - r.base) >> r.shift
+	var c *hintCell
+	switch {
+	case r.hashed:
+		c = &r.cells[(region*0x9e3779b97f4a7c15>>(64-r.bits))&uint64(len(r.cells)-1)]
+	case region < uint64(len(r.cells)):
+		c = &r.cells[region]
+	default:
+		return nil, 0, false, false
+	}
+	head, tail := c.head, c.tail
+	if head <= hintDescend {
+		return nil, 0, false, false
+	}
+	q := (code & (uint64(1)<<r.shift - 1)) << 10 >> r.shift
+	if r.shift >= 10 {
+		q = code >> (r.shift - 10) & 1023
+	}
+	id := head & hintIDMask
+	if q >= head>>48&1023 {
+		id = head >> 24 & hintIDMask
+	}
+	if q >= head>>58|(tail>>48&15)<<6 {
+		id = tail & hintIDMask
+	}
+	if q >= tail>>52&1023 {
+		id = tail >> 24 & hintIDMask
+	}
+	blocks := plainPointer(&d.blocks)
+	if blocks == nil || id/leafBlock >= uint64(len(*blocks)) {
+		return nil, 0, false, false
+	}
+	h = (*gheader)(unsafe.Add((*blocks)[id/leafBlock], uintptr(id%leafBlock)*d.stride))
+	n := (*leafRoute)(unsafe.Pointer(h))
+	count := owned(&n.count)
+	target := archsimd.BroadcastUint8x16(uint8(code))
+	ta := archsimd.LoadUint8x16(n.tags[:16]).Equal(target).ToInt8x16().ToBits()
+	tb := archsimd.LoadUint8x16(n.tags[16:]).Equal(target).ToInt8x16().ToBits()
+	pa := archsimd.LoadUint8x16(tagPositions[:16]).OrNot(ta)
+	pb := archsimd.LoadUint8x16(tagPositions[16:]).OrNot(tb)
+	i = min(int(pa.Min(pb).ReduceMin()), count)
+	if i < count && n.codes[i&(nodeSize-1)] == code {
+		return h, i, true, true
+	}
+	if count == 0 || code < n.codes[0] || code > n.codes[(count-1)&(nodeSize-1)] {
+		return nil, 0, false, false
+	}
+	if i < count || place {
+		// Another code has its tag, or its slot is asked for.
+		i = lowerCode(&n.codes, count, code)
+		return h, i, n.codes[i&(nodeSize-1)] == code, true
+	}
+	return h, i, false, true
+}
+
 // countEightAtMost is countEight counting keys no greater than target.
 func countEightAtMost(keys *[8]uint64, target archsimd.Uint64x2) archsimd.Int64x2 {
 	a := archsimd.LoadUint64x2(keys[0:2]).LessEqual(target).ToInt64x2()

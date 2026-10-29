@@ -174,13 +174,8 @@ func (r *codeHints) leafFor(d *leafDir, code uint64) *gheader {
 	return d.leaf(id &^ wordLeafID)
 }
 
-// hintedCode settles code through r's hint in an owner's tree, with plain
-// loads and one call, to the tag search: the leaf the hint names, code's
-// slot there and whether code is there, settled where the leaf holds it or
-// it lies between the leaf's first key and its last. Where place is true,
-// an absent code's slot is the one it would take. The cell is read as
-// latchedRoutes.leafFor reads it, written out.
-func hintedCode(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, i int, found, settled bool) {
+// hintedCodeBy is hintedCode by calls to its parts.
+func hintedCodeBy(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, i int, found, settled bool) {
 	if r == nil {
 		return nil, 0, false, false
 	}
