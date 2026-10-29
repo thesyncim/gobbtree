@@ -105,6 +105,7 @@ type wordTree struct {
 	// The last key inserted. A full leaf whose insertion point follows it
 	// is in an ascending run. A stale hint only changes how a leaf splits.
 	inserted uint64
+	hints    wordHints
 }
 
 // noteInsert records that key was inserted at position i of leaf n.
@@ -230,6 +231,8 @@ func (t *wordTree) release(id uint32) {
 	free := &t.freeInner
 	if n.leaf {
 		free = &t.free
+		// A freed leaf holds nothing, so that no hint finds a key in it.
+		n.n = 0
 	}
 	n.directory = *free
 	*free = id
@@ -662,6 +665,7 @@ func (t *wordTree) delete(key uint64) (uint64, bool) {
 	}
 	root := t.node(t.root)
 	if root.n == 0 {
+		t.dropHints()
 		t.root, t.free, t.freeInner = 0, 0, 0
 		t.leafCursor, t.innerCursor = 0, 0
 		t.readBlocks = nil

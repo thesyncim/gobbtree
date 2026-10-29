@@ -47,12 +47,37 @@ func (t *treeCore[K, V, O]) Clear() {
 func (t *treeCore[K, V, O]) Get(key K) (V, bool) {
 	if words := t.words; words != nil {
 		code := numericKey[O](key)
-		n := words.rootNode
-		if id := words.routes.lookup(code); id != 0 {
-			n = words.node(id)
+		if n := words.hintedLeaf(code); n != nil {
+			// A key the hinted leaf holds is there; one between its first
+			// and last keys is absent. Only a miss reads those.
+			count := int(n.n)
+			i := firstTag(&n.tags, count, code)
+			if i < count && n.entries()[i].key != code {
+				i = n.lowerEntry(code)
+			}
+			if i < count && n.entries()[i].key == code {
+				value := n.entries()[i].value
+				if words.valueKind == 1 {
+					return any(value).(V), true
+				}
+				return unpackWord[V](value, words.valueKind), true
+			}
+			if count > 0 && code > n.entries()[0].key && code < n.entries()[count-1].key {
+				var zero V
+				return zero, false
+			}
 		}
+		n := words.rootNode
+		if hint := words.routes.lookup(code); hint != 0 {
+			n = words.node(hint)
+		}
+		var parent, grand *wordNode
+		edge, parentEdge := 0, 0
 		for n != nil {
 			if n.leaf {
+				if parent != nil {
+					words.hintParent(code, parent, grand, parentEdge)
+				}
 				i := firstTag(&n.tags, int(n.n), code)
 				if i < int(n.n) && n.entries()[i].key != code {
 					i = n.lowerEntry(code)
@@ -81,6 +106,8 @@ func (t *treeCore[K, V, O]) Get(key K) (V, bool) {
 					}
 				}
 			}
+			grand, parentEdge = parent, edge
+			parent, edge = n, index
 			n = words.node(n.inner().children[index])
 		}
 		var zero V
@@ -149,13 +176,49 @@ func (t *treeCore[K, V, O]) Insert(key K, value V) (V, bool) {
 				return zero, false
 			}
 		}
+		if n := words.hintedLeaf(code); n != nil {
+			// A key the hinted leaf holds is replaced there; one between its
+			// first and last keys is its own, inserted if it has room. Only
+			// a miss reads those.
+			count := int(n.n)
+			i := firstTag(&n.tags, count, code)
+			if i < count && n.entries()[i].key != code {
+				i = n.lowerEntry(code)
+			}
+			if i < count && n.entries()[i].key == code {
+				old := n.entries()[i].value
+				n.entries()[i].value = packed
+				if words.valueKind == 1 {
+					return any(old).(V), true
+				}
+				return unpackWord[V](old, words.valueKind), true
+			}
+			if count > 0 && code > n.entries()[0].key && code < n.entries()[count-1].key {
+				if count < nodeSize {
+					if i == count {
+						// No tag matched: the key goes where it sorts.
+						i = n.lowerEntry(code)
+					}
+					words.inserted = code
+					if n.next == 0 {
+						words.tail = n
+					}
+					n.insertLeafPlain(i, code, packed)
+					t.length++
+					var zero V
+					return zero, false
+				}
+			}
+		}
 		n := words.rootNode
 		if n == nil {
 			words.insert(code, packed)
 		} else {
-			if id := words.routes.lookup(code); id != 0 {
-				n = words.node(id)
+			if hint := words.routes.lookup(code); hint != 0 {
+				n = words.node(hint)
 			}
+			var parent, grand *wordNode
+			edge, parentEdge := 0, 0
 			for !n.leaf {
 				index := 0
 				if n.directory != 0 {
@@ -172,7 +235,12 @@ func (t *treeCore[K, V, O]) Insert(key K, value V) (V, bool) {
 						}
 					}
 				}
+				grand, parentEdge = parent, edge
+				parent, edge = n, index
 				n = words.node(n.inner().children[index])
+			}
+			if parent != nil {
+				words.hintParent(code, parent, grand, parentEdge)
 			}
 			i := firstTag(&n.tags, int(n.n), code)
 			if i < int(n.n) && n.entries()[i].key != code {
@@ -204,6 +272,9 @@ func (t *treeCore[K, V, O]) Insert(key K, value V) (V, bool) {
 			words.insertNew(n, i, code, packed)
 		}
 		t.length++
+		if t.length >= 2*words.hints.built {
+			words.refreshHints(t.length)
+		}
 		var zero V
 		return zero, false
 	}
