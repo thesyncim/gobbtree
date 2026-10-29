@@ -157,6 +157,16 @@ func (t *treeCore[K, V, O]) Insert(key K, value V) (V, bool) {
 				var zero V
 				return zero, false
 			}
+			// A key between the leaf's first and last is its own, and the
+			// deletion left it room.
+			if count := int(leaf.n); count > 0 && code > leaf.entries()[0].key && code < leaf.entries()[count-1].key {
+				if i := leaf.lowerEntry(code); leaf.entries()[i].key != code {
+					words.insertLeaf(leaf, i, code, packed)
+					t.length++
+					var zero V
+					return zero, false
+				}
+			}
 		}
 		// Appends past the largest key go straight to the rightmost leaf.
 		if n := words.tail; n != nil && n.next == 0 && n.n > 0 && code > n.entries()[n.n-1].key {

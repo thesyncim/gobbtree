@@ -294,6 +294,30 @@ func (t *wordTree) route(n *wordNode, key uint64) int {
 	}
 	return i
 }
+
+// leafFilling is leafFor that fills key's hint cell from its leaf's parent,
+// as an insert's descent does.
+func (t *wordTree) leafFilling(key uint64) uint32 {
+	id := t.routes.lookup(key)
+	if id == 0 {
+		id = t.root
+	}
+	var parent, grand *wordNode
+	edge, parentEdge := 0, 0
+	for {
+		n := t.node(id)
+		if n.leaf {
+			if parent != nil {
+				t.hintParent(key, parent, grand, parentEdge)
+			}
+			return id
+		}
+		grand, parentEdge = parent, edge
+		parent, edge = n, t.route(n, key)
+		id = n.inner().children[edge]
+	}
+}
+
 func (t *wordTree) leafFor(key uint64) uint32 {
 	id := t.routes.lookup(key)
 	if id == 0 {
@@ -474,10 +498,18 @@ func (t *wordTree) deleteOwner(key uint64) (uint64, bool) {
 	if t.root == 0 {
 		return 0, false
 	}
-	n := t.node(t.leafFor(key))
-	i := n.exactEntry(key)
-	if i == int(n.n) || n.entries()[i].key != key {
-		return 0, false
+	// A hinted leaf that holds key is key's leaf: keys are unique.
+	n := t.hintedLeaf(key)
+	i := 0
+	if n != nil && n.leaf {
+		i = n.exactEntry(key)
+	}
+	if n == nil || !n.leaf || i == int(n.n) || n.entries()[i].key != key {
+		n = t.node(t.leafFilling(key))
+		i = n.exactEntry(key)
+		if i == int(n.n) || n.entries()[i].key != key {
+			return 0, false
+		}
 	}
 	// An entry in a leaf above minimum occupancy can be removed without
 	// changing any ancestor: separators are lower bounds. The leftmost
