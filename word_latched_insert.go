@@ -296,6 +296,10 @@ func insertIntoReleasing(leaf *wordNode, version, key, value uint64, policy int,
 
 // insertAtReleasing is insertIntoAt that lets go of leaf if merge panics.
 func insertAtReleasing(leaf *wordNode, version uint64, i int, key, value uint64, policy int, merge func(key, old, value uint64) uint64) (old uint64, found, done bool) {
+	if policy != insertMerge {
+		// Only a merge runs the caller's code.
+		return insertIntoAt(leaf, i, key, value, policy, merge)
+	}
 	finished := false
 	defer func() {
 		if !finished {
