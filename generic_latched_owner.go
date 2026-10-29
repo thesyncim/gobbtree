@@ -152,7 +152,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 		return old, true
 	}
 	if owned(&n.count) < nodeSize {
-		t.insertEntry(n, i, key, value, fits)
+		t.insertEntry(n, i, key, value)
 	} else {
 		t.ownerSplit(n, i, key, code, value)
 	}

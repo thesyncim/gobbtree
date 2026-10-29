@@ -153,6 +153,10 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(parent *ginner[K], index int, l
 		l, r := parent.children[left].Load(), parent.children[right].Load()
 		if leaves {
 			t.moveLeafEntries(asLeaf[K, V](l), int(l.count.Load()), asLeaf[K, V](r), 0, int(r.count.Load()))
+			// The merged leaf spans both: l's low fence and r's high.
+			low, _ := leafFences(parent, left)
+			_, high := leafFences(parent, right)
+			t.fitLeaf(asLeaf[K, V](l), low, high)
 		} else {
 			// The merged node spans both: its fences are l's low and r's.
 			asInner[K](l).high.Store(asInner[K](r).high.Load())
@@ -167,6 +171,8 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(parent *ginner[K], index int, l
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
 		t.moveLeafEntries(c, 0, o, int(o.count.Load())-1, 1)
 		t.setSeparator(parent, index, t.separator(c))
+		t.fitChild(c, parent, index)
+		t.fitChild(o, parent, sibling)
 	case sibling < index:
 		c, o := asInner[K](child), asInner[K](other)
 		// o's last child moves to c: its separator divides them now.
@@ -177,6 +183,8 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(parent *ginner[K], index int, l
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
 		t.moveLeafEntries(c, int(c.count.Load()), o, 0, 1)
 		t.setSeparator(parent, sibling, t.separator(o))
+		t.fitChild(c, parent, index)
+		t.fitChild(o, parent, sibling)
 	default:
 		c, o := asInner[K](child), asInner[K](other)
 		// o's first child moves to c: o's second's separator divides them.

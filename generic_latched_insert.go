@@ -138,6 +138,16 @@ func (t *genericTree[K, V, O]) shrinkShared(cur *string, p int) {
 					t.refitInner(asInner[K](n))
 				}
 			}
+			// The leaves on the borders take the shared prefix for a fence.
+			if root.leaf {
+				t.fitLeaf(asLeaf[K, V](root), nil, nil)
+			} else {
+				for _, right := range [2]bool{false, true} {
+					parent, edge := borderParent(asInner[K](root), right)
+					low, high := leafFences(parent, edge)
+					t.fitLeaf(asLeaf[K, V](parent.children[edge&(nodeSize-1)].Load()), low, high)
+				}
+			}
 			held.unlock()
 			return
 		}
@@ -146,8 +156,8 @@ func (t *genericTree[K, V, O]) shrinkShared(cur *string, p int) {
 	}
 }
 
-// takeBorder takes the internal nodes below n, held, along its first
-// children, or its last when right.
+// takeBorder takes the nodes below n, held, along its first children, or
+// its last when right: internal nodes and the leaf they end at.
 func takeBorder[K any](held *latchSet, n *ginner[K], right bool) bool {
 	for {
 		i := 0
@@ -155,11 +165,30 @@ func takeBorder[K any](held *latchSet, n *ginner[K], right bool) bool {
 			i = int(n.count.Load()) - 1
 		}
 		c := n.children[max(i, 0)&(nodeSize-1)].Load()
-		if c == nil || c.leaf {
-			return c != nil
+		if c == nil {
+			return false
+		}
+		if c.leaf {
+			return held.takeLeaf(c)
 		}
 		if !held.takeInternal(c) {
 			return false
+		}
+		n = asInner[K](c)
+	}
+}
+
+// borderParent is the internal node above the tree's first leaf, or its
+// last when right, below n, and the leaf's edge in it.
+func borderParent[K any](n *ginner[K], right bool) (*ginner[K], int) {
+	for {
+		i := 0
+		if right {
+			i = int(n.count.Load()) - 1
+		}
+		c := n.children[i&(nodeSize-1)].Load()
+		if c.leaf {
+			return n, i
 		}
 		n = asInner[K](c)
 	}
@@ -188,7 +217,7 @@ func (t *genericTree[K, V, O]) insertInto(n *gleaf[K, V], key K, code uint64, va
 	if int(n.count.Load()) == nodeSize {
 		return old, false, false
 	}
-	t.insertEntry(n, i, key, value, false)
+	t.insertEntry(n, i, key, value)
 	return old, false, true
 }
 
@@ -278,12 +307,24 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 	}
 	cut, left := ofSplit(nodeSize, index, minimum)
 	t.moveLeafEntries(right, 0, leaf, cut, nodeSize-cut)
-	if left {
-		t.insertEntry(leaf, index, key, value, false)
-	} else {
-		t.insertEntry(right, index-cut, key, value, false)
-	}
+	// The separator is the right half's first key, before the new one goes
+	// in, which ofSplit leaves to the left where they would tie; the halves
+	// take what the separator shares with the leaf's fences.
 	separator := t.separator(right)
+	if prefixed[O, K]() {
+		var low, high *K
+		if path.depth > 0 {
+			level := &path.levels[path.depth-1]
+			low, high = leafFences(level.n, level.edge)
+		}
+		t.growLeaf(leaf, t.fencePrefix(low, separator))
+		t.growLeaf(right, t.fencePrefix(separator, high))
+	}
+	if left {
+		t.insertEntry(leaf, index, key, value)
+	} else {
+		t.insertEntry(right, index-cut, key, value)
+	}
 	carried := &right.gheader
 	for level := path.depth - 1; level >= top && carried != nil; level-- {
 		n, edge := path.levels[level].n, path.levels[level].edge+1
@@ -326,16 +367,18 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 // leaves read them latched, or racing where a version check covers them.
 
 // insertEntry inserts an entry at i into leaf n, which has room, a keyed
-// leaf's key owned, a text leaf's copied into its buffer; a key without the
-// leaf's prefix shortens it. shares is true where the key is known to begin
-// with the prefix, as a lookup that fit its windows found.
-func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V, shares bool) {
-	p, refit := 0, false
-	if prefixed[O, K]() {
-		p = int(n.prefix.Load())
-		refit = !shares && p > 0 && t.leafOrder(n, key, p) != 0
-	}
+// leaf's key owned, a text leaf's copied into its buffer. The key lies
+// between the leaf's fences, so begins with its prefix; an empty leaf, the
+// root, takes the tree's shared prefix, its fences' (D50).
+func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V) {
+	p := 0
 	count := int(n.count.Load())
+	if prefixed[O, K]() {
+		if count == 0 {
+			n.setPrefix(textView(&key), len(t.sharedText()))
+		}
+		p = int(n.prefix.Load())
+	}
 	copy(n.codes[i+1:count+1], n.codes[i:count])
 	copy(n.values[i+1:count+1], n.values[i:count])
 	if prefixed[O, K]() {
@@ -353,9 +396,6 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 	}
 	n.values[i] = value
 	n.count.Store(int32(count + 1))
-	if refit {
-		t.refitLeaf(n)
-	}
 }
 
 // reserveKeys makes room in text leaf n's buffer for extra more bytes.
@@ -505,13 +545,13 @@ func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int, handOut bool) 
 }
 
 // moveLeafEntries moves count entries of src from from to dst at at,
-// shifting dst's entries up and src's down, and refits both; a text leaf's
-// keys are copied into dst's buffer, room made for them first.
+// shifting dst's entries up and src's down; a text leaf's keys are copied
+// into dst's buffer, room made for them first. Text leaves' windows are
+// left to their refits, at the fences the move gives them.
 func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gleaf[K, V], from, count int) {
 	srcCount, dstCount := int(src.count.Load()), int(dst.count.Load())
 	if prefixed[O, K]() && dstCount == 0 {
-		// A split's new half: its keys keep src's prefix and windows, and
-		// each half refits from them.
+		// A split's new half: its keys keep src's prefix and windows.
 		t.splitLeafEntries(dst, src, from, count)
 		return
 	}
@@ -527,8 +567,6 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 			dc.slots[at+j].ref = t.appendKey(dst, keyAt(sc.buf, sc.slots[from+j].ref))
 		}
 		copy(sc.slots[from:srcCount-count], sc.slots[from+count:srcCount])
-		// Tails follow the prefixes the refits below set; the freed slots
-		// hold none.
 		clear(sc.slots[srcCount-count : srcCount])
 	} else {
 		dk, sk := dst.keyed(), src.keyed()
@@ -549,14 +587,11 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 	clear(src.values[srcCount-count : srcCount])
 	dst.count.Store(int32(dstCount + count))
 	src.count.Store(int32(srcCount - count))
-	t.refitLeaf(dst)
-	t.refitLeaf(src)
 }
 
 // splitLeafEntries is moveLeafEntries into dst, empty, for text leaves: the
 // entries move with their windows, their keys into a buffer of dst's own,
-// dst takes src's prefix, and each leaf refits from its columns where they
-// tell it how.
+// and dst takes src's prefix, which both grow to their fences' after.
 func (t *genericTree[K, V, O]) splitLeafEntries(dst, src *gleaf[K, V], from, count int) {
 	srcCount := int(src.count.Load())
 	sc, dc := src.text(), dst.text()
@@ -583,11 +618,6 @@ func (t *genericTree[K, V, O]) splitLeafEntries(dst, src *gleaf[K, V], from, cou
 	dst.head[1].Store(src.head[1].Load())
 	dst.count.Store(int32(count))
 	src.count.Store(int32(srcCount - count))
-	for _, n := range [2]*gleaf[K, V]{dst, src} {
-		if !t.refitColumns(n) {
-			t.refitLeaf(n)
-		}
-	}
 }
 
 // insertChild inserts child, whose keys are at least separator, at i in

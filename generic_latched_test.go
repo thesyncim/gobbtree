@@ -75,6 +75,13 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				t.Fatalf("leaf holds %d entries", count)
 			}
 			n := asLeaf[K, V](h)
+			// A leaf's prefix is what its fences share (D26), the shared
+			// prefix standing in for one missing on a border (D50).
+			if prefixed[O, K]() && count > 0 {
+				if want := tree.fencePrefix(low, high); int(h.prefix.Load()) != want {
+					t.Fatalf("leaf prefix %d, fences share %d", h.prefix.Load(), want)
+				}
+			}
 			p := checkPrefix(h, count > 0, func() []string {
 				var keys []string
 				for i := 0; i < count; i++ {
@@ -655,9 +662,9 @@ func TestInnerRouteLayout(t *testing.T) {
 	}
 }
 
-// refitColumns, where it refits, leaves a leaf as refitLeaf does: the
-// prefix its first and last keys share, and each key's windows past it.
-func TestRefitColumns(t *testing.T) {
+// growLeaf, from a leaf's windows, leaves it as refitLeaf does from its
+// keys: each key's windows past the new prefix.
+func TestGrowLeaf(t *testing.T) {
 	rng := rand.New(rand.NewPCG(7, 9))
 	alphabet := []string{"", "\x00", "a", "ab", "abc", "user:", "user:3a", "user:3a4f5b", "\xff\x00\xff"}
 	var tr genericTree[string, uint64, natural[string]]
@@ -707,11 +714,12 @@ func TestRefitColumns(t *testing.T) {
 			n.setPrefix(keys[0], q)
 			return n
 		}
+		// Any prefix from q to what the keys share, as a split's fences
+		// give its halves.
+		p := q + rng.IntN(commonPrefix(keys[0], keys[count-1])-q+1)
 		a, b := build(), build()
-		if !tr.refitColumns(a) {
-			continue
-		}
-		tr.refitLeaf(b)
+		tr.growLeaf(a, p)
+		tr.refitLeaf(b, p)
 		if a.prefix.Load() != b.prefix.Load() || a.head[0].Load() != b.head[0].Load() || a.head[1].Load() != b.head[1].Load() {
 			t.Fatalf("%q at %d: prefix %d, want %d", keys, q, a.prefix.Load(), b.prefix.Load())
 		}

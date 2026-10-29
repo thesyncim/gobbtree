@@ -2,7 +2,6 @@ package gobbtree
 
 import (
 	"cmp"
-	"math/bits"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -588,60 +587,71 @@ func commonPrefix(a, b string) int {
 	return p
 }
 
-// refitLeaf sets leaf n's prefix to what its first and last keys share, and
-// recomputes its codes. n is held.
-func (t *genericTree[K, V, O]) refitLeaf(n *gleaf[K, V]) {
+// A leaf's prefix is what its fences share (D26): the separators beside it
+// in its ancestors, the tree's shared prefix standing in for one missing on
+// its borders (D50). Every key a route takes to the leaf lies between them,
+// so an insert never moves it; a split, merge or borrow does, and the leaves
+// it changes refit to their new fences.
+
+// leafFences is the fences of internal node n's child edge: the separator
+// it hangs from, and the next, or n's own where it is the first or last.
+func leafFences[K any](n *ginner[K], edge int) (low, high *K) {
+	low = n.seps[edge&(nodeSize-1)].Load()
+	if edge+1 < int(n.count.Load()) {
+		return low, n.seps[(edge+1)&(nodeSize-1)].Load()
+	}
+	return low, n.high.Load()
+}
+
+// fitChild is fitLeaf for leaf n, internal node parent's child edge.
+func (t *genericTree[K, V, O]) fitChild(n *gleaf[K, V], parent *ginner[K], edge int) {
+	low, high := leafFences(parent, edge)
+	t.fitLeaf(n, low, high)
+}
+
+// fitLeaf refits text leaf n, held, to its fences low and high, from its
+// keys. An emptied leaf, only ever the root, keeps no prefix.
+func (t *genericTree[K, V, O]) fitLeaf(n *gleaf[K, V], low, high *K) {
 	if !prefixed[O, K]() {
 		return
 	}
-	count, p := int(n.count.Load()), 0
-	if count > 1 {
-		p = commonPrefix(t.keyText(n, 0), t.keyText(n, count-1))
-	}
-	if count > 0 {
-		n.setPrefix(t.keyText(n, 0), p)
-	} else {
+	if n.count.Load() == 0 {
 		n.setPrefix("", 0)
+		return
 	}
+	t.refitLeaf(n, t.fencePrefix(low, high))
+}
+
+// refitLeaf sets text leaf n's prefix to p, which its keys share, and
+// recomputes its windows from its keys. n is held.
+func (t *genericTree[K, V, O]) refitLeaf(n *gleaf[K, V], p int) {
+	count := int(n.count.Load())
+	n.setPrefix(t.keyText(n, 0), p)
 	for i := 0; i < count; i++ {
 		s := t.keyText(n, i)
 		n.codes[i], n.text().slots[i].tail = stringCode(s, p), stringCode(s, p+8)
 	}
 }
 
-// refitColumns is refitLeaf for text leaf n whose keys all begin with its
-// prefix q and whose columns hold their windows there, as a split's halves
-// do: the prefix the first and last keys share, and each key's windows
-// past it, come from the columns, which hold every byte of a key that fits
-// them, rather than from the keys, reading only those that don't fit and
-// the first for the head. It reports false, changing nothing, where the
-// columns can't tell the prefix: a leaf of fewer than two keys, a prefix
-// past 200 bytes, or first and last keys alike past their windows.
-func (t *genericTree[K, V, O]) refitColumns(n *gleaf[K, V]) bool {
-	count, q := int(n.count.Load()), int(n.prefix.Load())
-	if count < 2 || q > 200 {
-		return false
+// growLeaf moves text leaf n, whose windows are its keys' at its prefix q,
+// to prefix p, at least q, which its keys share, as a split's halves do:
+// each window shifts past the bytes the prefix now takes, the columns
+// holding every byte of a key that fits them, and only keys too long for
+// them, and the first for the head, are read.
+func (t *genericTree[K, V, O]) growLeaf(n *gleaf[K, V], p int) {
+	q := int(n.prefix.Load())
+	if p <= q {
+		if p < q {
+			t.refitLeaf(n, p)
+		}
+		return
 	}
+	count, d := int(n.count.Load()), p-q
 	c := n.text()
-	last := count - 1
-	d := 16
-	switch {
-	case n.codes[0] != n.codes[last]:
-		d = bits.LeadingZeros64(n.codes[0]^n.codes[last]) / 8
-	case c.slots[0].tail != c.slots[last].tail:
-		d = 8 + bits.LeadingZeros64(c.slots[0].tail^c.slots[last].tail)/8
-	case refLen(c.slots[0].ref) > q+16 && refLen(c.slots[last].ref) > q+16:
-		return false
-	}
-	d = min(d, refLen(c.slots[0].ref)-q, refLen(c.slots[last].ref)-q)
-	if d <= 0 {
-		return true
-	}
-	p := q + d
 	for i := 0; i < count; i++ {
 		code, tail := n.codes[i], c.slots[i].tail
-		switch l := refLen(c.slots[i].ref); {
-		case l > q+16:
+		switch {
+		case refLen(c.slots[i].ref) > q+16:
 			s := t.keyText(n, i)
 			code, tail = stringCode(s, p), stringCode(s, p+8)
 		case d >= 8:
@@ -652,7 +662,6 @@ func (t *genericTree[K, V, O]) refitColumns(n *gleaf[K, V]) bool {
 		n.codes[i], c.slots[i].tail = code, tail
 	}
 	n.setPrefix(t.keyText(n, 0), p)
-	return true
 }
 
 // textProbe is a text key as a leaf at prefix p compares it: its code and
