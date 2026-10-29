@@ -40,6 +40,10 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	// the kinds' type switch is a call. Only an owner's lookups and plain
 	// stores' read it racing; one that finds it unset goes the general way.
 	exact bool
+	// Such a tree names its leaves by ID, for its hint table.
+	leaves leafDir
+	hints  atomic.Pointer[codeHints]
+	making atomic.Bool
 	// An owner's text leaves reuse their buffers' bytes, a removed key's for
 	// the next to go in and a full buffer's for its live keys, while no key
 	// read over them is out: epoch is the generation of buffers the writer
@@ -62,6 +66,9 @@ type gheader struct {
 	prefix atomic.Int32
 	head   [2]atomic.Uint64
 	leaf   bool
+	// id names a leaf of integer keys in its tree's leaf directory, for
+	// hints (generic_hints.go); 0 is none. It never changes.
+	id uint32
 }
 
 // A leaf: entries in key order, with each key's code, its window past the
@@ -383,6 +390,9 @@ func (t *genericTree[K, V, O]) newLeaf() *gleaf[K, V] {
 		n = new(gleaf[K, V])
 	default:
 		n = &new(keyedLeaf[K, V]).gleaf
+	}
+	if t.exact {
+		t.leaves.add(&n.gheader)
 	}
 	n.leaf = true
 	for i := range n.codes {
@@ -1095,7 +1105,16 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 	}
 	if seqlockPlainStores && t.wordCodes() {
 		code := numericKey[O](key)
-		if h, word, ok := codeLeafOrdered((**gheader)(unsafe.Pointer(&t.root)), code); ok {
+		if r := plainPointer(&t.hints); r != nil {
+			if h := r.leafFor(&t.leaves, code); h != nil {
+				if value, found, ok := t.readHintedCode(asLeaf[K, V](h), code); ok {
+					return value, found
+				}
+			}
+		}
+		var f hintFrame
+		if h, word, ok := codeLeafOrdered((**gheader)(unsafe.Pointer(&t.root)), code, &f); ok {
+			currentHints(&t.hints, &t.making, plainPointer(&t.root)).fillFrom(&f, code)
 			if value, found, ok := t.readCodeLeaf(asLeaf[K, V](h), word, code); ok {
 				return value, found
 			}
@@ -1202,4 +1221,6 @@ func (t *genericTree[K, V, O]) isEmpty() bool {
 func (t *genericTree[K, V, O]) clear() {
 	t.root.Store(nil)
 	t.shared.Store(nil)
+	t.hints.Store(nil)
+	t.leaves.reset()
 }

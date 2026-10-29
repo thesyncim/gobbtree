@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -27,7 +28,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 	if root == nil {
 		return 0
 	}
-	leafDepth := -1
+	leafDepth, leafIDs := -1, 0
 	// checkPrefix checks that a node's keys, when it has any, begin with its
 	// prefix, which its head holds, and returns the prefix's length.
 	checkPrefix := func(h *gheader, any bool, keys func() []string) int {
@@ -76,6 +77,12 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 			if h != root && count < leafMinLen {
 				t.Fatalf("leaf holds %d entries", count)
 			}
+			// A leaf of integer keys has an ID its tree's directory holds
+			// it at (generic_hints.go); others have none.
+			if tree.exact != (h.id != 0) || h.id != 0 && tree.leaves.leaf(h.id) != h {
+				t.Fatalf("leaf ID %d, exact %v, directory holds another", h.id, tree.exact)
+			}
+			leafIDs++
 			n := asLeaf[K, V](h)
 			// A leaf's head is its separator, its low fence, and its first
 			// key; the leftmost leaf, and leaves of exact codes, have none.
@@ -236,7 +243,79 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 		}
 		return total
 	}
-	return check(root, nil, nil, 0)
+	total := check(root, nil, nil, 0)
+	// The directory holds the tree's leaves and nothing else.
+	if ids := tree.leaves.ids.Load(); tree.exact && ids != nil {
+		held := 0
+		for i := range *ids {
+			if (*ids)[i].Load() != nil {
+				held++
+			}
+		}
+		if held != leafIDs {
+			t.Fatalf("leaf directory holds %d leaves, the tree %d", held, leafIDs)
+		}
+	}
+	return total
+}
+
+// Integer keys' trees route lookups by hints (generic_hints.go): leaves
+// split, merge and give back their IDs, which new leaves take, while
+// lookups, inserts and deletes go through cells naming leaves by them.
+func TestCodeHints(t *testing.T) {
+	keyings := map[string]func(uint64) int64{
+		"mixed":     func(i uint64) int64 { return int64(mixedKey(i)) },
+		"clustered": func(i uint64) int64 { return int64(mixedKey(i>>6)&^(1<<16-1) | i&63) },
+		"small":     func(i uint64) int64 { return int64(i%5000) - 2500 },
+	}
+	for name, keyAt := range keyings {
+		t.Run(name, func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(1, 2))
+			var tr Tree[int64, string]
+			m := New[int64, string]()
+			ref := map[int64]string{}
+			const span = 20000
+			for op := 0; op < 300000; op++ {
+				k := keyAt(uint64(rng.IntN(span)))
+				switch rng.IntN(8) {
+				case 0, 1, 2:
+					v := fmt.Sprint(op)
+					tr.Insert(k, v)
+					m.Insert(k, v)
+					ref[k] = v
+				case 3, 4:
+					_, had := ref[k]
+					if _, ok := tr.Delete(k); ok != had {
+						t.Fatalf("op %d: Tree delete %d found %v, want %v", op, k, ok, had)
+					}
+					if _, ok := m.Delete(k); ok != had {
+						t.Fatalf("op %d: Map delete %d found %v, want %v", op, k, ok, had)
+					}
+					delete(ref, k)
+				default:
+					want, had := ref[k]
+					if v, ok := tr.Get(k); ok != had || v != want {
+						t.Fatalf("op %d: Tree get %d = %q %v, want %q %v", op, k, v, ok, want, had)
+					}
+					if v, ok := m.Get(k); ok != had || v != want {
+						t.Fatalf("op %d: Map get %d = %q %v, want %q %v", op, k, v, ok, want, had)
+					}
+				}
+				if op%50000 == 0 {
+					checkTree(t, &tr)
+					checkMap(t, &m.mapCore)
+				}
+			}
+			for k, want := range ref {
+				if v, ok := tr.Get(k); !ok || v != want {
+					t.Fatalf("Tree lost %d", k)
+				}
+			}
+			if got := checkMap(t, &m.mapCore); got != len(ref) {
+				t.Fatalf("Map holds %d, want %d", got, len(ref))
+			}
+		})
+	}
 }
 
 // genericKeys are the key families the generic tests run over: lengths
@@ -979,4 +1058,57 @@ func TestMapRacingSeparators(t *testing.T) {
 		}
 	}
 	checkGenericTree(t, &m.generic)
+}
+
+// A Map of integer keys reads through hints while writers split and merge
+// leaves, which hands their IDs to new ones: keys that stay must always be
+// found, and found with their own values.
+func TestMapHintsRacing(t *testing.T) {
+	m := New[int64, string]()
+	const span = 40000
+	key := func(i int) int64 { return int64(mixedKey(uint64(i))) }
+	for i := 0; i < span; i++ {
+		m.Insert(key(i), strconv.Itoa(i))
+	}
+	var writers, readers sync.WaitGroup
+	stop := make(chan struct{})
+	for w := range 3 {
+		writers.Go(func() {
+			rng := rand.New(rand.NewPCG(uint64(w), 3))
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				// Odd keys churn, by runs, so leaves empty and merge.
+				i := rng.IntN(span/64) * 64
+				for j := i + 1; j < i+64; j += 2 {
+					m.Delete(key(j))
+				}
+				for j := i + 1; j < i+64; j += 2 {
+					m.Insert(key(j), strconv.Itoa(j))
+				}
+			}
+		})
+	}
+	for r := range 4 {
+		readers.Go(func() {
+			rng := rand.New(rand.NewPCG(uint64(r), 4))
+			for range 300000 {
+				i := rng.IntN(span)
+				v, ok := m.Get(key(i))
+				if i%2 == 0 && !ok || ok && v != strconv.Itoa(i) {
+					t.Errorf("get %d = %q %v", i, v, ok)
+					return
+				}
+			}
+		})
+	}
+	readers.Wait()
+	close(stop)
+	writers.Wait()
+	if got := checkMap(t, &m.mapCore); got != span {
+		t.Fatalf("Map holds %d, want %d", got, span)
+	}
 }

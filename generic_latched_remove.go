@@ -280,6 +280,7 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 			t.removeChild(parent, right)
 			t.fitLeaf(asLeaf[K, V](l), t.leafLow(asLeaf[K, V](l)), high)
 			t.clearHead(asLeaf[K, V](r))
+			t.leaves.remove(r)
 		} else {
 			t.moveChildEntries(asInner[K](l), int(l.count.Load()), asInner[K](r), 0, int(r.count.Load()))
 			t.removeChild(parent, right)

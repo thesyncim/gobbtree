@@ -139,11 +139,7 @@ func (r *latchedRoutes) refill(dir []*wordNode, key uint64, p *wordNode) {
 }
 
 func (r *latchedRoutes) fillFrom(dir []*wordNode, c *hintCell, key uint64, p, g *wordNode, edge int, descend bool) {
-	start := r.base + ((key-r.base)>>r.shift)<<r.shift
-	end := start + (uint64(1)<<r.shift - 1)
-	if end < start {
-		end = ^uint64(0)
-	}
+	start, end := r.regionOf(key)
 	var span hintSpan
 	low, high := lowFence(p), highFence(p)
 	if start < low && g != nil && edge > 0 {
@@ -153,6 +149,23 @@ func (r *latchedRoutes) fillFrom(dir []*wordNode, c *hintCell, key uint64, p, g 
 	if high != 0 && end >= high && g != nil && edge+1 < min(int(g.n), nodeSize) {
 		span.add(r, nodeOf(dir, g, edge+1), high, end)
 	}
+	r.store(c, &span, start, end, descend)
+}
+
+// regionOf is key's region, from its start to its end.
+func (r *latchedRoutes) regionOf(key uint64) (start, end uint64) {
+	start = r.base + ((key-r.base)>>r.shift)<<r.shift
+	end = start + (uint64(1)<<r.shift - 1)
+	if end < start {
+		end = ^uint64(0)
+	}
+	return start, end
+}
+
+// store names in cell c the leaves span gathered for the region from start
+// to end where they hold it whole, up to four; otherwise, where descend,
+// it marks the cell to descend, and leaves it as it was where not.
+func (r *latchedRoutes) store(c *hintCell, span *hintSpan, start, end uint64, descend bool) {
 	head, tail := uint64(hintDescend), uint64(0)
 	covered := span.n > 0 && span.n <= 4 && span.covers(start, end)
 	if !covered && !descend {

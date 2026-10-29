@@ -130,7 +130,10 @@ func (t *genericTree[K, V, O]) readTextLeaf(n *gleaf[K, V], word uint64, key K) 
 // by code, from the root at root: an internal node's codes are its
 // separators', its first 0, and its route the last child whose separator
 // is at most code, which a search of every slot feeds the closing check.
-func codeLeafOrdered(root **gheader, code uint64) (*gheader, uint64, bool) {
+//
+// It records in f, where not nil, the leaf's parent and the fences its
+// route read, for a hint's fill.
+func codeLeafOrdered(root **gheader, code uint64, f *hintFrame) (*gheader, uint64, bool) {
 	h := *root
 	if h == nil {
 		return nil, 0, false
@@ -139,6 +142,7 @@ func codeLeafOrdered(root **gheader, code uint64) (*gheader, uint64, bool) {
 	if *after(root, word) != h {
 		return nil, 0, false
 	}
+	low, high, edge := uint64(0), uint64(0), 0
 	for depth := 0; depth < maxDepth; depth++ {
 		if word&latchExclusive != 0 {
 			return nil, 0, false
@@ -151,8 +155,19 @@ func codeLeafOrdered(root **gheader, code uint64) (*gheader, uint64, bool) {
 		if count < 1 || count > nodeSize {
 			return nil, 0, false
 		}
-		i := routeCode((*[nodeSize]uint64)(unsafe.Pointer(&n.codes)), count, code)
+		codes := (*[nodeSize]uint64)(unsafe.Pointer(&n.codes))
+		i := routeCode(codes, count, code)
 		acc := uint64(i) ^ uint64(count)<<8
+		if f != nil {
+			f.g, f.gLow, f.gHigh, f.edge = f.p, f.low, f.high, edge
+			f.p, f.low, f.high, edge = n, low, high, i
+			if i > 0 {
+				low = codes[i&(nodeSize-1)]
+			}
+			if i+1 < count {
+				high = codes[(i+1)&(nodeSize-1)]
+			}
+		}
 		child := *after((**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)])), acc)
 		if child == nil {
 			return nil, 0, false
@@ -164,6 +179,77 @@ func codeLeafOrdered(root **gheader, code uint64) (*gheader, uint64, bool) {
 		}
 		h, word = child, childWord
 	}
+	return nil, 0, false
+}
+
+// readHintedCode settles code in leaf n, which its hint names: its value
+// and whether it is there, or false where n doesn't hold it between its
+// first and last keys, or changed meanwhile. Its latch word is loaded
+// plainly, and feeds the addresses of the words it guards, which all feed
+// the closing check's, as the word trees' readHinted orders them.
+func (t *genericTree[K, V, O]) readHintedCode(n *gleaf[K, V], code uint64) (value V, found, ok bool) {
+	word := *(*uint64)(unsafe.Pointer(&n.latch))
+	if word&latchExclusive != 0 {
+		return value, false, false
+	}
+	m := after(n, word)
+	count := int(*(*int32)(unsafe.Pointer(&m.count)))
+	if count <= 0 || count > nodeSize {
+		return value, false, false
+	}
+	first, last := m.codes[0], m.codes[(count-1)&(nodeSize-1)]
+	if code < first || code > last {
+		return value, false, false
+	}
+	lo := lowerCode(&m.codes, count, code) & (nodeSize - 1)
+	c := m.codes[lo]
+	acc := uint64(count) ^ uint64(lo)<<8 ^ c ^ first<<1 ^ last<<2
+	if c == code {
+		found = true
+		value = m.values[lo]
+		if unsafe.Sizeof(value) == 8 {
+			acc ^= *(*uint64)(unsafe.Pointer(&value))
+		} else {
+			loadFence()
+		}
+	}
+	closing := *after((*uint64)(unsafe.Pointer(&n.latch)), acc)
+	if closing&^latchSharedMask != word&^latchSharedMask {
+		return value, false, false
+	}
+	if !found {
+		var zero V
+		return zero, false, true
+	}
+	return value, true, true
+}
+
+// hintedLatched is code's leaf latched in mode through its hint, and the
+// version held: the leaf is taken by a compare-and-swap at the latch word
+// read, and kept where it holds code between its first and last keys.
+func (t *genericTree[K, V, O]) hintedLatched(code uint64, mode int) (*gleaf[K, V], uint64, bool) {
+	r := plainPointer(&t.hints)
+	if r == nil {
+		return nil, 0, false
+	}
+	h := r.leafFor(&t.leaves, code)
+	if h == nil {
+		return nil, 0, false
+	}
+	n := asLeaf[K, V](h)
+	word := *(*uint64)(unsafe.Pointer(&n.latch))
+	version := uint64(0)
+	switch {
+	case mode == exclusive && word&(latchExclusive|latchSharedMask) == 0 && n.latch.tryLockAt(word):
+		version = word
+	case mode == shared && word&latchExclusive == 0 && n.latch.CompareAndSwap(word, word+latchSharedUnit):
+	default:
+		return nil, 0, false
+	}
+	if count := int(n.count.Load()); count > 0 && n.codes[0] <= code && code <= n.codes[(count-1)&(nodeSize-1)] {
+		return n, version, true
+	}
+	unlatchHeader(&n.gheader, mode, version)
 	return nil, 0, false
 }
 
@@ -208,7 +294,12 @@ func (t *genericTree[K, V, O]) readCodeLeaf(n *gleaf[K, V], word, code uint64) (
 // descent's checks vouched for it, so the leaf is still key's.
 func (t *genericTree[K, V, O]) leafLatched(key K, code uint64, seek int, mode int) (*gleaf[K, V], uint64) {
 	if seqlockPlainStores && t.wordCodes() && seek == seekKey {
-		if h, word, ok := codeLeafOrdered((**gheader)(unsafe.Pointer(&t.root)), code); ok {
+		if n, version, ok := t.hintedLatched(code, mode); ok {
+			return n, version
+		}
+		var f hintFrame
+		if h, word, ok := codeLeafOrdered((**gheader)(unsafe.Pointer(&t.root)), code, &f); ok {
+			currentHints(&t.hints, &t.making, plainPointer(&t.root)).fillFrom(&f, code)
 			n := asLeaf[K, V](h)
 			switch {
 			case mode == exclusive && word&(latchExclusive|latchSharedMask) == 0 && n.latch.tryLockAt(word):

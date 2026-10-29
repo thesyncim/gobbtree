@@ -39,7 +39,27 @@ func (t *genericTree[K, V, O]) ownerLeaf(key K, code uint64) *gleaf[K, V] {
 // routes anywhere, but it is in no leaf, and a writer admits its key first.
 func (t *genericTree[K, V, O]) ownerSeek(key K, code uint64) (n *gleaf[K, V], i int, found, fits bool) {
 	if t.wordCodes() {
-		h, i, ok := descendCode(plainPointer(&t.root), code)
+		// A key the hinted leaf holds is there; one between its first
+		// and last keys is absent, and goes in there.
+		if r := plainPointer(&t.hints); r != nil {
+			if h := r.leafFor(&t.leaves, code); h != nil {
+				n := (*leafRoute)(unsafe.Pointer(h))
+				count := owned(&n.count)
+				i := lowerCode(&n.codes, count, code)
+				if i < count && n.codes[i&(nodeSize-1)] == code {
+					return asLeaf[K, V](h), i, true, false
+				}
+				if count > 0 && code > n.codes[0] && code < n.codes[(count-1)&(nodeSize-1)] {
+					return asLeaf[K, V](h), i, false, false
+				}
+			}
+		}
+		root := plainPointer(&t.root)
+		if !root.leaf {
+			h, i, ok := descendCodeFilling(root, code, currentHints(&t.hints, &t.making, root))
+			return asLeaf[K, V](h), i, ok, false
+		}
+		h, i, ok := descendCode(root, code)
 		return asLeaf[K, V](h), i, ok, false
 	}
 	if !prefixed[O, K]() {
