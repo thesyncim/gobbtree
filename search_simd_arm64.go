@@ -75,6 +75,33 @@ func lowerSummary(sums *[nodeSize]uint32, n int, t uint32) int {
 	return min(-int(a.Add(b).Add(c.Add(d)).ReduceSum()), n)
 }
 
+// descendText descends an owner's tree from h by text key s, with plain
+// loads, to its leaf; or it stops at the internal node where s's summary
+// ties a separator's, for the separators to settle. The summaries are
+// counted inline: a call per level spills the descent's registers.
+func descendText(h *gheader, s string) (leaf, tie *gheader) {
+	if simd.Emulated() {
+		return descendTextBy(h, s)
+	}
+	for !h.leaf {
+		n := (*innerRoute)(unsafe.Pointer(h))
+		count := owned(&n.count)
+		sum := summaryOf(s, owned(&n.prefix))
+		sums := (*[nodeSize]uint32)(unsafe.Pointer(&n.codes))
+		target := archsimd.BroadcastUint32x4(sum)
+		a := countEight32((*[8]uint32)(sums[0:8]), target)
+		b := countEight32((*[8]uint32)(sums[8:16]), target)
+		c := countEight32((*[8]uint32)(sums[16:24]), target)
+		d := countEight32((*[8]uint32)(sums[24:32]), target)
+		lo := min(-int(a.Add(b).Add(c.Add(d)).ReduceSum()), count)
+		if lo < count && sums[lo&(nodeSize-1)] == sum {
+			return nil, h
+		}
+		h = plainPointer(&n.children[max(lo-1, 0)&(nodeSize-1)])
+	}
+	return h, nil
+}
+
 func countEight32(keys *[8]uint32, target archsimd.Uint32x4) archsimd.Int32x4 {
 	a := archsimd.LoadUint32x4(keys[0:4]).Less(target).ToInt32x4()
 	b := archsimd.LoadUint32x4(keys[4:8]).Less(target).ToInt32x4()

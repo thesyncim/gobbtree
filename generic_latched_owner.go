@@ -44,17 +44,15 @@ func (t *genericTree[K, V, O]) ownerSeek(key K, code uint64) (*gleaf[K, V], int,
 	}
 	s := textView(&key)
 	h := plainPointer(&t.root)
-	for !h.leaf {
-		n := asInner[K](h)
-		count, p := owned(&n.count), owned(&n.prefix)
-		sum := summaryOf(s, p)
-		sums := n.sums()
-		lo := lowerSummary(sums, count, sum)
-		i := max(lo-1, 0)
-		if lo < count && sums[lo&(nodeSize-1)] == sum {
-			// Summaries tie: the boxed separators settle it.
-			i, _ = t.route(n, key, code, count, false)
+	for {
+		leaf, tie := descendText(h, s)
+		if tie == nil {
+			h = leaf
+			break
 		}
+		// Summaries tie: the boxed separators settle it.
+		n := asInner[K](tie)
+		i, _ := t.route(n, key, code, owned(&n.count), false)
 		h = plainPointer(&n.children[i&(nodeSize-1)])
 	}
 	n := asLeaf[K, V](h)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unsafe"
 )
 
 // nodeRoutedKey is a defined uint64. The word engine accepts only built-in
@@ -589,6 +590,21 @@ func TestHeadDiff(t *testing.T) {
 			if got != want {
 				t.Fatalf("%q against %q: %v, want %v", k, prefix, got, want)
 			}
+		}
+	}
+}
+
+// innerRoute lays out as every internal node begins.
+func TestInnerRouteLayout(t *testing.T) {
+	var r innerRoute
+	var a ginner[string]
+	var b ginner[Bytes]
+	for _, n := range []struct{ codes, children uintptr }{
+		{unsafe.Offsetof(a.codes), unsafe.Offsetof(a.children)},
+		{unsafe.Offsetof(b.codes), unsafe.Offsetof(b.children)},
+	} {
+		if n.codes != unsafe.Offsetof(r.codes) || n.children != unsafe.Offsetof(r.children) {
+			t.Fatalf("ginner fields at %d and %d, innerRoute's at %d and %d", n.codes, n.children, unsafe.Offsetof(r.codes), unsafe.Offsetof(r.children))
 		}
 	}
 }
