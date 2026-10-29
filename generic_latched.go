@@ -1,6 +1,7 @@
 package gobbtree
 
 import (
+	"cmp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +55,26 @@ type gleaf[K any, V any] struct {
 	values [nodeSize]V
 }
 
+// A text leaf also keeps, for each key, its window past the code's (tails)
+// and its length, saturated at 255 (lens), upstream's inline key and hash
+// tag (D14, D36): a key no longer than the prefix and 16 bytes is then
+// compared within the leaf, without reading its bytes. They follow the leaf
+// in one allocation, so that other leaves carry none.
+type textLeaf[K any, V any] struct {
+	gleaf[K, V]
+	textColumns
+}
+
+type textColumns struct {
+	tails [nodeSize]uint64
+	lens  [nodeSize]uint8
+}
+
+// text is text leaf n's columns.
+func (n *gleaf[K, V]) text() *textColumns {
+	return (*textColumns)(unsafe.Add(unsafe.Pointer(n), unsafe.Offsetof(textLeaf[K, V]{}.textColumns)))
+}
+
 // An internal node: child i holds keys at least separator i, whose code,
 // its window past the prefix, routes without reading the key. Code 0 is 0
 // and slots past the count hold codePad. Separator 0 is the node's own, nil
@@ -76,8 +97,13 @@ func (h *gheader) freed() { h.count.Store(0) }
 
 // newGLeaf and newGInner make a node latched exclusively, at version 0,
 // until the operation making it lets go.
-func newGLeaf[K any, V any]() *gleaf[K, V] {
-	n := &gleaf[K, V]{}
+func newGLeaf[K any, V any](text bool) *gleaf[K, V] {
+	var n *gleaf[K, V]
+	if text {
+		n = &new(textLeaf[K, V]).gleaf
+	} else {
+		n = &gleaf[K, V]{}
+	}
 	n.leaf = true
 	for i := range n.codes {
 		n.codes[i] = codePad
@@ -136,6 +162,18 @@ func codeRange(codes *[nodeSize]atomic.Uint64, count int, code uint64) (lo, hi i
 		}
 	}
 	return lo, end
+}
+
+// tieRange is codeRange over a leaf's plain codes: one search finds the
+// first code at least code, and the codes equal to it, rare past a prefix,
+// follow.
+func tieRange(codes *[nodeSize]uint64, count int, code uint64) (lo, hi int) {
+	lo = lowerCode(codes, count, code)
+	hi = lo
+	for hi < count && codes[hi&(nodeSize-1)] == code {
+		hi++
+	}
+	return lo, hi
 }
 
 // route is the child of internal node n, of count children, whose keys
@@ -398,8 +436,48 @@ func (t *genericTree[K, V, O]) refitLeaf(n *gleaf[K, V]) {
 		n.setPrefix("", 0)
 	}
 	for i := 0; i < count; i++ {
-		n.codes[i] = windowKey[O](n.keys[i], p)
+		s := textView(&n.keys[i])
+		n.codes[i], n.text().tails[i], n.text().lens[i] = stringCode(s, p), stringCode(s, p+8), textLen(s)
 	}
+}
+
+// textLen is a text key's length as a leaf keeps it, saturated at 255.
+func textLen(s string) uint8 { return uint8(min(len(s), 255)) }
+
+// textProbe is a text key as a leaf at prefix p compares it: its code and
+// tail windows there, and its kept length.
+type textProbe struct {
+	code, tail uint64
+	len        uint8
+	settles    bool
+}
+
+func probeText(s string, p int) textProbe {
+	return textProbe{stringCode(s, p), stringCode(s, p+8), textLen(s), len(s) <= p+16 && len(s) < 255}
+}
+
+// slotOrder orders text leaf n's key at slot i, whose code equals k's, at
+// prefix p, against k's key, within the leaf: by tails, then by lengths
+// where a key fits its windows, a longer key extending the other. settled
+// is false where neither key fits, and their bytes must be compared.
+func slotOrder[K any, V any](n *gleaf[K, V], i int, k *textProbe, p int) (order int, settled bool) {
+	if tail := n.text().tails[i&(nodeSize-1)]; tail != k.tail {
+		if tail < k.tail {
+			return -1, true
+		}
+		return 1, true
+	}
+	l := n.text().lens[i&(nodeSize-1)]
+	fits := int(l) <= p+16 && l < 255
+	switch {
+	case fits && k.settles:
+		return cmp.Compare(l, k.len), true
+	case k.settles:
+		return 1, true
+	case fits:
+		return -1, true
+	}
+	return 0, false
 }
 
 // refitInner sets internal node n's prefix to what its separators past its
@@ -435,15 +513,31 @@ func (t *genericTree[K, V, O]) leafOrder(n *gleaf[K, V], key K, p int) int {
 func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K, code uint64) (int, bool) {
 	count := int(n.count.Load())
 	if prefixed[O, K]() {
-		if p := int(n.prefix.Load()); p > 0 {
+		p := int(n.prefix.Load())
+		if p > 0 {
 			switch order := t.leafOrder(n, key, p); {
 			case order < 0:
 				return 0, false
 			case order > 0:
 				return count, false
 			}
-			code = windowKey[O](key, p)
 		}
+		k := probeText(textView(&key), p)
+		lo, hi := tieRange(&n.codes, count, k.code)
+		order := 1
+		for lo < hi {
+			mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
+			o, settled := slotOrder(n, mid, &k, p)
+			if !settled {
+				o = t.compare(n.keys[mid], key)
+			}
+			if o < 0 {
+				lo = mid + 1
+			} else {
+				hi, order = mid, o
+			}
+		}
+		return lo, lo < count && order == 0
 	}
 	lo := lowerCode(&n.codes, count, code)
 	if exactCodes[O, K]() {
@@ -469,7 +563,7 @@ func (t *genericTree[K, V, O]) start() {
 	t.starting.Lock()
 	defer t.starting.Unlock()
 	if t.root.Load() == nil {
-		n := newGLeaf[K, V]()
+		n := newGLeaf[K, V](prefixed[O, K]())
 		n.latch.unlockExclusive(0)
 		t.root.Store(&n.gheader)
 	}
@@ -504,30 +598,36 @@ func (t *genericTree[K, V, O]) getText(key K, code uint64) (value V, found, done
 		if p > 16 {
 			return value, false, false
 		}
+		// The slot that holds key, if any: settled within the leaf, or a
+		// candidate whose bytes are compared once the leaf's version holds.
 		var candidate K
-		var lo, hi int
+		slot, settled := -1, false
 		if p == 0 || headOrder(textView(&key), p, n.head[0].Load(), n.head[1].Load()) == 0 {
-			c := code
-			if p > 0 {
-				c = stringCode(textView(&key), p)
-			}
-			lo = lowerCode(&n.codes, count, c)
-			hi = count
-			if c != ^uint64(0) {
-				hi = lowerCode(&n.codes, count, c+1)
-			}
-			if hi-lo == 1 {
-				candidate, value = n.keys[lo&(nodeSize-1)], n.values[lo&(nodeSize-1)]
+			k := probeText(textView(&key), p)
+			lo, hi := tieRange(&n.codes, count, k.code)
+			for i := lo; i < hi; i++ {
+				order, ok := slotOrder(n, i, &k, p)
+				if ok && order != 0 {
+					continue
+				}
+				if !ok && i+1 < hi {
+					// Long keys that tie past their windows: a racing
+					// read compares only one, so the leaf is latched.
+					return value, false, false
+				}
+				slot, settled = i&(nodeSize-1), ok
+				value = n.values[slot]
+				if !ok {
+					candidate = n.keys[slot]
+				}
+				break
 			}
 		}
 		loadFence()
 		if !n.latch.isUnchanged(version) {
 			continue
 		}
-		if hi-lo > 1 {
-			return value, false, false
-		}
-		if hi-lo == 1 && textView(&candidate) == textView(&key) {
+		if slot >= 0 && (settled || textView(&candidate) == textView(&key)) {
 			return value, true, true
 		}
 		var zero V

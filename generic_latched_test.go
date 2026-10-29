@@ -82,11 +82,19 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				if n.codes[i] != windowKey[O](n.keys[i], p) {
 					t.Fatalf("leaf code %d is stale", i)
 				}
+				if prefixed[O, K]() {
+					if k := probeText(textView(&n.keys[i]), p); n.text().tails[i] != k.tail || n.text().lens[i] != k.len {
+						t.Fatalf("leaf tail or length %d is stale", i)
+					}
+				}
 				if i > 0 && compareKeys[O](n.keys[i-1], n.keys[i]) >= 0 {
 					t.Fatalf("leaf keys out of order at %d", i)
 				}
 			}
 			for i := count; i < nodeSize; i++ {
+				if prefixed[O, K]() && (n.text().tails[i] != 0 || n.text().lens[i] != 0) {
+					t.Fatalf("leaf slot %d past count %d keeps a tail", i, count)
+				}
 				if n.codes[i] != codePad || !reflect.ValueOf(&n.keys[i]).Elem().IsZero() || !reflect.ValueOf(&n.values[i]).Elem().IsZero() {
 					t.Fatalf("leaf slot %d past count %d holds an entry", i, count)
 				}

@@ -51,7 +51,7 @@ func (t *genericTree[K, V, O]) removeLatched(seek int, key K, code uint64, condi
 	if int(n.count.Load()) <= leafMinLen && t.root.Load() != &n.gheader {
 		return k, v, false, false
 	}
-	k, v = removeEntry(n, i)
+	k, v = t.removeEntry(n, i)
 	return k, v, true, true
 }
 
@@ -75,14 +75,14 @@ func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, code uint64, c
 	}
 	// Another goroutine may have filled the leaf since.
 	if int(n.count.Load()) > leafMinLen || t.root.Load() == &n.gheader {
-		k, v = removeEntry(n, i)
+		k, v = t.removeEntry(n, i)
 		return k, v, true, true
 	}
 	fixes, ok := t.takeFixes(&path, int(n.count.Load())-1, &held)
 	if !ok {
 		return k, v, false, false
 	}
-	k, v = removeEntry(n, i)
+	k, v = t.removeEntry(n, i)
 	depth := path.depth
 	for fix := 0; fix < fixes; fix++ {
 		level := path.levels[depth-1-fix]

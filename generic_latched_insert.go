@@ -165,7 +165,7 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 		}
 	}
 	var fresh latchSet
-	right := newGLeaf[K, V]()
+	right := newGLeaf[K, V](prefixed[O, K]())
 	fresh.push(&right.gheader, 0)
 	index, _ := t.find(leaf, key, code)
 	// A key past the leaf's last leaves it nearly full, as an ascending
@@ -233,6 +233,12 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 	copy(n.keys[i+1:count+1], n.keys[i:count])
 	copy(n.values[i+1:count+1], n.values[i:count])
 	n.codes[i], n.keys[i], n.values[i] = windowKey[O](key, p), key, value
+	if prefixed[O, K]() {
+		copy(n.text().tails[i+1:count+1], n.text().tails[i:count])
+		copy(n.text().lens[i+1:count+1], n.text().lens[i:count])
+		s := textView(&key)
+		n.text().tails[i], n.text().lens[i] = stringCode(s, p+8), textLen(s)
+	}
 	n.count.Store(int32(count + 1))
 	if refit {
 		t.refitLeaf(n)
@@ -242,7 +248,7 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 // removeEntry removes leaf n's entry i, clearing the slot it frees so that
 // the collector can take what it held. An emptied leaf has no prefix: no key
 // is left to share one.
-func removeEntry[K any, V any](n *gleaf[K, V], i int) (K, V) {
+func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int) (K, V) {
 	count := int(n.count.Load())
 	key, value := n.keys[i], n.values[i]
 	copy(n.codes[i:count-1], n.codes[i+1:count])
@@ -251,6 +257,12 @@ func removeEntry[K any, V any](n *gleaf[K, V], i int) (K, V) {
 	var zk K
 	var zv V
 	n.codes[count-1], n.keys[count-1], n.values[count-1] = codePad, zk, zv
+	if prefixed[O, K]() {
+		c := n.text()
+		copy(c.tails[i:count-1], c.tails[i+1:count])
+		copy(c.lens[i:count-1], c.lens[i+1:count])
+		c.tails[count-1], c.lens[count-1] = 0, 0
+	}
 	n.count.Store(int32(count - 1))
 	if count == 1 {
 		n.setPrefix("", 0)
@@ -273,6 +285,12 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 	copy(src.values[from:srcCount-count], src.values[from+count:srcCount])
 	for j := srcCount - count; j < srcCount; j++ {
 		src.codes[j] = codePad
+	}
+	if prefixed[O, K]() {
+		// Text leaves' tails and lengths follow their prefixes, which the
+		// refits below set; the freed slots hold none.
+		clear(src.text().tails[srcCount-count : srcCount])
+		clear(src.text().lens[srcCount-count : srcCount])
 	}
 	clear(src.keys[srcCount-count : srcCount])
 	clear(src.values[srcCount-count : srcCount])
