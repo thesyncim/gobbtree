@@ -80,6 +80,18 @@ func stringCode(s string, offset int) uint64 {
 	return stringCodeTail(s, offset)
 }
 
+// fastWindow is stringCode by one load, inlined, for a string of eight
+// bytes or more and an offset inside it: the eight bytes there, or near the
+// end the last eight shifted so that the rest lead. ok is false otherwise,
+// for stringCode to settle; it calls nothing, so that it inlines.
+func fastWindow(s string, offset int) (code uint64, ok bool) {
+	if len(s) < 8 || uint(offset) >= uint(len(s)) {
+		return 0, false
+	}
+	at := min(offset, len(s)-8)
+	return loadWord(s, at) << (8 * (offset - at)), true
+}
+
 // stringCodeTail is stringCode where fewer than eight bytes are left.
 func stringCodeTail(s string, offset int) uint64 {
 	if offset >= len(s) {

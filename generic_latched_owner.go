@@ -57,7 +57,11 @@ func (t *genericTree[K, V, O]) ownerFind(n *gleaf[K, V], key K, code uint64) (in
 			lo := lowerCode(&n.codes, count, c)
 			if j := lo & (nodeSize - 1); lo < count && n.codes[j] == c {
 				text := n.text()
-				if text.tails[j] == stringCode(s, p+8) && text.lens[j] == textLen(s) {
+				tail, ok := fastWindow(s, p+8)
+				if !ok {
+					tail = stringCode(s, p+8)
+				}
+				if text.tails[j] == tail && text.lens[j] == textLen(s) {
 					return lo, true
 				}
 			} else {
@@ -119,12 +123,21 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 	if t.root.Load() == nil {
 		t.start()
 	}
-	if prefixed[O, K]() {
-		t.admit(key)
+	code := uint64(0)
+	if !prefixed[O, K]() {
+		code = t.code(key)
 	}
-	code := t.code(key)
 	n := t.ownerLeaf(key, code)
 	i, found := t.ownerFind(n, key, code)
+	if !found && prefixed[O, K]() && t.sharedOrder(key) != 0 {
+		// A new key without the shared prefix shortens it, which refits
+		// the borders its route may have crossed: route it again.
+		t.admit(key)
+		n = t.ownerLeaf(key, code)
+		i, found = t.ownerFind(n, key, code)
+	} else if !found && prefixed[O, K]() && t.shared.Load() == nil {
+		t.admit(key)
+	}
 	if found {
 		old := n.values[i]
 		switch policy {

@@ -515,7 +515,11 @@ type textProbe struct {
 }
 
 func probeText(s string, p int) textProbe {
-	return textProbe{stringCode(s, p), stringCode(s, p+8), textLen(s), len(s) <= p+16 && len(s) < 255}
+	tail, ok := fastWindow(s, p+8)
+	if !ok {
+		tail = stringCode(s, p+8)
+	}
+	return textProbe{stringCode(s, p), tail, textLen(s), len(s) <= p+16 && len(s) < 255}
 }
 
 // slotOrder orders text leaf n's key at slot i, whose code equals k's, at

@@ -560,3 +560,18 @@ func TestGenericTextWindowEdges(t *testing.T) {
 	}
 	checkGenericTree(t, &m.generic)
 }
+
+// fastWindow agrees with stringCode wherever it answers.
+func TestFastWindow(t *testing.T) {
+	for _, s := range []string{"", "a", "0123456", "01234567", "0123456789abcdefghij", "\xff\x00\xff\x00\xff\x00\xff\x00\xff"} {
+		for offset := -2; offset <= len(s)+9; offset++ {
+			got, ok := fastWindow(s, offset)
+			if !ok {
+				continue
+			}
+			if want := stringCode(s, offset); got != want {
+				t.Fatalf("%q at %d: %x, want %x", s, offset, got, want)
+			}
+		}
+	}
+}

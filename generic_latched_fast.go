@@ -86,7 +86,11 @@ func (t *genericTree[K, V, O]) readTextLeaf(n *gleaf[K, V], word uint64, key K) 
 	// Key has the leaf's prefix where its first p bytes are the head's.
 	shares := len(s) >= p && (stringCode(s, 0)^h0)&headMask(p) == 0 && (p <= 8 || (stringCode(s, 8)^h1)&headMask(p-8) == 0)
 	if shares {
-		code, tail, length := stringCode(s, p), stringCode(s, p+8), textLen(s)
+		code, length := stringCode(s, p), textLen(s)
+		tail, fast := fastWindow(s, p+8)
+		if !fast {
+			tail = stringCode(s, p+8)
+		}
 		if len(s) > p+16 || length == 255 {
 			// Too long to settle by windows.
 			return value, false, false
