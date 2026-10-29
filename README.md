@@ -118,7 +118,7 @@ A composite key encodes its fields one after another. For example, a `uint32` te
 
 A `Map` of word-sized keys and values (integers, floats, bools) shares one tree as upstream's `BBTreeMap` does ([design](https://github.com/XiangpengHao/bbtree/blob/1c72bd27994ed0a38694b029618e80115e22644f/design/09-concurrency.md)). Every node carries a latch word with a version. Lookups descend optimistically, checking each node's version after reading its child's, and write nothing. Writers latch only the leaf they change. A split or a merge takes, without waiting, only the nodes it changes, and starts over if another goroutine holds one. No lock, epoch or counter is shared by all writers, so writes scale with cores. A lookup whose leaf keeps changing takes the leaf's shared latch, so readers make progress behind a hot leaf. Freed nodes keep their latch word for life and come back only as nodes of their kind, so a stale pointer always fails its version check.
 
-Beyond upstream, every node also keeps its fences, the bounds of the keys under it, and a table of hints jumps from a key straight to its leaf. A hint is never trusted: the leaf's version and fences are checked before it is used, and a stale one costs only a descent from the root. Lookups read with plain loads, ordered by address dependencies rather than acquire loads, so independent lookups overlap their cache misses; race-detector builds use atomic loads instead.
+Beyond upstream, every node also keeps its fences, the bounds of the keys under it, and a table of hints jumps from a key straight to its leaf. A hint is never trusted: the leaf's version and fences are checked before it is used, and a stale one costs only a descent from the root. Lookups read with plain loads, ordered by address dependencies rather than acquire loads, so independent lookups overlap their cache misses; race-detector builds use atomic loads instead. A full leaf first moves entries to a sibling with room, as `Tree` does, so leaves stay about four-fifths full; an ascending run splits its leaf nearly full instead.
 
 `Map`s with other keys (strings, `MapOf` custom keys) still lock single leaves under a structural lock that splits and merges take exclusively.
 
@@ -195,7 +195,7 @@ The kernel is chosen at run time. `gobbtree.SIMD()` reports the choice, and `GOD
 
 ## Benchmarks
 
-Go 1.27.3 with `GOEXPERIMENT=simd` against the Rust original (1.99.1, native CPU tuning, full LTO, mimalloc) on an Apple M4 Max. Sources: [Go `1a1a75a`](https://github.com/thesyncim/gobbtree/commit/1a1a75afc83da658c0610cce13bdc8e021e12a03), [Rust `1c72bd2`](https://github.com/XiangpengHao/bbtree/tree/1c72bd27994ed0a38694b029618e80115e22644f). `uint64` keys and values; medians of three fresh-process runs over identical datasets, with checked results. Every workload runs with three key patterns: **mixed keys**, hashed keys spread over the full 64-bit range; **sequential keys**, consecutive even keys; misses and fresh keys fill the gaps; **clustered keys**, runs of 1,024 consecutive even keys at scattered bases.
+Go 1.27.3 with `GOEXPERIMENT=simd` against the Rust original (1.99.1, native CPU tuning, full LTO, mimalloc) on an Apple M4 Max. Sources: [Go `a4ff0ed`](https://github.com/thesyncim/gobbtree/commit/a4ff0ed88bb9c0c6597a36076442b1923f3835ed), [Rust `1c72bd2`](https://github.com/XiangpengHao/bbtree/tree/1c72bd27994ed0a38694b029618e80115e22644f). `uint64` keys and values; medians of three fresh-process runs over identical datasets, with checked results. Every workload runs with three key patterns: **mixed keys**, hashed keys spread over the full 64-bit range; **sequential keys**, consecutive even keys; misses and fresh keys fill the gaps; **clustered keys**, runs of 1,024 consecutive even keys at scattered bases.
 
 ![Change in Go operation time versus Rust across four sizes and multiple workloads, mixed keys](benchmarks/cpu-arm64.svg)
 
@@ -208,27 +208,27 @@ Each cell is the **change in Go time versus Rust**: negative means Go is faster;
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 6.32 / 12.14 | 9.77 / 23.00 | 33.37 / 82.39 | 67.42 / 110.97 |
-| Read miss | 8.51 / 11.50 | 12.14 / 21.83 | 38.64 / 67.08 | 75.96 / 104.09 |
-| Batch hit · 8 keys | 10.96 / 11.94 | 12.73 / 22.78 | 31.07 / 50.49 | 54.20 / 67.14 |
-| Batch miss · 8 keys | 10.53 / 11.74 | 12.23 / 20.29 | 26.92 / 41.54 | 47.72 / 57.97 |
-| Replace value | 11.73 / 12.70 | 16.40 / 25.41 | 48.63 / 85.04 | 91.72 / 111.00 |
-| Delete + reinsert same key | 41.52 / 71.39 | 66.54 / 107.56 | 147.61 / 232.58 | 270.04 / 307.27 |
-| Delete + insert new key | 62.80 / 94.36 | 101.98 / 136.66 | 230.83 / 336.51 | 438.66 / 486.77 |
+| Read hit | 6.32 / 12.59 | 9.78 / 23.59 | 34.05 / 81.88 | 66.44 / 109.83 |
+| Read miss | 8.61 / 11.84 | 12.01 / 22.50 | 37.95 / 69.15 | 75.48 / 104.21 |
+| Batch hit · 8 keys | 11.15 / 12.19 | 12.73 / 22.92 | 31.60 / 50.89 | 54.54 / 66.85 |
+| Batch miss · 8 keys | 10.60 / 12.01 | 12.29 / 20.33 | 27.05 / 39.51 | 48.58 / 56.16 |
+| Replace value | 12.24 / 13.02 | 16.92 / 26.27 | 47.35 / 84.26 | 91.75 / 112.81 |
+| Delete + reinsert same key | 43.13 / 75.22 | 66.48 / 113.51 | 151.16 / 236.17 | 271.60 / 314.18 |
+| Delete + insert new key | 66.90 / 100.08 | 105.07 / 148.03 | 238.77 / 343.16 | 439.59 / 485.06 |
 
 **Map**
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 10.33 / 13.15 | 16.28 / 27.19 | 52.06 / 98.65 | 95.92 / 112.36 |
-| Read miss | 10.36 / 12.07 | 14.72 / 24.87 | 36.57 / 68.22 | 80.61 / 100.25 |
-| Batch hit · 8 keys | 11.12 / 13.28 | 14.14 / 21.60 | 32.75 / 50.69 | 51.88 / 68.38 |
-| Batch miss · 8 keys | 11.28 / 12.59 | 13.63 / 19.29 | 28.26 / 39.01 | 46.92 / 55.33 |
-| Replace value | 12.45 / 14.54 | 21.48 / 29.22 | 64.81 / 109.92 | 123.52 / 143.25 |
-| Delete + reinsert same key | 49.26 / 71.78 | 67.85 / 106.76 | 160.40 / 231.69 | 263.74 / 318.97 |
-| Delete + insert new key | 54.89 / 99.22 | 88.28 / 134.76 | 222.12 / 331.54 | 413.19 / 492.83 |
-| 4 workers · reads | 2.81 / 3.81 | 4.72 / 7.36 | 16.36 / 28.25 | 27.15 / 37.51 |
-| 4 workers · 10% writes | 4.76 / 4.96 | 4.90 / 7.28 | 18.82 / 29.50 | 28.25 / 42.49 |
+| Read hit | 10.52 / 13.62 | 16.53 / 28.03 | 53.88 / 98.33 | 96.57 / 116.90 |
+| Read miss | 10.72 / 12.37 | 15.16 / 25.33 | 35.26 / 68.16 | 78.01 / 102.66 |
+| Batch hit · 8 keys | 11.16 / 13.70 | 14.21 / 21.70 | 32.43 / 51.27 | 49.91 / 69.04 |
+| Batch miss · 8 keys | 11.35 / 12.87 | 13.74 / 19.28 | 27.58 / 39.07 | 45.21 / 56.31 |
+| Replace value | 13.34 / 14.70 | 20.53 / 29.48 | 60.83 / 110.54 | 114.42 / 150.06 |
+| Delete + reinsert same key | 51.12 / 74.00 | 68.28 / 110.21 | 170.01 / 239.49 | 267.35 / 317.95 |
+| Delete + insert new key | 57.69 / 104.97 | 93.40 / 144.53 | 247.07 / 339.81 | 453.34 / 487.26 |
+| 4 workers · reads | 2.79 / 3.84 | 4.77 / 7.39 | 15.55 / 27.73 | 26.52 / 38.14 |
+| 4 workers · 10% writes | 4.81 / 4.96 | 5.11 / 7.18 | 18.27 / 29.48 | 28.33 / 42.37 |
 
 </details>
 
@@ -243,14 +243,14 @@ Memory is whole-process peak RSS, including the Go runtime, GC headroom and read
 
 | Container | Entries | Peak RSS, MB | After reads, MB | Collected / settled RSS, MB | Build, seconds |
 |---|---:|---:|---:|---:|---:|
-| Tree | 4K | 5.75 / 2.16 | 4.93 / 2.15 | 5.75 / 2.15 | 0.0004 / 0.0004 |
-| Tree | 262K | 12.58 / 9.06 | 12.48 / 9.04 | 12.58 / 9.04 | 0.0292 / 0.0294 |
-| Tree | 5M | 127.81 / 136.48 | 127.81 / 136.46 | 127.81 / 136.46 | 0.5552 / 0.6323 |
-| Tree | 50M | 1,225.92 / 1,347.81 | 1,225.88 / 1,347.80 | 1,225.92 / 1,347.80 | 10.4302 / 10.4508 |
-| Map | 4K | 5.75 / 2.16 | 4.96 / 2.15 | 5.75 / 2.15 | 0.0005 / 0.0004 |
-| Map | 262K | 13.30 / 9.06 | 13.25 / 9.04 | 13.30 / 9.04 | 0.0289 / 0.0305 |
-| Map | 5M | 146.55 / 136.51 | 146.55 / 136.50 | 146.55 / 136.50 | 0.6649 / 0.6568 |
-| Map | 50M | 1,415.53 / 1,348.21 | 1,415.46 / 1,348.19 | 1,415.53 / 1,348.19 | 12.0213 / 10.5279 |
+| Tree | 4K | 5.65 / 2.16 | 4.85 / 2.15 | 5.65 / 2.15 | 0.0005 / 0.0003 |
+| Tree | 262K | 12.78 / 9.06 | 12.55 / 9.04 | 12.78 / 9.04 | 0.0286 / 0.0284 |
+| Tree | 5M | 127.84 / 136.48 | 127.84 / 136.46 | 127.84 / 136.46 | 0.5534 / 0.6464 |
+| Tree | 50M | 1,225.98 / 1,347.81 | 1,225.95 / 1,347.80 | 1,225.98 / 1,347.80 | 10.3818 / 10.3758 |
+| Map | 4K | 5.62 / 2.16 | 4.83 / 2.15 | 5.62 / 2.15 | 0.0006 / 0.0002 |
+| Map | 262K | 12.45 / 9.06 | 12.12 / 9.04 | 12.45 / 9.04 | 0.0324 / 0.0288 |
+| Map | 5M | 132.46 / 136.51 | 132.45 / 136.50 | 132.46 / 136.50 | 0.7075 / 0.6533 |
+| Map | 50M | 1,252.41 / 1,348.21 | 1,252.33 / 1,348.19 | 1,252.41 / 1,348.19 | 13.0620 / 10.5127 |
 
 </details>
 
@@ -269,40 +269,40 @@ Consecutive even keys; misses and fresh keys fill the gaps.
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 5.35 / 11.86 | 8.44 / 24.08 | 37.50 / 75.75 | 91.46 / 96.05 |
-| Read miss | 6.04 / 11.04 | 9.01 / 22.13 | 28.61 / 51.32 | 67.88 / 93.97 |
-| Batch hit · 8 keys | 10.05 / 11.87 | 12.70 / 21.89 | 31.77 / 49.07 | 58.22 / 73.38 |
-| Batch miss · 8 keys | 9.41 / 11.05 | 11.97 / 19.90 | 18.61 / 32.37 | 46.40 / 58.78 |
-| Replace value | 11.31 / 12.44 | 15.49 / 25.87 | 48.81 / 83.87 | 121.70 / 119.37 |
-| Delete + reinsert same key | 41.85 / 78.09 | 68.45 / 119.65 | 146.65 / 228.80 | 274.52 / 310.07 |
-| Delete + insert new key | 45.91 / 63.79 | 80.50 / 114.67 | 179.37 / 235.54 | 312.10 / 295.52 |
+| Read hit | 5.41 / 11.84 | 8.39 / 23.97 | 34.34 / 76.60 | 85.52 / 101.79 |
+| Read miss | 5.98 / 10.95 | 8.55 / 22.09 | 26.43 / 53.29 | 56.35 / 94.51 |
+| Batch hit · 8 keys | 10.14 / 11.82 | 12.63 / 21.85 | 32.25 / 47.60 | 56.49 / 69.56 |
+| Batch miss · 8 keys | 9.40 / 11.08 | 11.65 / 19.86 | 18.97 / 32.27 | 47.09 / 57.84 |
+| Replace value | 11.35 / 12.45 | 15.30 / 25.66 | 41.66 / 81.43 | 90.33 / 121.26 |
+| Delete + reinsert same key | 41.59 / 78.47 | 68.78 / 120.41 | 150.23 / 226.61 | 279.80 / 301.99 |
+| Delete + insert new key | 45.75 / 63.39 | 80.38 / 115.14 | 177.88 / 234.00 | 317.60 / 294.32 |
 
 **Map**
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 9.50 / 12.98 | 14.65 / 28.51 | 73.81 / 93.13 | 151.37 / 117.90 |
-| Read miss | 8.17 / 12.38 | 11.64 / 26.26 | 36.99 / 54.72 | 68.99 / 94.52 |
-| Batch hit · 8 keys | 10.36 / 13.60 | 12.36 / 22.14 | 51.18 / 49.14 | 49.23 / 72.81 |
-| Batch miss · 8 keys | 9.58 / 12.87 | 11.31 / 20.40 | 34.70 / 35.01 | 39.36 / 59.72 |
-| Replace value | 11.49 / 15.46 | 19.25 / 31.64 | 81.06 / 106.02 | 121.02 / 155.97 |
-| Delete + reinsert same key | 48.19 / 79.52 | 64.39 / 120.05 | 177.65 / 234.89 | 254.53 / 303.49 |
-| Delete + insert new key | 41.86 / 85.18 | 60.09 / 114.49 | 186.77 / 242.59 | 270.24 / 299.93 |
-| 4 workers · reads | 2.54 / 3.37 | 4.35 / 7.45 | 18.98 / 24.73 | 25.84 / 36.43 |
-| 4 workers · 10% writes | 4.53 / 4.82 | 4.92 / 7.46 | 21.52 / 27.48 | 27.02 / 41.21 |
+| Read hit | 9.40 / 13.01 | 14.51 / 28.45 | 51.95 / 93.75 | 112.48 / 113.94 |
+| Read miss | 8.22 / 12.36 | 11.60 / 26.25 | 25.16 / 56.19 | 68.31 / 97.44 |
+| Batch hit · 8 keys | 10.22 / 13.89 | 12.16 / 22.16 | 31.63 / 48.83 | 49.48 / 71.16 |
+| Batch miss · 8 keys | 9.63 / 12.91 | 11.10 / 20.48 | 19.14 / 34.12 | 39.72 / 59.40 |
+| Replace value | 12.02 / 15.40 | 18.58 / 31.63 | 63.98 / 110.45 | 116.63 / 158.34 |
+| Delete + reinsert same key | 49.96 / 79.80 | 66.11 / 119.44 | 160.49 / 232.40 | 267.64 / 305.54 |
+| Delete + insert new key | 42.09 / 84.72 | 61.79 / 112.87 | 167.93 / 244.35 | 277.19 / 301.15 |
+| 4 workers · reads | 2.52 / 3.36 | 4.32 / 7.34 | 15.37 / 25.07 | 25.96 / 36.33 |
+| 4 workers · 10% writes | 4.49 / 4.83 | 4.67 / 7.44 | 18.17 / 27.91 | 27.20 / 40.08 |
 
 ![Go versus Rust peak RSS, sequential keys](benchmarks/memory-sequential-arm64.svg)
 
 | Container | Entries | Peak RSS, MB | After reads, MB | Collected / settled RSS, MB | Build, seconds |
 |---|---:|---:|---:|---:|---:|
-| Tree | 4K | 5.54 / 2.16 | 4.75 / 2.15 | 5.54 / 2.15 | 0.0001 / 0.0001 |
-| Tree | 262K | 11.22 / 8.26 | 10.93 / 8.24 | 11.22 / 8.24 | 0.0038 / 0.0034 |
-| Tree | 5M | 105.40 / 120.24 | 105.38 / 120.23 | 105.40 / 120.23 | 0.0470 / 0.0471 |
-| Tree | 50M | 989.10 / 1,184.02 | 989.10 / 1,184.01 | 989.10 / 1,184.01 | 0.3907 / 0.4116 |
-| Map | 4K | 5.65 / 2.16 | 4.96 / 2.15 | 5.65 / 2.15 | 0.0002 / 0.0001 |
-| Map | 262K | 13.01 / 8.26 | 12.91 / 8.24 | 13.01 / 8.24 | 0.0094 / 0.0045 |
-| Map | 5M | 136.84 / 120.29 | 136.84 / 120.27 | 136.84 / 120.27 | 0.1053 / 0.0594 |
-| Map | 50M | 1,331.31 / 1,184.48 | 1,331.25 / 1,184.46 | 1,331.31 / 1,184.46 | 1.0277 / 0.5157 |
+| Tree | 4K | 5.62 / 2.16 | 4.65 / 2.15 | 5.62 / 2.15 | 0.0001 / 0.0001 |
+| Tree | 262K | 11.27 / 8.26 | 10.93 / 8.24 | 11.27 / 8.24 | 0.0040 / 0.0031 |
+| Tree | 5M | 105.74 / 120.24 | 105.73 / 120.23 | 105.74 / 120.23 | 0.0425 / 0.0458 |
+| Tree | 50M | 1,009.12 / 1,184.04 | 1,009.09 / 1,184.02 | 1,009.12 / 1,184.02 | 0.3855 / 0.4105 |
+| Map | 4K | 5.75 / 2.16 | 4.88 / 2.15 | 5.75 / 2.15 | 0.0002 / 0.0001 |
+| Map | 262K | 11.80 / 8.26 | 11.42 / 8.24 | 11.80 / 8.24 | 0.0056 / 0.0049 |
+| Map | 5M | 119.29 / 120.29 | 119.24 / 120.27 | 119.29 / 120.27 | 0.0685 / 0.0605 |
+| Map | 50M | 1,136.79 / 1,184.48 | 1,136.77 / 1,184.46 | 1,136.79 / 1,184.46 | 0.5573 / 0.5083 |
 
 </details>
 
@@ -321,40 +321,40 @@ Runs of 1,024 consecutive even keys at scattered bases.
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 5.91 / 26.77 | 11.58 / 49.51 | 46.73 / 168.53 | 114.03 / 347.57 |
-| Read miss | 6.81 / 24.99 | 13.34 / 45.40 | 45.03 / 144.33 | 97.28 / 341.44 |
-| Batch hit · 8 keys | 17.09 / 22.80 | 29.35 / 43.59 | 79.47 / 131.91 | 108.97 / 207.22 |
-| Batch miss · 8 keys | 17.04 / 23.78 | 28.33 / 41.94 | 68.12 / 118.03 | 101.08 / 199.51 |
-| Replace value | 10.79 / 28.77 | 18.41 / 53.12 | 64.51 / 214.56 | 129.26 / 400.26 |
-| Delete + reinsert same key | 52.09 / 117.36 | 91.37 / 175.07 | 196.61 / 445.79 | 348.80 / 779.15 |
-| Delete + insert new key | 57.96 / 103.66 | 107.94 / 170.52 | 251.97 / 489.37 | 404.81 / 771.28 |
+| Read hit | 5.87 / 26.79 | 11.59 / 50.73 | 46.68 / 165.27 | 108.22 / 348.51 |
+| Read miss | 6.79 / 25.52 | 13.25 / 48.23 | 45.95 / 141.22 | 97.13 / 340.17 |
+| Batch hit · 8 keys | 16.48 / 24.58 | 32.43 / 43.09 | 78.33 / 132.28 | 109.19 / 208.03 |
+| Batch miss · 8 keys | 17.01 / 23.18 | 31.74 / 40.85 | 69.31 / 117.85 | 101.22 / 199.57 |
+| Replace value | 10.90 / 28.35 | 18.54 / 53.27 | 68.16 / 215.84 | 128.29 / 398.26 |
+| Delete + reinsert same key | 52.46 / 118.10 | 92.00 / 174.31 | 194.83 / 440.15 | 337.40 / 764.59 |
+| Delete + insert new key | 57.80 / 103.74 | 109.56 / 170.13 | 252.01 / 484.74 | 408.69 / 771.58 |
 
 **Map**
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 10.10 / 35.05 | 26.00 / 58.26 | 88.29 / 204.76 | 178.49 / 363.53 |
-| Read miss | 8.69 / 33.14 | 23.09 / 56.30 | 61.80 / 186.88 | 130.27 / 339.64 |
-| Batch hit · 8 keys | 10.98 / 34.78 | 23.34 / 46.84 | 60.85 / 153.64 | 112.75 / 252.13 |
-| Batch miss · 8 keys | 10.26 / 29.86 | 22.09 / 45.39 | 49.30 / 139.81 | 105.19 / 241.55 |
-| Replace value | 11.72 / 35.32 | 30.92 / 61.88 | 105.64 / 212.97 | 181.39 / 377.29 |
-| Delete + reinsert same key | 50.32 / 117.38 | 77.57 / 163.52 | 211.24 / 375.09 | 333.23 / 631.01 |
-| Delete + insert new key | 42.68 / 120.55 | 82.42 / 163.73 | 220.02 / 399.26 | 359.25 / 634.68 |
-| 4 workers · reads | 2.72 / 10.16 | 6.98 / 16.11 | 25.18 / 53.24 | 42.69 / 91.75 |
-| 4 workers · 10% writes | 4.59 / 8.84 | 7.32 / 16.21 | 27.98 / 55.70 | 43.58 / 93.97 |
+| Read hit | 10.05 / 38.65 | 25.14 / 59.16 | 86.27 / 202.97 | 165.70 / 366.25 |
+| Read miss | 8.70 / 34.75 | 22.15 / 56.47 | 54.43 / 185.08 | 125.33 / 339.77 |
+| Batch hit · 8 keys | 10.57 / 30.00 | 22.62 / 48.88 | 60.23 / 154.41 | 109.60 / 250.33 |
+| Batch miss · 8 keys | 9.99 / 34.11 | 21.20 / 44.82 | 46.55 / 139.18 | 99.05 / 240.60 |
+| Replace value | 12.43 / 40.97 | 29.45 / 61.95 | 93.02 / 211.34 | 167.62 / 378.71 |
+| Delete + reinsert same key | 51.23 / 117.22 | 79.07 / 160.26 | 210.65 / 373.85 | 336.05 / 629.47 |
+| Delete + insert new key | 44.81 / 119.43 | 85.74 / 159.03 | 233.51 / 399.38 | 357.99 / 644.77 |
+| 4 workers · reads | 2.71 / 9.70 | 6.71 / 16.48 | 23.22 / 52.92 | 41.21 / 91.68 |
+| 4 workers · 10% writes | 4.69 / 8.91 | 7.15 / 16.14 | 27.25 / 55.51 | 42.66 / 94.15 |
 
 ![Go versus Rust peak RSS, clustered keys](benchmarks/memory-clustered-arm64.svg)
 
 | Container | Entries | Peak RSS, MB | After reads, MB | Collected / settled RSS, MB | Build, seconds |
 |---|---:|---:|---:|---:|---:|
-| Tree | 4K | 5.72 / 2.18 | 4.92 / 2.16 | 5.72 / 2.16 | 0.0002 / 0.0002 |
-| Tree | 262K | 13.39 / 11.70 | 13.24 / 11.68 | 13.39 / 11.68 | 0.0167 / 0.0264 |
-| Tree | 5M | 132.40 / 187.09 | 132.37 / 187.07 | 132.40 / 187.07 | 0.1882 / 0.3860 |
-| Tree | 50M | 1,138.95 / 1,853.29 | 1,138.95 / 1,853.28 | 1,138.95 / 1,853.28 | 1.8200 / 4.0093 |
-| Map | 4K | 5.82 / 2.18 | 5.00 / 2.16 | 5.82 / 2.16 | 0.0003 / 0.0001 |
-| Map | 262K | 14.39 / 11.70 | 14.25 / 11.68 | 14.39 / 11.68 | 0.0160 / 0.0270 |
-| Map | 5M | 160.69 / 187.11 | 160.69 / 187.09 | 160.69 / 187.09 | 0.1858 / 0.3749 |
-| Map | 50M | 1,504.26 / 1,853.33 | 1,504.23 / 1,853.31 | 1,504.26 / 1,853.31 | 2.1920 / 3.9078 |
+| Tree | 4K | 5.62 / 2.18 | 4.77 / 2.16 | 5.62 / 2.16 | 0.0002 / 0.0002 |
+| Tree | 262K | 13.45 / 11.70 | 13.29 / 11.68 | 13.45 / 11.68 | 0.0117 / 0.0291 |
+| Tree | 5M | 132.51 / 187.11 | 132.50 / 187.09 | 132.51 / 187.09 | 0.1865 / 0.3863 |
+| Tree | 50M | 1,139.10 / 1,853.28 | 1,139.05 / 1,853.26 | 1,139.10 / 1,853.26 | 1.8046 / 3.9882 |
+| Map | 4K | 5.73 / 2.18 | 4.93 / 2.16 | 5.73 / 2.16 | 0.0002 / 0.0002 |
+| Map | 262K | 12.70 / 11.70 | 12.62 / 11.68 | 12.70 / 11.68 | 0.0197 / 0.0268 |
+| Map | 5M | 124.85 / 187.09 | 124.78 / 187.07 | 124.85 / 187.07 | 0.2281 / 0.3688 |
+| Map | 50M | 1,238.09 / 1,853.33 | 1,238.04 / 1,853.31 | 1,238.09 / 1,853.31 | 2.9046 / 3.9188 |
 
 </details>
 
@@ -362,7 +362,7 @@ Small gaps are within run-to-run noise. The [raw report](benchmarks/arm64-2026-1
 
 ## Reproducing the benchmarks
 
-To reproduce, use source checkpoint `1a1a75a` and build both drivers:
+To reproduce, use source checkpoint `a4ff0ed` and build both drivers:
 
 ```sh
 GOEXPERIMENT=simd go build -o compare-go ./cmd/compare
