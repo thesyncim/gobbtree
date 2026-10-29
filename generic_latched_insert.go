@@ -430,15 +430,10 @@ func (t *genericTree[K, V, O]) packKeys(n *gleaf[K, V]) {
 }
 
 // keyBuffer is a buffer of at least size bytes for a leaf's keys, its
-// whole capacity, which holds no pointers. Its bytes aren't cleared: a
-// leaf writes each before a ref reads it, so Builder's allocation, which
-// leaves them as they were, serves.
+// whole capacity, which holds no pointers.
 func keyBuffer(size int) []byte {
-	var b strings.Builder
-	b.Grow(size)
-	b.WriteByte(0)
-	s := b.String()
-	return unsafe.Slice(unsafe.StringData(s), b.Cap())
+	b := make([]byte, 0, size)
+	return b[:cap(b)]
 }
 
 // placeKey writes text s into text leaf n's buffer and returns its ref: in
