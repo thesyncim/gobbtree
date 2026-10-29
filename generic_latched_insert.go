@@ -102,7 +102,7 @@ func (t *genericTree[K, V, O]) insertInto(n *gleaf[K, V], key K, code uint64, va
 	if int(n.count.Load()) == nodeSize {
 		return old, false, false
 	}
-	insertEntry(n, i, ownKey[O](key), code, value)
+	t.insertEntry(n, i, ownKey[O](key), value)
 	return old, false, true
 }
 
@@ -175,11 +175,11 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 		minimum = leafMinLen / 2
 	}
 	cut, left := ofSplit(nodeSize, index, minimum)
-	moveLeafEntries(right, 0, leaf, cut, nodeSize-cut)
+	t.moveLeafEntries(right, 0, leaf, cut, nodeSize-cut)
 	if left {
-		insertEntry(leaf, index, ownKey[O](key), code, value)
+		t.insertEntry(leaf, index, ownKey[O](key), value)
 	} else {
-		insertEntry(right, index-cut, ownKey[O](key), code, value)
+		t.insertEntry(right, index-cut, ownKey[O](key), value)
 	}
 	separator := new(K)
 	*separator = right.keys[0]
@@ -194,7 +194,7 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 		split := newGInner[K]()
 		fresh.push(&split.gheader, 0)
 		cut, left := ofSplit(nodeSize, edge, innerMinLen)
-		moveChildEntries(split, 0, n, cut, nodeSize-cut)
+		t.moveChildEntries(split, 0, n, cut, nodeSize-cut)
 		if left {
 			t.insertChild(n, edge, separator, carried)
 		} else {
@@ -216,18 +216,27 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 	return true
 }
 
-// Node changes, made with the node held exclusively. Racing readers read
-// only counts, codes, separators and children, all atomically; keys and
-// values are read with their leaf latched.
+// Node changes, made with the node held exclusively. Racing readers of
+// internal nodes read only words that can't tear, atomically; readers of
+// leaves read them latched, or racing where a version check covers them.
 
-// insertEntry inserts an entry at i into leaf n, which has room.
-func insertEntry[K any, V any](n *gleaf[K, V], i int, key K, code uint64, value V) {
+// insertEntry inserts an entry at i into leaf n, which has room; a key
+// without the leaf's prefix shortens it.
+func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V) {
+	p, refit := 0, false
+	if prefixed[O, K]() {
+		p = int(n.prefix.Load())
+		refit = p > 0 && t.leafOrder(n, key, p) != 0
+	}
 	count := int(n.count.Load())
 	copy(n.codes[i+1:count+1], n.codes[i:count])
 	copy(n.keys[i+1:count+1], n.keys[i:count])
 	copy(n.values[i+1:count+1], n.values[i:count])
-	n.codes[i], n.keys[i], n.values[i] = code, key, value
+	n.codes[i], n.keys[i], n.values[i] = windowKey[O](key, p), key, value
 	n.count.Store(int32(count + 1))
+	if refit {
+		t.refitLeaf(n)
+	}
 }
 
 // removeEntry removes leaf n's entry i, clearing the slot it frees so that
@@ -247,7 +256,7 @@ func removeEntry[K any, V any](n *gleaf[K, V], i int) (K, V) {
 
 // moveLeafEntries moves count entries of src from from to dst at at, which
 // has room, closing src's gap and clearing the slots it frees.
-func moveLeafEntries[K any, V any](dst *gleaf[K, V], at int, src *gleaf[K, V], from, count int) {
+func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gleaf[K, V], from, count int) {
 	srcCount, dstCount := int(src.count.Load()), int(dst.count.Load())
 	copy(dst.codes[at+count:dstCount+count], dst.codes[at:dstCount])
 	copy(dst.keys[at+count:dstCount+count], dst.keys[at:dstCount])
@@ -265,6 +274,8 @@ func moveLeafEntries[K any, V any](dst *gleaf[K, V], at int, src *gleaf[K, V], f
 	clear(src.values[srcCount-count : srcCount])
 	dst.count.Store(int32(dstCount + count))
 	src.count.Store(int32(srcCount - count))
+	t.refitLeaf(dst)
+	t.refitLeaf(src)
 }
 
 // insertChild inserts child, whose keys are at least separator, at i in
@@ -272,25 +283,19 @@ func moveLeafEntries[K any, V any](dst *gleaf[K, V], at int, src *gleaf[K, V], f
 func (t *genericTree[K, V, O]) insertChild(n *ginner[K], i int, separator *K, child *gheader) {
 	count := int(n.count.Load())
 	for j := count; j > i; j-- {
-		n.codes[j].Store(n.codes[j-1].Load())
 		n.seps[j].Store(n.seps[j-1].Load())
 		n.children[j].Store(n.children[j-1].Load())
 	}
-	var code uint64
-	if separator != nil {
-		code = windowKey[O](*separator, 0)
-	}
-	n.codes[i].Store(code)
 	n.seps[i].Store(separator)
 	n.children[i].Store(child)
 	n.count.Store(int32(count + 1))
+	t.refitInner(n)
 }
 
-// removeGChild removes internal node n's child i.
-func removeGChild[K any](n *ginner[K], i int) {
+// removeChild removes internal node n's child i.
+func (t *genericTree[K, V, O]) removeChild(n *ginner[K], i int) {
 	count := int(n.count.Load())
 	for j := i; j < count-1; j++ {
-		n.codes[j].Store(n.codes[j+1].Load())
 		n.seps[j].Store(n.seps[j+1].Load())
 		n.children[j].Store(n.children[j+1].Load())
 	}
@@ -298,24 +303,22 @@ func removeGChild[K any](n *ginner[K], i int) {
 	n.seps[count-1].Store(nil)
 	n.children[count-1].Store(nil)
 	n.count.Store(int32(count - 1))
+	t.refitInner(n)
 }
 
 // moveChildEntries moves count children of src from from, with their
-// separators and codes, to dst at at, as moveLeafEntries moves entries.
-func moveChildEntries[K any](dst *ginner[K], at int, src *ginner[K], from, count int) {
+// separators, to dst at at, as moveLeafEntries moves entries.
+func (t *genericTree[K, V, O]) moveChildEntries(dst *ginner[K], at int, src *ginner[K], from, count int) {
 	srcCount, dstCount := int(src.count.Load()), int(dst.count.Load())
 	for j := dstCount - 1; j >= at; j-- {
-		dst.codes[j+count].Store(dst.codes[j].Load())
 		dst.seps[j+count].Store(dst.seps[j].Load())
 		dst.children[j+count].Store(dst.children[j].Load())
 	}
 	for j := 0; j < count; j++ {
-		dst.codes[at+j].Store(src.codes[from+j].Load())
 		dst.seps[at+j].Store(src.seps[from+j].Load())
 		dst.children[at+j].Store(src.children[from+j].Load())
 	}
 	for j := from; j+count < srcCount; j++ {
-		src.codes[j].Store(src.codes[j+count].Load())
 		src.seps[j].Store(src.seps[j+count].Load())
 		src.children[j].Store(src.children[j+count].Load())
 	}
@@ -326,4 +329,6 @@ func moveChildEntries[K any](dst *ginner[K], at int, src *ginner[K], from, count
 	}
 	dst.count.Store(int32(dstCount + count))
 	src.count.Store(int32(srcCount - count))
+	t.refitInner(dst)
+	t.refitInner(src)
 }

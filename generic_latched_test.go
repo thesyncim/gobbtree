@@ -23,6 +23,30 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 		return 0
 	}
 	leafDepth := -1
+	// checkPrefix checks that a node's keys, when it has any, begin with its
+	// prefix, which its head holds, and returns the prefix's length.
+	checkPrefix := func(h *gheader, any bool, keys func() []string) int {
+		p := int(h.prefix.Load())
+		if !prefixed[O, K]() && p != 0 {
+			t.Fatalf("prefix %d on a node without one", p)
+		}
+		if !prefixed[O, K]() || !any {
+			// An emptied root leaf may keep its prefix: no key has it.
+			return p
+		}
+		all := keys()
+		for _, k := range all {
+			if len(k) < p || k[:p] != all[0][:p] {
+				t.Fatalf("key %q lacks the node's prefix %q", k, all[0][:p])
+			}
+		}
+		var probe gheader
+		probe.setPrefix(all[0], p)
+		if probe.head[0].Load() != h.head[0].Load() || probe.head[1].Load() != h.head[1].Load() {
+			t.Fatal("node head is stale")
+		}
+		return p
+	}
 	var check func(h *gheader, low, high *K, depth int) int
 	check = func(h *gheader, low, high *K, depth int) int {
 		if word := h.latch.Load(); word&(latchExclusive|latchSharedMask) != 0 {
@@ -47,9 +71,16 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				t.Fatalf("leaf holds %d entries", count)
 			}
 			n := asLeaf[K, V](h)
+			p := checkPrefix(h, count > 0, func() []string {
+				var keys []string
+				for i := 0; i < count; i++ {
+					keys = append(keys, textView(&n.keys[i]))
+				}
+				return keys
+			})
 			for i := 0; i < count; i++ {
 				inside(n.keys[i])
-				if n.codes[i] != windowKey[O](n.keys[i], 0) {
+				if n.codes[i] != windowKey[O](n.keys[i], p) {
 					t.Fatalf("leaf code %d is stale", i)
 				}
 				if i > 0 && compareKeys[O](n.keys[i-1], n.keys[i]) >= 0 {
@@ -70,6 +101,16 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 		if own := n.seps[0].Load(); (own == nil) != (low == nil) || own != nil && compareKeys[O](*own, *low) != 0 {
 			t.Fatal("internal node's own separator is not its parent's")
 		}
+		p := checkPrefix(h, count > 1, func() []string {
+			var keys []string
+			for i := 1; i < count; i++ {
+				keys = append(keys, textView(n.seps[i].Load()))
+			}
+			return keys
+		})
+		if n.codes[0].Load() != 0 {
+			t.Fatal("internal code 0 is not 0")
+		}
 		total := 0
 		for i := 0; i < count; i++ {
 			sep := n.seps[i].Load()
@@ -77,7 +118,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				if sep == nil {
 					t.Fatalf("separator %d missing", i)
 				}
-				if n.codes[i].Load() != windowKey[O](*sep, 0) {
+				if n.codes[i].Load() != windowKey[O](*sep, p) {
 					t.Fatalf("separator %d code is stale", i)
 				}
 				inside(*sep)

@@ -149,30 +149,30 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(parent *ginner[K], index int, l
 		left, right := min(index, sibling), max(index, sibling)
 		l, r := parent.children[left].Load(), parent.children[right].Load()
 		if leaves {
-			moveLeafEntries(asLeaf[K, V](l), int(l.count.Load()), asLeaf[K, V](r), 0, int(r.count.Load()))
+			t.moveLeafEntries(asLeaf[K, V](l), int(l.count.Load()), asLeaf[K, V](r), 0, int(r.count.Load()))
 		} else {
-			moveChildEntries(asInner[K](l), int(l.count.Load()), asInner[K](r), 0, int(r.count.Load()))
+			t.moveChildEntries(asInner[K](l), int(l.count.Load()), asInner[K](r), 0, int(r.count.Load()))
 		}
-		removeGChild(parent, right)
+		t.removeChild(parent, right)
 		r.freed()
 		return
 	}
 	switch {
 	case sibling < index && leaves:
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
-		moveLeafEntries(c, 0, o, int(o.count.Load())-1, 1)
+		t.moveLeafEntries(c, 0, o, int(o.count.Load())-1, 1)
 		t.setSeparator(parent, index, box(c.keys[0]))
 	case sibling < index:
 		c, o := asInner[K](child), asInner[K](other)
-		moveChildEntries(c, 0, o, int(o.count.Load())-1, 1)
+		t.moveChildEntries(c, 0, o, int(o.count.Load())-1, 1)
 		t.setSeparator(parent, index, c.seps[0].Load())
 	case leaves:
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
-		moveLeafEntries(c, int(c.count.Load()), o, 0, 1)
+		t.moveLeafEntries(c, int(c.count.Load()), o, 0, 1)
 		t.setSeparator(parent, sibling, box(o.keys[0]))
 	default:
 		c, o := asInner[K](child), asInner[K](other)
-		moveChildEntries(c, int(c.count.Load()), o, 0, 1)
+		t.moveChildEntries(c, int(c.count.Load()), o, 0, 1)
 		t.setSeparator(parent, sibling, o.seps[0].Load())
 	}
 }
@@ -186,6 +186,6 @@ func box[K any](key K) *K {
 
 // setSeparator makes separator i of internal node n, held, sep.
 func (t *genericTree[K, V, O]) setSeparator(n *ginner[K], i int, sep *K) {
-	n.codes[i].Store(windowKey[O](*sep, 0))
 	n.seps[i].Store(sep)
+	t.refitInner(n)
 }

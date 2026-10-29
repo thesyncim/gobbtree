@@ -1,6 +1,7 @@
 package gobbtree
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -30,15 +31,22 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 
 // A node's header. Its count is read racing; whether it is a leaf never
 // changes.
+//
+// Text keys skip what a node's keys share: prefix bytes every key of a leaf,
+// or every separator of an internal node past its own, begins with, the
+// first 16 of which head holds as windows. Codes are windows past them, so
+// they tell a node's keys apart where the keys differ.
 type gheader struct {
-	latch nodeLatch
-	count atomic.Int32
-	leaf  bool
+	latch  nodeLatch
+	count  atomic.Int32
+	prefix atomic.Int32
+	head   [2]atomic.Uint64
+	leaf   bool
 }
 
-// A leaf: entries in key order, with each key's code, its window at offset
-// 0, which narrows a search before keys are compared. Code slots past the
-// count hold codePad, as lowerCode's vector kernels count every slot.
+// A leaf: entries in key order, with each key's code, its window past the
+// prefix, which narrows a search before keys are compared. Code slots past
+// the count hold codePad, as lowerCode's vector kernels count every slot.
 type gleaf[K any, V any] struct {
 	gheader
 	codes  [nodeSize]uint64
@@ -47,9 +55,9 @@ type gleaf[K any, V any] struct {
 }
 
 // An internal node: child i holds keys at least separator i, whose code,
-// its window at offset 0, routes without reading the key; code slots past
-// the count hold codePad. Separator 0 is the node's own, nil on the tree's
-// left border.
+// its window past the prefix, routes without reading the key. Code 0 is 0
+// and slots past the count hold codePad. Separator 0 is the node's own, nil
+// on the tree's left border.
 type ginner[K any] struct {
 	gheader
 	codes    [nodeSize]atomic.Uint64
@@ -136,6 +144,28 @@ func codeRange(codes *[nodeSize]atomic.Uint64, count int, code uint64) (lo, hi i
 // separators, never changed, are compared whole. ok is false where a racing
 // read finds no separator.
 func (t *genericTree[K, V, O]) route(n *ginner[K], key K, code uint64, count int, strict bool) (int, bool) {
+	if prefixed[O, K]() {
+		if p := int(n.prefix.Load()); p > 0 {
+			var order int
+			if p <= 16 {
+				order = headOrder(textView(&key), p, n.head[0].Load(), n.head[1].Load())
+			} else {
+				sep := n.seps[1&(nodeSize-1)].Load()
+				if sep == nil {
+					return 0, false
+				}
+				first := textView(sep)
+				order = strings.Compare(prefixOf(textView(&key), p), first[:min(p, len(first))])
+			}
+			switch {
+			case order < 0:
+				return 0, true
+			case order > 0:
+				return count - 1, true
+			}
+			code = windowKey[O](key, p)
+		}
+	}
 	lo, hi := codeRange(&n.codes, count, code)
 	if lo == hi || exactCodes[O, K]() {
 		if strict || lo == hi {
@@ -296,10 +326,125 @@ restart:
 
 func (t *genericTree[K, V, O]) code(key K) uint64 { return windowKey[O](key, 0) }
 
-// find is key's slot in leaf n, latched, and whether key is there; code is
-// key's code.
+// prefixed reports keys whose nodes keep prefixes: built-in text, whose
+// bytes are compared directly, with no user code.
+func prefixed[O keyOrder[K], K any]() bool { return directText[O, K]() }
+
+func prefixOf(s string, p int) string { return s[:min(len(s), p)] }
+
+// headOrder orders s's first p bytes, 0 < p <= 16, against a prefix whose
+// windows at 0 and 8, cut to p bytes, are h0 and h1.
+func headOrder(s string, p int, h0, h1 uint64) int {
+	w := stringCode(s, 0) & headMask(p)
+	if w == h0 && p > 8 {
+		w, h0 = stringCode(s, 8)&headMask(p-8), h1
+	}
+	switch {
+	case w < h0:
+		return -1
+	case w > h0:
+		return 1
+	case len(s) < p:
+		// s is the prefix's own beginning, or matches its NULs with padding.
+		return -1
+	}
+	return 0
+}
+
+// headMask keeps a window's first p bytes, of at most 8.
+func headMask(p int) uint64 {
+	if p >= 8 {
+		return ^uint64(0)
+	}
+	return ^(^uint64(0) >> (8 * p))
+}
+
+// setPrefix makes h's prefix the first p bytes of key.
+func (h *gheader) setPrefix(key string, p int) {
+	h.prefix.Store(int32(p))
+	h0, h1 := stringCode(key, 0)&headMask(p), uint64(0)
+	if p > 8 {
+		h1 = stringCode(key, 8) & headMask(p-8)
+	}
+	h.head[0].Store(h0)
+	h.head[1].Store(h1)
+}
+
+// commonPrefix is what text keys a and b begin with, at most 65535 bytes.
+func commonPrefix(a, b string) int {
+	end, p := min(len(a), len(b), 65535), 0
+	for p+8 <= end && stringCode(a, p) == stringCode(b, p) {
+		p += 8
+	}
+	for p < end && a[p] == b[p] {
+		p++
+	}
+	return p
+}
+
+// refitLeaf sets leaf n's prefix to what its first and last keys share, and
+// recomputes its codes. n is held.
+func (t *genericTree[K, V, O]) refitLeaf(n *gleaf[K, V]) {
+	if !prefixed[O, K]() {
+		return
+	}
+	count, p := int(n.count.Load()), 0
+	if count > 1 {
+		p = commonPrefix(textView(&n.keys[0]), textView(&n.keys[count-1]))
+	}
+	if count > 0 {
+		n.setPrefix(textView(&n.keys[0]), p)
+	} else {
+		n.setPrefix("", 0)
+	}
+	for i := 0; i < count; i++ {
+		n.codes[i] = windowKey[O](n.keys[i], p)
+	}
+}
+
+// refitInner sets internal node n's prefix to what its separators past its
+// own share, and recomputes its codes. n is held.
+func (t *genericTree[K, V, O]) refitInner(n *ginner[K]) {
+	count, p := int(n.count.Load()), 0
+	var first string
+	if prefixed[O, K]() && count > 2 {
+		first = textView(n.seps[1].Load())
+		p = commonPrefix(first, textView(n.seps[count-1].Load()))
+	}
+	if prefixed[O, K]() {
+		n.setPrefix(first, p)
+	}
+	if count > 0 {
+		n.codes[0].Store(0)
+	}
+	for i := 1; i < count; i++ {
+		n.codes[i].Store(windowKey[O](*n.seps[i].Load(), p))
+	}
+}
+
+// leafOrder orders key's first p bytes against leaf n's prefix of p bytes;
+// n is latched, or p is at most 16.
+func (t *genericTree[K, V, O]) leafOrder(n *gleaf[K, V], key K, p int) int {
+	if p <= 16 {
+		return headOrder(textView(&key), p, n.head[0].Load(), n.head[1].Load())
+	}
+	return strings.Compare(prefixOf(textView(&key), p), textView(&n.keys[0])[:p])
+}
+
+// find is key's slot in leaf n, latched, and whether key is there.
 func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K, code uint64) (int, bool) {
 	count := int(n.count.Load())
+	if prefixed[O, K]() {
+		if p := int(n.prefix.Load()); p > 0 {
+			switch order := t.leafOrder(n, key, p); {
+			case order < 0:
+				return 0, false
+			case order > 0:
+				return count, false
+			}
+			code = windowKey[O](key, p)
+		}
+	}
 	lo := lowerCode(&n.codes, count, code)
 	if exactCodes[O, K]() {
 		return lo, lo < count && n.codes[lo&(nodeSize-1)] == code
@@ -340,6 +485,57 @@ func optimisticLeaves[O keyOrder[K], K any]() bool {
 	return seqlockPlainStores && exactCodes[O, K]()
 }
 
+// optimisticText reports trees whose lookups read a text leaf without
+// latching it: its codes leave one candidate, whose key header and value
+// are copied racing and used only once the leaf's version holds; a string's
+// bytes never change, so comparing them then reads nothing racing.
+func optimisticText[O keyOrder[K], K any]() bool {
+	return seqlockPlainStores && prefixed[O, K]()
+}
+
+// getText is getOptimistic for text keys; done is false where codes leave
+// several candidates, a prefix too long for the head, or writers kept
+// changing the leaf.
+func (t *genericTree[K, V, O]) getText(key K, code uint64) (value V, found, done bool) {
+	for try := 0; try < 4; try++ {
+		n, version := t.descend(key, code, seekKey, false, optimistic, nil)
+		count := min(int(n.count.Load()), nodeSize)
+		p := int(n.prefix.Load())
+		if p > 16 {
+			return value, false, false
+		}
+		var candidate K
+		var lo, hi int
+		if p == 0 || headOrder(textView(&key), p, n.head[0].Load(), n.head[1].Load()) == 0 {
+			c := code
+			if p > 0 {
+				c = stringCode(textView(&key), p)
+			}
+			lo = lowerCode(&n.codes, count, c)
+			hi = count
+			if c != ^uint64(0) {
+				hi = lowerCode(&n.codes, count, c+1)
+			}
+			if hi-lo == 1 {
+				candidate, value = n.keys[lo&(nodeSize-1)], n.values[lo&(nodeSize-1)]
+			}
+		}
+		loadFence()
+		if !n.latch.isUnchanged(version) {
+			continue
+		}
+		if hi-lo > 1 {
+			return value, false, false
+		}
+		if hi-lo == 1 && textView(&candidate) == textView(&key) {
+			return value, true, true
+		}
+		var zero V
+		return zero, false, true
+	}
+	return value, false, false
+}
+
 // get is key's value. With optimistic leaves it is read without latching
 // the leaf, a few times while writers change it, before it latches shared.
 func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
@@ -347,6 +543,11 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 		return value, false
 	}
 	code := t.code(key)
+	if optimisticText[O, K]() {
+		if value, found, done := t.getText(key, code); done {
+			return value, found
+		}
+	}
 	if optimisticLeaves[O, K]() {
 		for try := 0; try < 4; try++ {
 			n, version := t.descend(key, code, seekKey, false, optimistic, nil)
