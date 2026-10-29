@@ -147,7 +147,7 @@ func (t *latchedTree) upgradeHinted(key uint64) (leaf *wordNode, leafID uint32, 
 // it when a descent or a split last saw it, so that its next split finds the
 // parent without a descent. Whoever holds the leaf or its parent may store
 // one; splitAtParentHint checks it, so a stale one costs only a descent.
-func parentHint(n *wordNode) uint32       { return atomic.LoadUint32(&n.directory) }
+func parentHint(n *wordNode) uint32        { return atomic.LoadUint32(&n.directory) }
 func setParentHint(n *wordNode, id uint32) { atomic.StoreUint32(&n.directory, id) }
 
 // splitAtParentHint makes room for key in leaf, full and held from version,
