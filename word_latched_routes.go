@@ -1,7 +1,6 @@
 package gobbtree
 
 import (
-	"math/bits"
 	"slices"
 )
 
@@ -220,8 +219,8 @@ func (s *hintSpan) covers(start, end uint64) bool {
 }
 
 // refreshRoutes makes a hint table for the current root when there is none,
-// or the root changed or doubled its children since. A region spans half a
-// leaf's span up to a whole one, the median gap between separators of a few
+// or the root changed or doubled its children since. A region spans a
+// leaf's span up to twice it, within a cell's four leaves, the median gap between separators of a few
 // leaf parents, whatever the keys' distribution. A domain, the root's
 // separators' span, with no more regions than cells for a leaf and a half
 // is indexed directly; a sparse one, such as clustered keys', is hashed. The
@@ -259,22 +258,9 @@ func (t *latchedTree) refreshRoutes(dir []*wordNode) *latchedRoutes {
 		for range level - 1 {
 			leaves *= 20
 		}
-		tableBits := min(max(bits.Len(uint(leaves)), 8), 22)
-		shift := max(bits.Len64(span)-1, 0)
-		width := bits.Len64(lo ^ hi)
-		r.shift = uint8(min(shift, 63))
-		if width-shift <= tableBits+1 {
-			// Few enough regions to index directly.
-			r.base = lo &^ (uint64(1)<<width - 1)
-			r.cells = make([]hintCell, 1<<max(width-shift, 0))
-		} else {
-			// Hashed regions collide: wider ones, a leaf's span up to
-			// twice it, still within a cell's four leaves, and about four
-			// cells for every leaf.
-			r.shift = uint8(min(shift+1, 63))
-			r.hashed, r.bits = true, uint8(min(tableBits+2, 22))
-			r.cells = make([]hintCell, 1<<r.bits)
-		}
+		r = newHintTable(lo, hi, span, leaves)
+		r.root, r.rootCount = rootID, count
+		r.fillAll(dir, root, nil, 0, 0)
 	}
 	// Below that, no level to skip: an empty table, kept until the root
 	// changes or doubles.
@@ -307,4 +293,56 @@ func sampleLeafSpan(dir []*wordNode, root *wordNode, count int) uint64 {
 	}
 	slices.Sort(gaps)
 	return gaps[len(gaps)/2]
+}
+
+// fillAll fills every cell the leaves under internal node n hold, n having
+// been reached from g at edge (g nil at the root), so that a new table
+// starts warm instead of costing every first lookup of a region a descent:
+// a walk of the internal nodes, about two fills a leaf, once per table, as
+// tables are made only as the tree doubles. Its reads race writers; a hint
+// is checked where used.
+func (r *latchedRoutes) fillAll(dir []*wordNode, n, g *wordNode, edge int, depth int) {
+	count := min(int(n.n), nodeSize)
+	if count == 0 || depth > maxDepth {
+		return
+	}
+	children := &n.inner().children
+	if children[0]&wordLeafID == 0 {
+		for i := 0; i < count; i++ {
+			if c := nodeIn(dir, children[i&(nodeSize-1)]); c != nil && !c.leaf {
+				r.fillAll(dir, c, n, i, depth+1)
+			}
+		}
+		return
+	}
+	// A leaf parent: each region from its low fence to its high one, or
+	// on the right border to its last leaf's last key.
+	low, high := lowFence(n), highFence(n)
+	last := high - 1
+	if high == 0 {
+		leaf := nodeIn(dir, children[(count-1)&(nodeSize-1)])
+		if leaf == nil || leaf.n == 0 {
+			return
+		}
+		last = leaf.entries()[(int(leaf.n)-1)&(nodeSize-1)].key
+	}
+	r.fillRange(dir, n, g, edge, low, last)
+}
+
+// fillRange fills the cells of the regions from low to last, keys under leaf
+// parent p, which was reached from g at edge, up to a few dozen regions.
+func (r *latchedRoutes) fillRange(dir []*wordNode, p, g *wordNode, edge int, low, last uint64) {
+	if last < low {
+		return
+	}
+	step := uint64(1) << r.shift
+	start := r.base + ((max(low, r.base)-r.base)>>r.shift)<<r.shift
+	for key, regions := start, 0; key <= last && regions <= 4*nodeSize; key, regions = key+step, regions+1 {
+		if c := r.cell(max(key, low)); c != nil {
+			r.fill(dir, c, max(key, low), p, g, edge)
+		}
+		if key+step < key {
+			return
+		}
+	}
 }

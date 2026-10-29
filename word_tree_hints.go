@@ -68,12 +68,20 @@ func (t *wordTree) refreshHints(length int) {
 // dropHints forgets every hint, for a tree that let go of its arena.
 func (t *wordTree) dropHints() { t.hints = wordHints{} }
 
-// newHintTable sizes a hint table for about leaves leaves of span span, over
-// a domain from lo to hi, as refreshRoutes does.
+// newHintTable makes a hint table for about leaves leaves whose span is
+// about span, over keys from lo to hi. A domain with no more regions of
+// half a leaf's span to a whole one than about two for each leaf is indexed
+// directly. A sparser one, such as clustered keys', is hashed: its regions
+// span a leaf's span up to twice it, within a cell's four leaves, into
+// about four cells for each leaf, as hashed regions collide.
 func newHintTable(lo, hi, span uint64, leaves int) *latchedRoutes {
 	tableBits := min(max(bits.Len(uint(leaves)), 8), 22)
 	shift := max(bits.Len64(span)-1, 0)
 	width := bits.Len64(lo ^ hi)
+	if width < 64 && width+1-shift <= tableBits+1 {
+		// Room for keys beyond the separators, as ascending keys add them.
+		width++
+	}
 	r := &latchedRoutes{shift: uint8(min(shift, 63))}
 	if width-shift <= tableBits+1 {
 		r.base = lo &^ (uint64(1)<<width - 1)
