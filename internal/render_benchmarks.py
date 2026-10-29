@@ -120,7 +120,7 @@ def main():
         return rows
 
     def memory_table(pattern):
-        rows = ["| Container | Entries | Peak RSS, MB | After reads, MB | Collected / settled RSS, MB | Build, seconds |",
+        rows = ["| Container | Entries | Peak, MB | After reads, MB | Final, MB | Build, s |",
                 "|---|---:|---:|---:|---:|---:|"]
         for kind in ("tree", "map"):
             for size, label in zip(SIZES, LABELS):
@@ -131,27 +131,36 @@ def main():
                 rows.append(f"| {kind.title()} | {label} | " + " | ".join(cells) + " |")
         return rows
 
+    described = [f"{heading.lower()} ({PATTERN_NOTES[pattern]})" for pattern, heading, _ in patterns]
+    described = ", ".join(described[:-1]) + " and " + described[-1] if len(described) > 1 else described[0]
     text = ["## Benchmarks", "",
-            f"Go {go_version} with `GOEXPERIMENT=simd` against the Rust original ({rust_version}, native CPU tuning, full LTO, mimalloc) "
-            f"on an Apple M4 Max, from [Go `{go_short}`](https://github.com/thesyncim/gobbtree/commit/{go_source}) and "
-            f"[Rust `{rust_short}`](https://github.com/XiangpengHao/bbtree/tree/{rust_source}): medians of three fresh-process runs "
-            "over identical datasets, with checked results.", "",
             "![gobbtree's Tree against Rust bbtree's and Go's map, get throughput on one thread](benchmarks/race-single-arm64.svg)", "",
-            "`uint64` tables cover 4K to 50M entries with " +
-            ", ".join(f"{heading.lower()} ({PATTERN_NOTES[pattern]})" for pattern, heading, _ in patterns) +
-            ". Batches are per key, churn is one deletion and one insertion, and parallel rows use four workers. "
-            "Memory is whole-process peak RSS, including the Go runtime and GC headroom.", ""]
+            f"gobbtree's `Tree` and `Map` against Rust bbtree's `unsync::BBTreeMap` and `BBTreeMap` on an {hardware}: "
+            f"Go {go_version} with `GOEXPERIMENT=simd` at [`{go_short}`](https://github.com/thesyncim/gobbtree/commit/{go_source}), "
+            f"Rust {rust_version} with native CPU tuning, full LTO and mimalloc at "
+            f"[`{rust_short}`](https://github.com/XiangpengHao/bbtree/tree/{rust_source}). "
+            "Each cell is the median of three fresh-process runs over identical keys, with checked results.", "",
+            # This summary describes the checked-in report; revise it with a new one.
+            "gobbtree is faster in every `uint64` timing below. Building `uint64` maps is close on mixed and sequential keys, "
+            "each side winning some cells, and 1.5–2.3× faster in Go on clustered keys from 262K entries up. "
+            "Go's process is a few megabytes larger at 4K and 262K entries, and smaller from 5M up. "
+            "With string keys Rust still wins 14 of 22 cells, among them every build and most of the `Map`'s.", "",
+            f"The tables cover `uint64` keys and values from 4K to 50M entries, with {described}. "
+            "Batch cells are per key, churn cells per delete-and-insert pair, and parallel cells use four workers.", ""]
     for pattern, heading, _ in patterns:
         text += ["<details>", f"<summary>Times, {heading.lower()} — Go / Rust, ns/op</summary>", ""]
         text += timing_tables(pattern)
         text += ["</details>", ""]
-    text += ["<details>", "<summary>Memory and build — Go / Rust</summary>", ""]
+    text += ["<details>", "<summary>Memory and build — Go / Rust</summary>", "",
+             "Whole-process RSS, the Go runtime included, under Go's default GC settings: at its peak, after a full read pass, "
+             "and at the end, after a forced GC in Go. Build is the time to insert every entry, one at a time.", ""]
     for pattern, heading, _ in patterns:
         text += [f"**{heading}**", ""] + memory_table(pattern) + [""]
     text += ["</details>", ""]
     if texts:
         text += string_key_section(texts)
-    text += [f"Small gaps are within run-to-run noise. The [raw report]({report_link}) adds Go's built-in `map` and `sync.Map`; "
+    text += ["Small gaps are inconclusive: a macOS system service used one or two cores throughout the run. "
+             f"The [raw report]({report_link}) holds every run, with Go's built-in `map` and `sync.Map` at 4K to 5M mixed keys; "
              "amd64 results are [CI artifacts](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml).", ""]
     readme = ROOT / "README.md"
     old = readme.read_text()
@@ -161,8 +170,8 @@ def main():
     # The concurrent card leads, after the introduction's list, as upstream's.
     hero = "![gobbtree's Map against Rust bbtree's and sync.Map, get throughput at 4 threads](benchmarks/race-concurrent-arm64.svg)\n\n"
     updated = re.sub(r"!\[[^\]]*\]\(benchmarks/race-concurrent-arm64\.svg\)\n\n", "", updated)
-    quick = updated.index("## Quick start")
-    updated = updated[:quick] + hero + updated[quick:]
+    usage = updated.index("## Usage")
+    updated = updated[:usage] + hero + updated[usage:]
     updated = re.sub(r"source checkpoint `[0-9a-f]+`", f"source checkpoint `{go_short}`", updated)
     readme.write_text(updated)
 
@@ -250,10 +259,10 @@ def string_key_section(texts):
     sizes = sorted({entries for entries, _, _ in texts})
     labels = {s: l for s, l in zip(SIZES, LABELS)}
     rows = ["<details>", "<summary>String keys — Go / Rust, ns/op</summary>", "",
-            "`string` keys against Rust's `String`, each mixed key written as `user:` and 16 hex digits, "
-            "with `uint64` values. Rust's containers move in keys made beforehand; Go's copy each key's bytes "
-            "into their leaves, in buffers the collector doesn't scan. Rust replaces values with `update` and "
-            "`get_mut`, and its churn inserts back the key its removal returned.", "",
+            "Go `string` keys against Rust `String`s, each a mixed key written as `user:` and 16 hex digits, "
+            "with `uint64` values. Rust's containers move in keys made before the timed build; Go's copy each "
+            "key's bytes into their leaves. Rust replaces values with `update` and `get_mut`, and its churn "
+            "reinserts the key its removal returned. In parentheses, Go's time against Rust's: negative is faster.", "",
             "| Workload | " + " | ".join(f"{labels.get(s, s)}" for s in sizes) + " |",
             "|---|" + "---:|" * len(sizes)]
     for kind in ("tree", "map"):
