@@ -77,6 +77,20 @@ func lowerCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, key uin
 	}
 	return i
 }
+// lowerSummary counts a text internal node's 4-byte summaries below t, all
+// 32 in one 128-byte line, as lowerCode counts codes.
+func lowerSummary(sums *[nodeSize]uint32, n int, t uint32) int {
+	if simd.Emulated() {
+		return lowerSummaryScalar(sums, n, t)
+	}
+	target := archsimd.BroadcastUint32x4(t)
+	a := countEight32((*[8]uint32)(sums[0:8]), target)
+	b := countEight32((*[8]uint32)(sums[8:16]), target)
+	c := countEight32((*[8]uint32)(sums[16:24]), target)
+	d := countEight32((*[8]uint32)(sums[24:32]), target)
+	return min(-int(a.Add(b).Add(c.Add(d)).ReduceSum()), n)
+}
+
 func countEight32(keys *[8]uint32, target archsimd.Uint32x4) archsimd.Int32x4 {
 	a := archsimd.LoadUint32x4(keys[0:4]).Less(target).ToInt32x4()
 	b := archsimd.LoadUint32x4(keys[4:8]).Less(target).ToInt32x4()

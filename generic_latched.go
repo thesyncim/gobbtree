@@ -26,7 +26,12 @@ import (
 //     release bumps; the garbage collector keeps one alive while a stale
 //     pointer reaches it, so a reader that does fails its check.
 type genericTree[K any, V any, O keyOrder[K]] struct {
-	root     atomic.Pointer[gheader]
+	root atomic.Pointer[gheader]
+	// shared is what every text key begins with, upstream's shared prefix
+	// (D50), at most 64 bytes, nil before the first key: a query without it
+	// sorts before or after every key and reads no node, and nodes on the
+	// tree's borders take it for the fence they lack.
+	shared   atomic.Pointer[string]
 	starting sync.Mutex
 }
 
@@ -76,15 +81,49 @@ func (n *gleaf[K, V]) text() *textColumns {
 }
 
 // An internal node: child i holds keys at least separator i, whose code,
-// its window past the prefix, routes without reading the key. Code 0 is 0
-// and slots past the count hold codePad. Separator 0 is the node's own, nil
-// on the tree's left border.
+// its window at offset 0, routes without reading the key. Code 0 is 0 and
+// slots past the count hold codePad. Separator 0 is the node's own, nil on
+// the tree's left border; high is the separator above the node, nil on its
+// right border. Separators are boxed keys, never changed once boxed.
+//
+// A text node routes as upstream's do (D26, D43, D50): its prefix is what its
+// fences share, a missing fence taken as the tree's shared prefix, so every
+// key under it begins with the prefix and a descent skips it unchecked; and
+// in place of codes it keeps 4-byte summaries, the top half of each
+// separator's window past the prefix, all 32 in the codes' first 128 bytes.
+// Summaries that tie are settled by comparing the boxed separators. Upstream
+// keeps no separator keys and latches the leaf whose head is one to compare
+// it; a boxed key, which the collector keeps whole, needs no latch.
 type ginner[K any] struct {
 	gheader
 	codes    [nodeSize]atomic.Uint64
-	seps     [nodeSize]atomic.Pointer[K]
 	children [nodeSize]atomic.Pointer[gheader]
+	seps     [nodeSize]atomic.Pointer[K]
+	high     atomic.Pointer[K]
 }
+
+// sums is text node n's summaries, the first half of its codes.
+func (n *ginner[K]) sums() *[nodeSize]uint32 { return (*[nodeSize]uint32)(unsafe.Pointer(&n.codes)) }
+
+// loadSum and storeSum read and write summary i, racing where a version
+// check covers it.
+func loadSum(sums *[nodeSize]uint32, i int) uint32 {
+	if seqlockPlainStores {
+		return sums[i&(nodeSize-1)]
+	}
+	return atomic.LoadUint32(&sums[i&(nodeSize-1)])
+}
+
+func storeSum(sums *[nodeSize]uint32, i int, v uint32) {
+	if seqlockPlainStores {
+		sums[i&(nodeSize-1)] = v
+		return
+	}
+	atomic.StoreUint32(&sums[i&(nodeSize-1)], v)
+}
+
+// summaryOf is text s's summary at prefix p.
+func summaryOf(s string, p int) uint32 { return uint32(stringCode(s, p) >> 32) }
 
 const codePad = ^uint64(0)
 
@@ -178,33 +217,29 @@ func tieRange(codes *[nodeSize]uint64, count int, code uint64) (lo, hi int) {
 
 // route is the child of internal node n, of count children, whose keys
 // hold key, read racing: the last whose separator is at most key, or below
-// it when strict. Codes settle it unless they tie inexactly; then boxed
-// separators, never changed, are compared whole. ok is false where a racing
-// read finds no separator.
+// it when strict. Codes, or a text node's summaries, settle it unless they
+// tie; then boxed separators, never changed, are compared whole. ok is
+// false where a racing read finds no separator.
 func (t *genericTree[K, V, O]) route(n *ginner[K], key K, code uint64, count int, strict bool) (int, bool) {
+	var lo, hi int
 	if prefixed[O, K]() {
-		if p := int(n.prefix.Load()); p > 0 {
-			var order int
-			if p <= 16 {
-				order = headOrder(textView(&key), p, n.head[0].Load(), n.head[1].Load())
-			} else {
-				sep := n.seps[1&(nodeSize-1)].Load()
-				if sep == nil {
-					return 0, false
-				}
-				first := textView(sep)
-				order = strings.Compare(prefixOf(textView(&key), p), first[:min(p, len(first))])
-			}
-			switch {
-			case order < 0:
-				return 0, true
-			case order > 0:
-				return count - 1, true
-			}
-			code = windowKey[O](key, p)
+		// Every key under n begins with its prefix (D26): no check.
+		s := summaryOf(textView(&key), int(n.prefix.Load()))
+		sums := n.sums()
+		if seqlockPlainStores {
+			lo = lowerSummary(sums, count, s)
+		} else {
+			lo = lowerSummaryAtomic(sums, count, s)
 		}
+		hi = lo
+		for hi < count && loadSum(sums, hi) == s {
+			hi++
+		}
+	} else if seqlockPlainStores {
+		lo, hi = tieRange((*[nodeSize]uint64)(unsafe.Pointer(&n.codes)), count, code)
+	} else {
+		lo, hi = codeRange(&n.codes, count, code)
 	}
-	lo, hi := codeRange(&n.codes, count, code)
 	if lo == hi || exactCodes[O, K]() {
 		if strict || lo == hi {
 			return max(lo-1, 0), true
@@ -227,6 +262,21 @@ func (t *genericTree[K, V, O]) route(n *ginner[K], key K, code uint64, count int
 		}
 	}
 	return lo - 1, true
+}
+
+// lowerSummaryAtomic is lowerSummary by atomic loads, for builds whose
+// writers store atomically.
+func lowerSummaryAtomic(sums *[nodeSize]uint32, count int, s uint32) int {
+	lo, hi := 0, count
+	for lo < hi {
+		mid := int(uint(lo+hi) >> 1)
+		if loadSum(sums, mid) < s {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
 }
 
 // A descent's path: each internal node, its version, the edge taken, its
@@ -292,6 +342,16 @@ func (t *genericTree[K, V, O]) compare(a, b K) int { return compareKeys[O](a, b)
 // seeks the leaf of keys below key, whose code is code. path, if not nil,
 // keeps the internal nodes. The tree has a root.
 func (t *genericTree[K, V, O]) descend(key K, code uint64, seek int, strict bool, mode int, path *gpath[K]) (*gleaf[K, V], uint64) {
+	if prefixed[O, K]() && seek == seekKey {
+		// A key without the shared prefix sorts before or after every key:
+		// its leaf is the first or the last. Writers admit theirs first.
+		switch t.sharedOrder(key) {
+		case -1:
+			seek = seekFirst
+		case 1:
+			seek = seekLast
+		}
+	}
 restart:
 	for {
 		if path != nil {
@@ -480,24 +540,75 @@ func slotOrder[K any, V any](n *gleaf[K, V], i int, k *textProbe, p int) (order 
 	return 0, false
 }
 
-// refitInner sets internal node n's prefix to what its separators past its
-// own share, and recomputes its codes. n is held.
+// refitInner sets internal node n's prefix, for text keys what its fences
+// share, and recomputes its codes or summaries from its separators, padding
+// the slots past its count. n is held.
 func (t *genericTree[K, V, O]) refitInner(n *ginner[K]) {
-	count, p := int(n.count.Load()), 0
-	var first string
-	if prefixed[O, K]() && count > 2 {
-		first = textView(n.seps[1].Load())
-		p = commonPrefix(first, textView(n.seps[count-1].Load()))
+	count := int(n.count.Load())
+	if !prefixed[O, K]() {
+		for i := 0; i < nodeSize; i++ {
+			code := codePad
+			switch {
+			case i == 0 && count > 0:
+				code = 0
+			case i < count:
+				code = windowKey[O](*n.seps[i].Load(), 0)
+			}
+			n.codes[i].Store(code)
+		}
+		return
 	}
-	if prefixed[O, K]() {
-		n.setPrefix(first, p)
+	p := t.fencePrefix(n.seps[0].Load(), n.high.Load())
+	n.prefix.Store(int32(p))
+	sums := n.sums()
+	for i := 0; i < nodeSize; i++ {
+		sum := ^uint32(0)
+		switch {
+		case i == 0 && count > 0:
+			sum = 0
+		case i < count:
+			sum = summaryOf(textView(n.seps[i].Load()), p)
+		}
+		storeSum(sums, i, sum)
 	}
-	if count > 0 {
-		n.codes[0].Store(0)
+}
+
+// sharedText is the tree's shared prefix, empty before its first key.
+func (t *genericTree[K, V, O]) sharedText() string {
+	if s := t.shared.Load(); s != nil {
+		return *s
 	}
-	for i := 1; i < count; i++ {
-		n.codes[i].Store(windowKey[O](*n.seps[i].Load(), p))
+	return ""
+}
+
+// fencePrefix is what every key between fences low and high begins with:
+// what they share, a missing one taken as the shared prefix (D50).
+func (t *genericTree[K, V, O]) fencePrefix(low, high *K) int {
+	shared := t.sharedText()
+	if low == nil && high == nil {
+		return len(shared)
 	}
+	a, b := shared, shared
+	if low != nil {
+		a = textView(low)
+	}
+	if high != nil {
+		b = textView(high)
+	}
+	return commonPrefix(a, b)
+}
+
+// sharedOrder orders text key against the shared prefix: 0 where key begins
+// with it, else as key sorts against every key, which do.
+func (t *genericTree[K, V, O]) sharedOrder(key K) int {
+	shared, s := t.sharedText(), textView(&key)
+	if len(s) >= len(shared) && s[:len(shared)] == shared {
+		return 0
+	}
+	if strings.Compare(prefixOf(s, len(shared)), shared) < 0 {
+		return -1
+	}
+	return 1
 }
 
 // leafOrder orders key's first p bytes against leaf n's prefix of p bytes;
@@ -731,4 +842,7 @@ func (t *genericTree[K, V, O]) isEmpty() bool {
 }
 
 // clear drops every entry. As upstream's, it is the owner's.
-func (t *genericTree[K, V, O]) clear() { t.root.Store(nil) }
+func (t *genericTree[K, V, O]) clear() {
+	t.root.Store(nil)
+	t.shared.Store(nil)
+}

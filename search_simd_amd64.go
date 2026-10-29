@@ -88,6 +88,32 @@ func lowerCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, key uin
 	return i
 }
 
+// lowerSummary counts a text internal node's 4-byte summaries below t.
+func lowerSummary(sums *[nodeSize]uint32, n int, t uint32) int {
+	if simd.Emulated() {
+		return lowerSummaryScalar(sums, n, t)
+	}
+	var mask uint32
+	if archsimd.X86.AVX512() && amd64MaxWidth >= 512 {
+		target := archsimd.BroadcastUint32x16(t)
+		a := uint32(archsimd.LoadUint32x16(sums[:16]).Less(target).ToBits())
+		b := uint32(archsimd.LoadUint32x16(sums[16:]).Less(target).ToBits())
+		mask = a | b<<16
+	} else if archsimd.X86.AVX2() && amd64MaxWidth >= 256 {
+		target := archsimd.BroadcastInt32x8(int32(t ^ (1 << 31)))
+		sign := archsimd.BroadcastInt32x8(-1 << 31)
+		a := uint32(target.Greater(archsimd.LoadUint32x8(sums[0:8]).AsInt32x8().Xor(sign)).ToBits())
+		b := uint32(target.Greater(archsimd.LoadUint32x8(sums[8:16]).AsInt32x8().Xor(sign)).ToBits())
+		c := uint32(target.Greater(archsimd.LoadUint32x8(sums[16:24]).AsInt32x8().Xor(sign)).ToBits())
+		d := uint32(target.Greater(archsimd.LoadUint32x8(sums[24:32]).AsInt32x8().Xor(sign)).ToBits())
+		mask = a | b<<8 | c<<16 | d<<24
+	} else {
+		return lowerSummaryPortable(sums, n, t)
+	}
+	archsimd.ClearAVXUpperBits()
+	return min(bits.TrailingZeros32(^mask), n)
+}
+
 func findCode(keys *[nodeSize]uint64, tags *[nodeSize]uint8, n int, key uint64) int {
 	if simd.Emulated() {
 		return lowerCodeScalar(keys, n, key)

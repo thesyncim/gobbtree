@@ -27,6 +27,21 @@ func lowerCodeScalar(keys *[nodeSize]uint64, n int, key uint64) int {
 	return lo
 }
 
+// lowerSummaryScalar is how many of n sorted summaries, padded past n with
+// MaxUint32, are below t: a text internal node's search (upstream's D43).
+func lowerSummaryScalar(sums *[nodeSize]uint32, n int, t uint32) int {
+	lo, hi := 0, n
+	for lo < hi {
+		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
+		if sums[mid] < t {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
 // Broad numeric nodes index the first key in each top-byte bucket.
 // The directory only narrows the search; full codes settle bucket boundaries.
 // Each eight-bucket word starts at the count of keys in earlier words; a key

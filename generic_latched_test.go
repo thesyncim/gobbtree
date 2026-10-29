@@ -3,6 +3,8 @@ package gobbtree
 import (
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -79,6 +81,9 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 			})
 			for i := 0; i < count; i++ {
 				inside(n.keys[i])
+				if prefixed[O, K]() && !strings.HasPrefix(textView(&n.keys[i]), tree.sharedText()) {
+					t.Fatalf("key %q lacks the shared prefix %q", textView(&n.keys[i]), tree.sharedText())
+				}
 				if n.codes[i] != windowKey[O](n.keys[i], p) {
 					t.Fatalf("leaf code %d is stale", i)
 				}
@@ -108,15 +113,32 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 		if own := n.seps[0].Load(); (own == nil) != (low == nil) || own != nil && compareKeys[O](*own, *low) != 0 {
 			t.Fatal("internal node's own separator is not its parent's")
 		}
-		p := checkPrefix(h, count > 1, func() []string {
-			var keys []string
-			for i := 1; i < count; i++ {
-				keys = append(keys, textView(n.seps[i].Load()))
+		if got := n.high.Load(); (got == nil) != (high == nil) || got != nil && compareKeys[O](*got, *high) != 0 {
+			t.Fatal("internal node's high fence is not its range's")
+		}
+		// A text node's prefix is what its fences share (D26, D50), and its
+		// summaries the top halves of its separators' windows past it.
+		p := 0
+		if prefixed[O, K]() {
+			p = tree.fencePrefix(low, high)
+			if int(h.prefix.Load()) != p {
+				t.Fatalf("internal prefix %d, fences share %d", h.prefix.Load(), p)
 			}
-			return keys
-		})
-		if n.codes[0].Load() != 0 {
-			t.Fatal("internal code 0 is not 0")
+			sums := n.sums()
+			for i := 0; i < nodeSize; i++ {
+				want := ^uint32(0)
+				switch {
+				case i == 0:
+					want = 0
+				case i < count:
+					want = summaryOf(textView(n.seps[i].Load()), p)
+				}
+				if sums[i] != want {
+					t.Fatalf("summary %d is %x, want %x", i, sums[i], want)
+				}
+			}
+		} else if h.prefix.Load() != 0 || n.codes[0].Load() != 0 {
+			t.Fatal("internal code 0 is not 0, or a prefix without text keys")
 		}
 		total := 0
 		for i := 0; i < count; i++ {
@@ -125,7 +147,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				if sep == nil {
 					t.Fatalf("separator %d missing", i)
 				}
-				if n.codes[i].Load() != windowKey[O](*sep, p) {
+				if !prefixed[O, K]() && n.codes[i].Load() != windowKey[O](*sep, 0) {
 					t.Fatalf("separator %d code is stale", i)
 				}
 				inside(*sep)
@@ -147,7 +169,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 			total += check(child, childLow, childHigh, depth+1)
 		}
 		for i := count; i < nodeSize; i++ {
-			if n.seps[i].Load() != nil || n.children[i].Load() != nil || n.codes[i].Load() != codePad {
+			if n.seps[i].Load() != nil || n.children[i].Load() != nil || !prefixed[O, K]() && n.codes[i].Load() != codePad {
 				t.Fatalf("internal slot %d past count %d holds a child", i, count)
 			}
 		}
@@ -390,5 +412,94 @@ func TestGenericOptimisticValues(t *testing.T) {
 	wg.Wait()
 	if got := checkGenericTree(t, &m.generic); got != seqLen(m.All()) {
 		t.Fatalf("tree holds %d entries, scan %d", got, seqLen(m.All()))
+	}
+}
+
+// The summary kernels count as the scalar search does, over sorted summaries
+// padded with MaxUint32, whatever the target.
+func TestLowerSummary(t *testing.T) {
+	x := uint64(1)
+	next := func() uint64 { x = x*6364136223846793005 + 1442695040888963407; return x }
+	for trial := 0; trial < 20000; trial++ {
+		var sums [nodeSize]uint32
+		n := int(next() % (nodeSize + 1))
+		spread := uint32(1) << (next() % 32)
+		base := uint32(next())
+		for i := range sums {
+			sums[i] = ^uint32(0)
+			if i < n {
+				sums[i] = base + uint32(next())%spread
+			}
+		}
+		slices.Sort(sums[:n])
+		for _, s := range []uint32{0, ^uint32(0), uint32(next()), sums[min(n, nodeSize-1)], sums[max(n-1, 0)] + 1} {
+			if got, want := lowerSummary(&sums, n, s), lowerSummaryScalar(&sums, n, s); got != want {
+				t.Fatalf("n=%d target %x: %d, want %d", n, s, got, want)
+			}
+		}
+	}
+}
+
+// Keys without the shared prefix shorten it while readers look keys up: the
+// tree's border nodes take the shorter prefix, and every key stays found.
+func TestGenericSharedPrefixShrinks(t *testing.T) {
+	var m Map[string, int]
+	groups := []string{"service/users/region-1/", "service/users/", "service/", "serv", "", "admin/", "zz", "service/users/region-1/x"}
+	const per = 3000
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	present := func(g, i int) string { return fmt.Sprintf("%s%06d", groups[g], i) }
+	for r := 0; r < 4; r++ {
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				for i := 0; i < per; i += 7 {
+					if v, ok := m.Get(present(0, i)); ok && v != i {
+						t.Errorf("get %q = %d", present(0, i), v)
+					}
+				}
+			}
+		})
+	}
+	for i := 0; i < per; i++ {
+		m.Insert(present(0, i), i)
+	}
+	for g := 1; g < len(groups); g++ {
+		wg.Go(func() {
+			for i := 0; i < per; i++ {
+				m.Insert(present(g, i), i)
+			}
+		})
+	}
+	m.Insert("", -1)
+	close(stop)
+	wg.Wait()
+	for g := range groups {
+		for i := 0; i < per; i++ {
+			if v, ok := m.Get(present(g, i)); !ok || v != i {
+				t.Fatalf("lost %q: %d, %v", present(g, i), v, ok)
+			}
+		}
+	}
+	if v, ok := m.Get(""); !ok || v != -1 {
+		t.Fatal("lost the empty key")
+	}
+	if got := checkGenericTree(t, &m.generic); got != len(groups)*per+1 {
+		t.Fatalf("tree holds %d entries, want %d", got, len(groups)*per+1)
+	}
+	if s := m.generic.sharedText(); s != "" {
+		t.Fatalf("shared prefix %q survives the empty key", s)
+	}
+	var last string
+	first := true
+	for k := range m.All() {
+		if !first && k <= last {
+			t.Fatalf("scan: %q after %q", k, last)
+		}
+		last, first = k, false
 	}
 }

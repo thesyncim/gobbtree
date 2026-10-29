@@ -13,6 +13,8 @@ func lowerCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, key uin
 	return lowerCodeScalar(keys, n, key)
 }
 
+func lowerSummary(sums *[nodeSize]uint32, n int, t uint32) int { return lowerSummaryScalar(sums, n, t) }
+
 func findCode(keys *[nodeSize]uint64, tags *[nodeSize]uint8, n int, key uint64) int {
 	return lowerCode(keys, n, key)
 }

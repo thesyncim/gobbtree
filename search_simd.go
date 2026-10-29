@@ -50,6 +50,26 @@ func lowerCompactPortable(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int,
 	return i
 }
 
+// lowerSummaryPortable counts summaries below t over every slot; the
+// padding past n counts none.
+func lowerSummaryPortable(sums *[nodeSize]uint32, n int, t uint32) int {
+	if simd.Emulated() {
+		return lowerSummaryScalar(sums, n, t)
+	}
+	target := simd.BroadcastUint32s(t)
+	sum := simd.BroadcastInt32s(0)
+	for i := 0; i < nodeSize; i += target.Len() {
+		sum = sum.Sub(simd.LoadUint32s(sums[i:]).Less(target).ToInt32s())
+	}
+	var lanes [16]int32
+	sum.Store(lanes[:])
+	i := 0
+	for j := 0; j < sum.Len(); j++ {
+		i += int(lanes[j])
+	}
+	return min(i, n)
+}
+
 func findCodePortable(keys *[nodeSize]uint64, tags *[nodeSize]uint8, n int, key uint64) int {
 	return lowerCodePortable(keys, n, key)
 }

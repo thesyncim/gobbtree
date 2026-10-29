@@ -1,5 +1,7 @@
 package gobbtree
 
+import "strings"
+
 // latchSet is the nodes an operation takes besides its leaf, upstream's
 // HeldNodes, for the generic tree: internal nodes by a compare-and-swap at
 // a version, leaves exclusively, all without waiting.
@@ -72,11 +74,88 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 	if t.root.Load() == nil {
 		t.start()
 	}
+	if prefixed[O, K]() {
+		t.admit(key)
+	}
 	code := t.code(key)
 	if old, found, done := t.insertLatched(key, code, value, policy, merge); done {
 		return old, found
 	}
 	return t.insertSplitting(key, code, value, policy, merge)
+}
+
+// admit makes the shared prefix one key begins with before the key goes in:
+// the first key's sets it, and a key without it shortens it to what they
+// share (D50). It only shortens, so a key that had it keeps it.
+func (t *genericTree[K, V, O]) admit(key K) {
+	s := textView(&key)
+	for {
+		cur := t.shared.Load()
+		if cur == nil {
+			// A copy: Bytes keys are the caller's to change.
+			shared := strings.Clone(s[:min(len(s), 64)])
+			if t.shared.CompareAndSwap(nil, &shared) {
+				return
+			}
+			continue
+		}
+		p := commonPrefix(s, *cur)
+		if p >= len(*cur) {
+			return
+		}
+		t.shrinkShared(cur, p)
+	}
+}
+
+// shrinkShared shortens the shared prefix cur to p bytes, as upstream's
+// latched tree does: it takes the root and every internal node on the
+// tree's borders, the nodes that take the shared prefix for a fence, without
+// waiting, and refits them; another goroutine holding one makes it start
+// over. It returns once the prefix is no longer cur.
+func (t *genericTree[K, V, O]) shrinkShared(cur *string, p int) {
+	var b backoff
+	for t.shared.Load() == cur {
+		var held latchSet
+		root := t.root.Load()
+		ok := false
+		if root.leaf {
+			ok = held.takeLeaf(root)
+		} else {
+			ok = held.takeInternal(root) && takeBorder(&held, asInner[K](root), false) && takeBorder(&held, asInner[K](root), true)
+		}
+		if ok && t.root.Load() == root && t.shared.Load() == cur {
+			shorter := (*cur)[:p]
+			t.shared.Store(&shorter)
+			for i := 0; i < held.len; i++ {
+				if n := held.nodes[i]; !n.leaf {
+					t.refitInner(asInner[K](n))
+				}
+			}
+			held.unlock()
+			return
+		}
+		held.unlock()
+		b.spin()
+	}
+}
+
+// takeBorder takes the internal nodes below n, held, along its first
+// children, or its last when right.
+func takeBorder[K any](held *latchSet, n *ginner[K], right bool) bool {
+	for {
+		i := 0
+		if right {
+			i = int(n.count.Load()) - 1
+		}
+		c := n.children[max(i, 0)&(nodeSize-1)].Load()
+		if c == nil || c.leaf {
+			return c != nil
+		}
+		if !held.takeInternal(c) {
+			return false
+		}
+		n = asInner[K](c)
+	}
 }
 
 func (t *genericTree[K, V, O]) insertLatched(key K, code uint64, value V, policy int, merge func(K, V, V) V) (old V, found, done bool) {
@@ -193,6 +272,7 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 		}
 		split := newGInner[K]()
 		fresh.push(&split.gheader, 0)
+		high := n.high.Load()
 		cut, left := ofSplit(nodeSize, edge, innerMinLen)
 		t.moveChildEntries(split, 0, n, cut, nodeSize-cut)
 		if left {
@@ -201,6 +281,11 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 			t.insertChild(split, edge-cut, separator, carried)
 		}
 		separator, carried = split.seps[0].Load(), &split.gheader
+		// The halves' fences: the separator between them, and n's.
+		n.high.Store(separator)
+		split.high.Store(high)
+		t.refitInner(n)
+		t.refitInner(split)
 	}
 	if carried != nil {
 		// The root split: a new root takes the old one and its new sibling.
@@ -321,7 +406,6 @@ func (t *genericTree[K, V, O]) removeChild(n *ginner[K], i int) {
 		n.seps[j].Store(n.seps[j+1].Load())
 		n.children[j].Store(n.children[j+1].Load())
 	}
-	n.codes[count-1].Store(codePad)
 	n.seps[count-1].Store(nil)
 	n.children[count-1].Store(nil)
 	n.count.Store(int32(count - 1))
@@ -345,7 +429,6 @@ func (t *genericTree[K, V, O]) moveChildEntries(dst *ginner[K], at int, src *gin
 		src.children[j].Store(src.children[j+count].Load())
 	}
 	for j := srcCount - count; j < srcCount; j++ {
-		src.codes[j].Store(codePad)
 		src.seps[j].Store(nil)
 		src.children[j].Store(nil)
 	}
