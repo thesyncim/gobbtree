@@ -64,8 +64,21 @@ func (t *latchedTree) upgrade(key uint64) (leaf *wordNode, version uint64, i int
 		return nil, 0, 0, false
 	}
 	leaf, _, version = t.descend(key, optimistic, nil)
-	i = leaf.exactEntry(key)
+	i = leaf.exactEntryRacing(key)
 	return leaf, version, i, leaf.tryLockAt(version)
+}
+
+// exactEntryRacing is exactEntry for a leaf read while a writer may change
+// it: it reads the count once and keeps every index in bounds. The caller's
+// version check, or compare-and-swap at the version it read, decides
+// whether the answer holds.
+func (n *wordNode) exactEntryRacing(key uint64) int {
+	count := min(int(n.n), nodeSize)
+	i := firstTag(&n.tags, count, key)
+	if i >= count || n.entries()[i&(nodeSize-1)].key == key {
+		return min(i, count)
+	}
+	return n.lowerEntry(key)
 }
 
 // insertInto inserts into leaf, held exclusively, if it holds key or has

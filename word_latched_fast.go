@@ -131,7 +131,7 @@ func (t *latchedTree) upgradeHinted(key uint64) (leaf *wordNode, version uint64,
 	if m.n == 0 || !holds(*m.prefixWord(), m.high, key) {
 		return nil, 0, 0, false
 	}
-	i = m.exactEntry(key)
+	i = m.exactEntryRacing(key)
 	if !n.tryLockAt(word) {
 		return nil, 0, 0, false
 	}
