@@ -113,10 +113,6 @@ type keyOrder[K any] interface {
 	// textual reports keys whose windows may tie for distinct keys; their
 	// nodes resolve ties against full keys and skip shared prefixes.
 	textual() bool
-	// sharedPrefix is the length of the encoding prefix shared by a and b.
-	sharedPrefix(a, b K) int
-	// comparePrefix orders key's first prefix encoding bytes against first's.
-	comparePrefix(key, first K, prefix int) int
 	// own returns the key to store for a newly inserted key.
 	own(key K) K
 }
@@ -135,23 +131,6 @@ func (natural[K]) textual() bool {
 	var zero K
 	_, ok := keyString(zero)
 	return ok
-}
-func (natural[K]) sharedPrefix(a, b K) int {
-	x, ok := keyString(a)
-	if !ok {
-		return 0
-	}
-	y, _ := keyString(b)
-	end, prefix := min(len(x), len(y), 65535), 0
-	for prefix < end && x[prefix] == y[prefix] {
-		prefix++
-	}
-	return prefix
-}
-func (natural[K]) comparePrefix(key, first K, prefix int) int {
-	s, _ := keyString(key)
-	f, _ := keyString(first)
-	return cmp.Compare(s[:min(len(s), prefix)], f[:prefix])
 }
 
 // Ordering methods are called through the generic dictionary. natural is the
@@ -198,29 +177,6 @@ func windowKey[O keyOrder[K], K any](key K, offset int) uint64 {
 	}
 	var o O
 	return o.window(key, offset)
-}
-
-// sharedPrefix measures direct textual keys on their bytes, which their
-// prefix comparisons slice.
-func sharedPrefix[O keyOrder[K], K any](a, b K) int {
-	if directText[O, K]() {
-		x, y := textView(&a), textView(&b)
-		end, prefix := min(len(x), len(y), 65535), 0
-		for prefix < end && x[prefix] == y[prefix] {
-			prefix++
-		}
-		return prefix
-	}
-	var o O
-	return o.sharedPrefix(a, b)
-}
-func comparePrefix[O keyOrder[K], K any](key, first K, prefix int) int {
-	if directText[O, K]() {
-		s, f := textView(&key), textView(&first)
-		return strings.Compare(s[:min(len(s), prefix)], f[:prefix])
-	}
-	var o O
-	return o.comparePrefix(key, first, prefix)
 }
 
 // numericKey keeps the common uint64 case small enough to inline.

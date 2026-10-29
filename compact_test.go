@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestCompactSearchDifferential(t *testing.T) {
+func TestCodeSearchDifferential(t *testing.T) {
 	rng := rand.New(rand.NewPCG(123, 456))
 	for n := 0; n <= nodeSize; n++ {
 		for distribution := 0; distribution < 5; distribution++ {
@@ -30,10 +30,8 @@ func TestCompactSearchDifferential(t *testing.T) {
 			}
 			slices.Sort(keys[:n])
 			var high [nodeSize]uint32
-			var tags [nodeSize]uint8
 			for i, k := range keys {
 				high[i] = uint32(k >> 32)
-				tags[i] = uint8(k)
 			}
 			queries := []uint64{0, 1, ^uint64(0), uint64(7) << 32, uint64(8) << 32}
 			for _, key := range keys[:n] {
@@ -47,14 +45,15 @@ func TestCompactSearchDifferential(t *testing.T) {
 				for want < n && keys[want] < key {
 					want++
 				}
-				if got := lowerCompact(&keys, &high, n, key); got != want {
+				if got := lowerCode(&keys, n, key); got != want {
 					t.Fatalf("n=%d distribution=%d q=%x: %d != %d", n, distribution, key, got, want)
 				}
-				got := findCode(&keys, &tags, n, key)
-				present := got < n && keys[got] == key
-				expected := want < n && keys[want] == key
-				if present != expected {
-					t.Fatalf("tag search n=%d distribution=%d q=%x: %v != %v", n, distribution, key, present, expected)
+				summary := 0
+				for summary < n && high[summary] < uint32(key>>32) {
+					summary++
+				}
+				if got := lowerSummary(&high, n, uint32(key>>32)); got != summary {
+					t.Fatalf("summaries n=%d distribution=%d q=%x: %d != %d", n, distribution, key, got, summary)
 				}
 			}
 		}

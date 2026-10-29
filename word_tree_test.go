@@ -285,7 +285,6 @@ func TestWordNodePointerFree(t *testing.T) {
 		}
 	}
 	check(reflect.TypeFor[wordNode]())
-	check(reflect.TypeFor[numericColumns]())
 	if unsafe.Sizeof(wordNode{}) != 576 || unsafe.Offsetof(wordNode{}.payload) != 64 {
 		t.Fatal("numeric node layout changed")
 	}
@@ -357,12 +356,6 @@ func routeScan(n *wordNode, key uint64) int {
 		i++
 	}
 	return i
-}
-
-func TestNumericNodeLayout(t *testing.T) {
-	if unsafe.Sizeof(uintptr(0)) == 8 && unsafe.Sizeof(node[uint64, uint64, natural[uint64]]{}) > 512 {
-		t.Fatal("numeric node exceeded the small-object scan threshold")
-	}
 }
 
 func TestWordOuterLeafRedistribution(t *testing.T) {

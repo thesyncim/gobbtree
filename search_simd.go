@@ -28,28 +28,6 @@ func lowerCodePortable(keys *[nodeSize]uint64, n int, key uint64) int {
 // SIMD reports whether this build uses hardware SIMD and its vector width.
 func simdPortable() (hardware bool, bits int) { return !simd.Emulated(), simd.VectorBitSize() }
 
-func lowerCompactPortable(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, key uint64) int {
-	if simd.Emulated() {
-		return lowerCodeScalar(keys, n, key)
-	}
-	target := simd.BroadcastUint32s(uint32(key >> 32))
-	sum := simd.BroadcastInt32s(0)
-	for i := 0; i < nodeSize; i += target.Len() {
-		sum = sum.Sub(simd.LoadUint32s(high[i:]).Less(target).ToInt32s())
-	}
-	var lanes [16]int32
-	sum.Store(lanes[:])
-	i := 0
-	for j := 0; j < sum.Len(); j++ {
-		i += int(lanes[j])
-	}
-	i = min(i, n)
-	if i < n && high[i] == uint32(key>>32) && keys[i] < key {
-		return lowerCodeScalar(keys, n, key)
-	}
-	return i
-}
-
 // lowerSummaryPortable counts summaries below t over every slot; the
 // padding past n counts none.
 func lowerSummaryPortable(sums *[nodeSize]uint32, n int, t uint32) int {
@@ -68,8 +46,4 @@ func lowerSummaryPortable(sums *[nodeSize]uint32, n int, t uint32) int {
 		i += int(lanes[j])
 	}
 	return min(i, n)
-}
-
-func findCodePortable(keys *[nodeSize]uint64, tags *[nodeSize]uint8, n int, key uint64) int {
-	return lowerCodePortable(keys, n, key)
 }

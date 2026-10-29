@@ -18,83 +18,14 @@ func checkCore[K any, V any, O keyOrder[K]](t testing.TB, tr *treeCore[K, V, O])
 		checkWordTree(t, tr.words, tr.length)
 		return
 	}
-	if tr.root == nil {
+	if tr.generic == nil {
 		if tr.length != 0 {
-			t.Fatal("nil root with nonzero length")
+			t.Fatal("no tree with nonzero length")
 		}
 		return
 	}
-	var leaves []*node[K, V, O]
-	leafDepth := -1
-	total := 0
-	var walk func(*node[K, V, O], int)
-	walk = func(n *node[K, V, O], depth int) {
-		if n.n < 1 || n.n > nodeSize || (depth > 0 && n.n < minNodeSize) {
-			t.Fatalf("bad occupancy %d at depth %d", n.n, depth)
-		}
-		if n.children != nil && n == tr.root && n.n < 2 {
-			t.Fatal("uncollapsed root")
-		}
-		for i := 0; i < n.n; i++ {
-			if i > 0 && compareKeys[O](n.keys[i-1], n.keys[i]) >= 0 {
-				t.Fatal("keys unordered")
-			}
-			if n.codes[i] != windowKey[O](n.keys[i], n.prefix) {
-				t.Fatal("stale inline key")
-			}
-			if i > 0 && n.codes[i-1] > n.codes[i] {
-				t.Fatal("codes unordered")
-			}
-		}
-		for i := n.n; i < nodeSize; i++ {
-			if n.codes[i] != math.MaxUint64 {
-				t.Fatal("bad padding")
-			}
-		}
-		if n.leaf != nil {
-			if n.children != nil {
-				t.Fatal("both node kinds")
-			}
-			if leafDepth < 0 {
-				leafDepth = depth
-			}
-			if leafDepth != depth {
-				t.Fatal("unbalanced leaf depths")
-			}
-			leaves = append(leaves, n)
-			total += n.n
-			return
-		}
-		for i := 0; i < n.n; i++ {
-			if n.children[i] == nil || compareKeys[O](n.keys[i], n.children[i].keys[0]) != 0 {
-				t.Fatal("stale child minimum")
-			}
-			walk(n.children[i], depth+1)
-		}
-		for i := n.n; i < nodeSize; i++ {
-			if n.children[i] != nil {
-				t.Fatal("retained child")
-			}
-		}
-	}
-	walk(tr.root, 0)
-	for i, n := range leaves {
-		var prev, next *node[K, V, O]
-		if i > 0 {
-			prev = leaves[i-1]
-			if compareKeys[O](prev.keys[prev.n-1], n.keys[0]) >= 0 {
-				t.Fatal("leaves overlap")
-			}
-		}
-		if i+1 < len(leaves) {
-			next = leaves[i+1]
-		}
-		if n.leaf.prev != prev || n.leaf.next != next {
-			t.Fatal("broken leaf links")
-		}
-	}
-	if total != tr.length {
-		t.Fatalf("length %d, counted %d", tr.length, total)
+	if got := checkGenericTree(t, tr.generic); got != tr.length {
+		t.Fatalf("tree holds %d entries, length %d", got, tr.length)
 	}
 }
 
@@ -421,8 +352,8 @@ func TestKernelsMatchScalar(t *testing.T) {
 			for q := range uint64(22) {
 				code := q/4<<32 | q%4
 				want, _ := slices.BinarySearch(codes[:n], code)
-				if a, b, c := lowerCode(&codes, n, code), lowerCodeScalar(&codes, n, code), lowerCompact(&codes, &high, n, code); a != want || b != want || c != want {
-					t.Fatalf("n=%d code=%x lower=%d scalar=%d compact=%d want=%d", n, code, a, b, c, want)
+				if a, b := lowerCode(&codes, n, code), lowerCodeScalar(&codes, n, code); a != want || b != want {
+					t.Fatalf("n=%d code=%x lower=%d scalar=%d want=%d", n, code, a, b, want)
 				}
 				want = sort.Search(n, func(i int) bool { return uint64(inline[i]) > q })
 				if a, b := upperWordInline(&inline, n, uint16(q)), upperWordInlineScalar(&inline, n, uint16(q)); a != want || b != want {

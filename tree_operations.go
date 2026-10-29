@@ -6,6 +6,10 @@ import (
 
 // GetKeyValue returns the stored key, its value, and whether it was found.
 func (t *treeCore[K, V, O]) GetKeyValue(key K) (stored K, value V, ok bool) {
+	if t.generic != nil {
+		ok = t.generic.read(key, func(k K, v V) { stored, value = k, v })
+		return stored, value, ok
+	}
 	stored, value, ok = t.LowerBound(key)
 	if ok && compareKeys[O](stored, key) == 0 {
 		return
@@ -42,19 +46,17 @@ func (t *treeCore[K, V, O]) bound(key K, after bool) (k K, v V, ok bool) {
 		e := n.entries()[i]
 		return decodeWordKey[K](e.key, w.keyKind), t.wordValue(e.value), true
 	}
-	n := t.root.findLeaf(key)
-	i := n.lower(key)
-	if after && i < n.n && compareKeys[O](n.keys[i], key) == 0 {
-		i++
-	}
-	if i == n.n {
-		n = n.leaf.next
-		if n == nil {
-			return
+	if t.generic != nil {
+		b := AtLeast(key)
+		if after {
+			b = Above(key)
 		}
-		i = 0
+		t.generic.walk(&b, false, func(key K, value V) bool {
+			k, v, ok = key, value, true
+			return false
+		})
 	}
-	return n.keys[i], n.leaf.values[i], true
+	return k, v, ok
 }
 
 func (t *treeCore[K, V, O]) Keys() iter.Seq[K] {

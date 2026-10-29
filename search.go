@@ -2,6 +2,13 @@ package gobbtree
 
 import "encoding/binary"
 
+// Every node holds up to nodeSize entries or children; a single owner's
+// word leaves below minNodeSize merge or borrow.
+const (
+	nodeSize    = 32
+	minNodeSize = nodeSize / 2
+)
+
 // Routing uses the upper bound: each internal slot is its child's minimum.
 // Keeping this independent of the generic node lets it inline into descent.
 func routeCode(keys *[nodeSize]uint64, n int, code uint64) int {
@@ -77,13 +84,6 @@ func directoryRoute(codes *[nodeSize]uint64, directory *[256]uint8, n int, code 
 		i++
 	}
 	return max(0, i-1)
-}
-
-func routeCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, code uint64) int {
-	if code == ^uint64(0) {
-		return n - 1
-	}
-	return max(0, lowerCompact(keys, high, n, code+1)-1)
 }
 
 func firstTagScalar(tags *[nodeSize]uint8, n int, tag uint8) int {
