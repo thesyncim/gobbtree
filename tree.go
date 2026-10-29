@@ -114,7 +114,7 @@ func (t *treeCore[K, V, O]) Get(key K) (V, bool) {
 	}
 
 	if t.generic != nil {
-		return t.generic.get(key)
+		return t.generic.ownerGet(key)
 	}
 	var zero V
 	return zero, false

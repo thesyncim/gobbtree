@@ -456,13 +456,19 @@ func headOrder(s string, p int, h0, h1 uint64) int {
 // varies from leaf to leaf, would mispredict.
 func headMask(p int) uint64 { return ^(^uint64(0) >> (8 * uint(p))) }
 
-// sharesHead reports whether text s begins with the p bytes, at most 16,
-// whose windows at 0 and 8, cut to p bytes, are h0 and h1: both windows
-// compared, without a branch on p.
-func sharesHead(s string, p int, h0, h1 uint64) bool {
-	// fastWindow at 8 is stringCode's there wherever it declines: no bytes.
-	w1, _ := fastWindow(s, 8)
-	return len(s) >= p && ((stringCode(s, 0)^h0)&headMask(p)|(w1^h1)&headMask(max(p-8, 0))) == 0
+// headWindow is text s's window at 8, by fastWindow, which where it
+// declines has no bytes to read: stringCode's there too.
+func headWindow(s string) uint64 {
+	w, _ := fastWindow(s, 8)
+	return w
+}
+
+// headDiff is nonzero where windows w0 and w1, at 0 and 8, differ in their
+// first p bytes, at most 16, from h0 and h1, the windows of a prefix cut to
+// p bytes: a text key of p bytes or more begins with the prefix where it is
+// 0. It compares both windows rather than branch on p, and it inlines.
+func headDiff(w0, w1 uint64, p int, h0, h1 uint64) uint64 {
+	return (w0^h0)&headMask(p) | (w1^h1)&headMask(max(p-8, 0))
 }
 
 // setPrefix makes h's prefix the first p bytes of key.

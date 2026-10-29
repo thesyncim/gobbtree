@@ -576,8 +576,8 @@ func TestFastWindow(t *testing.T) {
 	}
 }
 
-// sharesHead agrees with a byte comparison for every prefix length.
-func TestSharesHead(t *testing.T) {
+// headDiff agrees with a byte comparison for every prefix length.
+func TestHeadDiff(t *testing.T) {
 	prefixes := []string{"", "u", "user:", "user:3a", "user:3a4f", "user:3a4f5b6c7d", "user:3a4f5b6c7d8"}
 	keys := []string{"", "u", "user", "user:", "user:3", "user:3a", "user:3a4", "user:3a4f", "user:3a4f5b6c7d", "user:3a4f5b6c7d8e9f", "user:3b", "usex:3a4f5b6c7d8e", "user:3a4f5b6c7d8f"}
 	for _, prefix := range prefixes {
@@ -585,7 +585,8 @@ func TestSharesHead(t *testing.T) {
 		h.setPrefix(prefix, len(prefix))
 		for _, k := range keys {
 			want := len(k) >= len(prefix) && k[:len(prefix)] == prefix
-			if got := sharesHead(k, len(prefix), h.head[0].Load(), h.head[1].Load()); got != want {
+			got := len(k) >= len(prefix) && headDiff(stringCode(k, 0), headWindow(k), len(prefix), h.head[0].Load(), h.head[1].Load()) == 0
+			if got != want {
 				t.Fatalf("%q against %q: %v, want %v", k, prefix, got, want)
 			}
 		}
