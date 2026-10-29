@@ -2,6 +2,7 @@ package gobbtree
 
 import (
 	"cmp"
+	"encoding/binary"
 	"math"
 	"reflect"
 	"strings"
@@ -72,16 +73,21 @@ func floatCode(f float64) uint64 {
 }
 
 func stringCode(s string, offset int) uint64 {
+	if uint(offset)+8 <= uint(len(s)) {
+		// Eight whole bytes, the common case, inlined: one load.
+		return binary.BigEndian.Uint64((*[8]byte)(unsafe.Add(unsafe.Pointer(unsafe.StringData(s)), offset))[:])
+	}
+	return stringCodeTail(s, offset)
+}
+
+// stringCodeTail is stringCode where fewer than eight bytes are left.
+func stringCodeTail(s string, offset int) uint64 {
 	if offset >= len(s) {
 		return 0
 	}
-	s = s[offset:]
-	if len(s) >= 8 {
-		return uint64(s[0])<<56 | uint64(s[1])<<48 | uint64(s[2])<<40 | uint64(s[3])<<32 | uint64(s[4])<<24 | uint64(s[5])<<16 | uint64(s[6])<<8 | uint64(s[7])
-	}
 	var u uint64
-	for i := 0; i < len(s); i++ {
-		u |= uint64(s[i]) << (56 - 8*i)
+	for i, c := range []byte(s[offset:]) {
+		u |= uint64(c) << (56 - 8*i)
 	}
 	return u
 }
