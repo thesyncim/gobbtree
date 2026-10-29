@@ -7,13 +7,17 @@ import (
 )
 
 // Map is a concurrent ordered map. Its zero value is ready to use.
-// Get validates optimistic reads of numeric arenas or immutable search images;
-// textual leaves with other values are read under their latch.
-// Built-in word values use atomic loads; other values use a leaf latch. Writers
-// latch leaves independently; splits, merges and routing changes take a structural
-// latch exclusively. Scans copy a leaf at a time and visit without latches.
+//
+// With word-sized keys and values it shares one tree as upstream's
+// BBTreeMap does: lookups descend optimistically, checking each node's
+// version, writers latch only the leaf they change, and splits and merges
+// take only the nodes they change. Other keys lock single leaves under a
+// structural lock that splits and merges take exclusively. Scans copy a leaf
+// at a time and visit the copy with nothing held.
+//
 // Do not copy a Map after first use. Read, Update, UpdateOrInsert and DeleteIf
 // callbacks run under the entry's latch and must not reenter the same Map.
+// Clear is the owner's: no other goroutine may use the Map until it returns.
 type Map[K cmp.Ordered, V any] struct{ mapCore[K, V, natural[K]] }
 
 // mapCore implements Map and MapOf for one key ordering.

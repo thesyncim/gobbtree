@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch, Rectangle
 
 ROOT = Path(__file__).resolve().parent.parent
-REPORT = ROOT / "benchmarks/arm64-2026-10-26.json"
+REPORT = ROOT / "benchmarks/arm64-2026-10-29.json"
 SIZES = [4096, 262144, 5000000, 50000000]
 LABELS = ["4K", "262K", "5M", "50M"]
 CASES = [
