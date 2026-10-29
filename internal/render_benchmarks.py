@@ -108,9 +108,6 @@ def main():
         if args.preview_dir:
             args.preview_dir.mkdir(parents=True, exist_ok=True)
             (args.preview_dir / path.name).write_text(path.read_text())
-    stale = ROOT / "benchmarks/summary-arm64.svg"
-    if stale.exists():
-        stale.unlink()
 
     def timing_tables(pattern):
         rows = []
