@@ -347,8 +347,11 @@ func (t *genericTree[K, V, O]) lowFence(n *ginner[K]) *K {
 // The node is held, which keeps it.
 func (t *genericTree[K, V, O]) nodeHigh(path *gpath[K], level int) *K {
 	for l := level - 1; l >= 0; l-- {
+		// The count the descent read, with the edge: a node above those an
+		// operation holds may change, but not one whose separator is a
+		// fence it uses, which it holds too (gpath.takeHighHolder).
 		at := path.levels[l]
-		if at.edge+1 < int(at.n.count.Load()) {
+		if at.edge+1 < at.count {
 			if k, ok := t.separatorKey(at.n, at.edge+1); ok {
 				return &k
 			}

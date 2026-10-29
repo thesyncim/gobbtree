@@ -644,7 +644,15 @@ func TestGenericSharedPrefixShrinks(t *testing.T) {
 	for g := range groups {
 		for i := 0; i < per; i++ {
 			if v, ok := m.Get(present(g, i)); !ok || v != i {
-				t.Fatalf("lost %q: %d, %v", present(g, i), v, ok)
+				held := 0
+				for k := range m.All() {
+					if k == present(g, i) {
+						held++
+					}
+				}
+				checkGenericTree(t, &m.generic)
+				_, again := m.Get(present(g, i))
+				t.Fatalf("lost %q: %d, %v; a walk finds it %d times; again %v", present(g, i), v, ok, held, again)
 			}
 		}
 	}
