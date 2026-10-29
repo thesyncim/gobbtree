@@ -8,7 +8,6 @@ import (
 	"simd"
 	"simd/archsimd"
 	"strings"
-	"sync/atomic"
 )
 
 // Direct integer kernels need fewer optional CPU features than portable
@@ -123,41 +122,8 @@ func firstTag(tags *[nodeSize]uint8, n int, key uint64) int {
 	return min(i, n)
 }
 
-func sharedTagVectors(words *[4]uint64) (archsimd.Uint8x16, archsimd.Uint8x16) {
-	var a, b archsimd.Uint64x2
-	a = a.SetElem(0, atomic.LoadUint64(&words[0])).SetElem(1, atomic.LoadUint64(&words[1]))
-	b = b.SetElem(0, atomic.LoadUint64(&words[2])).SetElem(1, atomic.LoadUint64(&words[3]))
-	return a.ReshapeToUint8s(), b.ReshapeToUint8s()
-}
-func firstSharedTag(words *[4]uint64, n int, key uint64) int {
-	if simd.Emulated() || !archsimd.X86.AVX() {
-		return firstSharedTagFallback(words, n, key)
-	}
-	a, b := sharedTagVectors(words)
-	var mask uint32
-	if archsimd.X86.AVX2() && amd64MaxWidth >= 256 {
-		var both archsimd.Uint8x32
-		both = both.SetLo(a).SetHi(b)
-		mask = both.Equal(archsimd.BroadcastUint8x32(uint8(key))).ToBits()
-	} else {
-		target := archsimd.BroadcastUint8x16(uint8(key))
-		mask = uint32(a.Equal(target).ToBits()) | uint32(b.Equal(target).ToBits())<<16
-	}
-	archsimd.ClearAVXUpperBits()
-	return min(bits.TrailingZeros32(mask), n)
-}
-
-// Two byte sign bits represent each word mask, avoiding AVX-512-only mask
-// extraction on the AVX2 and 128-bit paths.
+// mask16Count256 is how many of mask's sixteen lanes are set.
 func mask16Count256(mask archsimd.Mask16x16) int {
 	bytes := mask.ToInt16x16().AsInt8x32()
 	return bits.OnesCount32(bytes.Less(archsimd.Int8x32{}).ToBits()) / 2
-}
-func mask16Count128(mask archsimd.Mask16x8) int {
-	bytes := mask.ToInt16x8().AsInt8x16()
-	return bits.OnesCount16(bytes.Less(archsimd.Int8x16{}).ToBits()) / 2
-}
-
-func lowerEntries(entries *[nodeSize]wordEntry, key uint64) int {
-	return lowerEntriesScalar(entries, key)
 }

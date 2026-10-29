@@ -2,9 +2,8 @@ package gobbtree
 
 import "unsafe"
 
-// The generic tree's text lookups, a tight loop of the general descent's
-// checks, as the word tree's leafOrdered and readHinted are
-// (word_latched_fast.go): a node's latch word is an acquire load, which
+// The generic tree's fast lookups, a tight loop of the general descent's
+// checks: a node's latch word is an acquire load, which
 // orders its plain loads after it while letting the core issue them at
 // once; every word a route or a leaf's answer depends on feeds the address
 // of the node's closing check, which therefore loads after them. Anything
@@ -185,7 +184,7 @@ func codeLeafOrdered(root **gheader, code uint64, f *hintFrame) (*gheader, uint6
 // and whether it is there, or false where n doesn't hold it between its
 // first and last keys, or changed meanwhile. Its latch word is loaded
 // plainly, and feeds the addresses of the words it guards, which all feed
-// the closing check's, as the word trees' readHinted orders them.
+// the closing check's.
 func (t *genericTree[K, V, O]) readHintedCode(n *gleaf[K, V], code uint64) (value V, found, ok bool) {
 	return t.readHintedAt(n, *(*uint64)(unsafe.Pointer(&n.latch)), code)
 }
@@ -239,8 +238,8 @@ func (t *genericTree[K, V, O]) readHintedAt(n *gleaf[K, V], word, code uint64) (
 	return value, true, true
 }
 
-// getMany8 looks up eight integer keys at once, as the word trees'
-// getMany8 and upstream's get_many_copied: each stage runs for every key
+// getMany8 looks up eight integer keys at once, as upstream's
+// get_many_copied: each stage runs for every key
 // before the next, so their misses overlap, from the hint cells to the
 // leaves' directory slots, their latch words and their entries. Each
 // result is consistent on its own; a key its hint doesn't settle is looked
@@ -296,8 +295,7 @@ func (t *genericTree[K, V, O]) getMany8(keys *[batchLanes]K, dst *[batchLanes]Re
 }
 
 // seekHinted searches the leaf code's hint names, with plain loads after
-// its latch word, which it returns, unheld, as the word trees'
-// upgradeHinted searches: code's slot and whether it is there, false where
+// its latch word, which it returns, unheld: code's slot and whether it is there, false where
 // the leaf is held, or code lies outside it or at either of its ends
 // without being there. A compare-and-swap at the word, which succeeds only
 // where nothing changed the leaf since, makes the search hold.
@@ -440,7 +438,7 @@ func (t *genericTree[K, V, O]) readCodeLeaf(n *gleaf[K, V], word, code uint64) (
 
 // leafLatched is key's leaf latched in mode, shared or exclusive, and the
 // version held: through the ordered descent and a compare-and-swap at the
-// latch word it read, as the word tree's upgradeOrdered takes its leaf, or
+// latch word it read, or
 // else by a latching descent. A swap that succeeds finds the leaf as the
 // descent's checks vouched for it, so the leaf is still key's.
 func (t *genericTree[K, V, O]) leafLatched(key K, code uint64, seek int, mode int) (*gleaf[K, V], uint64) {

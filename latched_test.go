@@ -21,129 +21,10 @@ func seqLen[K, V any](seq iter.Seq2[K, V]) int {
 // upstream's check_invariants, and returns its entry count: keys sorted
 // within the bounds their separators give, padding past each count, tags,
 // minimum occupancy below the root, every latch let go, and the last leaf.
-// checkMap checks m's tree, a word tree or the generic one, and returns
-// its entry count.
+// checkMap checks m's tree and returns its entry count.
 func checkMap[K any, V any, O keyOrder[K]](t testing.TB, m *mapCore[K, V, O]) int {
 	t.Helper()
-	if words := m.words.Load(); words != nil {
-		return checkLatchedTree(t, &words.tree)
-	}
 	return checkGenericTree(t, &m.generic)
-}
-
-func checkLatchedTree(t testing.TB, tr *latchedTree) int {
-	t.Helper()
-	root := tr.root.Load()
-	if root == 0 {
-		return 0
-	}
-	entries, last := 0, uint32(0)
-	reachable := map[uint32]bool{}
-	var walk func(id uint32, low, high uint64, bounded bool, isRoot bool)
-	walk = func(id uint32, low, high uint64, bounded bool, isRoot bool) {
-		reachable[id] = true
-		n := tr.node(id)
-		if n == nil {
-			t.Fatalf("node %#x outside the arena", id)
-		}
-		// Readers may still run, latching leaves shared where their
-		// lookups fall back to it; no writer may hold a node.
-		if word := n.sequence.Load(); word&latchExclusive != 0 {
-			t.Fatalf("node %#x still held: %#x", id, word)
-		}
-		count := int(n.n)
-		if seqlockPlainStores {
-			wantHigh := uint64(0)
-			if bounded {
-				wantHigh = high
-			}
-			if lowFence(n) != low || highFence(n) != wantHigh {
-				t.Fatalf("node %#x fences [%d, %d), routed [%d, %d)", id, lowFence(n), highFence(n), low, wantHigh)
-			}
-		}
-		if id&wordLeafID != 0 {
-			if !n.leaf || count > nodeSize || !isRoot && count < leafMinLen {
-				t.Fatalf("leaf %#x: %d entries", id, count)
-			}
-			for i := 0; i < nodeSize; i++ {
-				key := n.entries()[i].key
-				if i >= count {
-					if key != ^uint64(0) {
-						t.Fatalf("leaf %#x slot %d not padded", id, i)
-					}
-					continue
-				}
-				if n.tags[i] != uint8(key) {
-					t.Fatalf("leaf %#x tag %d", id, i)
-				}
-				if i > 0 && n.entries()[i-1].key >= key || key < low || bounded && key >= high {
-					t.Fatalf("leaf %#x key %d out of order or bounds [%d, %d)", id, key, low, high)
-				}
-			}
-			entries += count
-			last = id
-			return
-		}
-		if n.leaf || count > nodeSize || count < 2 || !isRoot && count < innerMinLen {
-			t.Fatalf("internal node %#x: %d children", id, count)
-		}
-		if !isRoot && n.keys[0] != low {
-			t.Fatalf("internal node %#x first separator %d, its own %d", id, n.keys[0], low)
-		}
-		for i := 0; i < count; i++ {
-			childLow, childHigh, childBounded := low, high, bounded
-			if i > 0 {
-				childLow = n.keys[i]
-				if n.keys[i] <= n.keys[i-1] && i > 1 || n.keys[i] < low || bounded && n.keys[i] >= high {
-					t.Fatalf("internal node %#x separator %d out of order", id, i)
-				}
-			}
-			if i+1 < count {
-				childHigh, childBounded = n.keys[i+1], true
-			}
-			walk(n.inner().children[i], childLow, childHigh, childBounded, false)
-		}
-		for i := count; i < nodeSize; i++ {
-			if n.keys[i] != ^uint64(0) || n.inner().children[i] != 0 {
-				t.Fatalf("internal node %#x slot %d not cleared", id, i)
-			}
-		}
-	}
-	walk(root, 0, 0, false, true)
-	if got := tr.rightmost.Load(); got != last {
-		t.Fatalf("appends go to %#x, the last leaf is %#x", got, last)
-	}
-	// Free pages: unheld, unreachable, and holding nothing, so that a stale
-	// pointer or hint to one starts over.
-	for _, head := range []uint32{tr.pages.freeLeaf, tr.pages.freeInner} {
-		for id := head; id != 0; id = tr.node(id).directory {
-			n := tr.node(id)
-			if reachable[id] || n.n != 0 || n.sequence.Load()&(latchExclusive|latchSharedMask) != 0 {
-				t.Fatalf("free page %#x: reachable %v, %d entries, latch %#x", id, reachable[id], n.n, n.sequence.Load())
-			}
-			reachable[id] = true
-		}
-	}
-	return entries
-}
-
-// latchedLeaves counts a quiescent latched tree's leaves.
-func latchedLeaves(tr *latchedTree) int {
-	var count func(id uint32) int
-	count = func(id uint32) int {
-		if id&wordLeafID != 0 {
-			return 1
-		}
-		n, total := tr.node(id), 0
-		for i := 0; i < int(n.n); i++ {
-			total += count(n.inner().children[i])
-		}
-		return total
-	}
-	if root := tr.root.Load(); root != 0 {
-		return count(root)
-	}
-	return 0
 }
 
 // TestLatchedChurn runs writers that own disjoint keys through inserts,
@@ -319,7 +200,7 @@ func TestLatchedFillAndDrain(t *testing.T) {
 			if got := checkMap(t, &m.mapCore); got != 0 {
 				t.Fatalf("drained tree holds %d", got)
 			}
-			if words := m.words.Load(); words != nil && words.tree.root.Load()&wordLeafID == 0 || !m.IsEmpty() {
+			if root := m.generic.root.Load(); root != nil && !root.leaf || !m.IsEmpty() {
 				t.Fatal("drained tree's root is not an empty leaf")
 			}
 		}

@@ -1,12 +1,13 @@
 package gobbtree
 
 import (
+	"math/bits"
 	"slices"
 	"sync/atomic"
 	"unsafe"
 )
 
-// Hint tables for trees of integer keys, the word trees' cells
+// Hint tables for trees of integer keys, upstream-era Go's leaf cache's cells
 // (word_latched_routes.go): one per region of the key space, each naming
 // the leaves that hold it, up to four, by ID, and where each starts. A hint
 // is never trusted. The leaf it names settles a key only where, read at a
@@ -25,7 +26,7 @@ import (
 // keeps one too, whose hints skip the root.
 
 // leafDir is a tree's leaves by ID, ID 0 naming none. The leaves live in
-// blocks of leafBlock, the word trees' slabs: a leaf's address is its
+// blocks of leafBlock: a leaf's address is its
 // block's plus its place in it, so a hint reaches its leaf without loading
 // a slot from a table the size of the tree's leaves. A leaf merged away
 // gives its slot back, and the next leaf made takes it: its latch's
@@ -137,7 +138,7 @@ func (r *codeHints) fillFrom(f *hintFrame, code uint64) {
 // codeHints is a tree's hint table, made for root while it had count
 // children.
 type codeHints struct {
-	latchedRoutes
+	hintTable
 	top      *gheader
 	topCount int
 }
@@ -211,15 +212,11 @@ func routeCodes(n *innerRoute) *[nodeSize]uint64 {
 
 // leafFor is the leaf the hint for code names, read racing, or nil.
 func (r *codeHints) leafFor(d *leafDir, code uint64) *gheader {
-	c := r.cell(code)
-	if c == nil {
-		return nil
-	}
-	id := r.latchedRoutes.leafFor(c, code)
+	id := r.hintID(code)
 	if id == 0 {
 		return nil
 	}
-	return d.leaf(id &^ wordLeafID)
+	return d.leaf(id)
 }
 
 // hintedCodeBy is hintedCode by calls to its parts.
@@ -234,8 +231,10 @@ func hintedCodeBy(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader
 	return h, i, found, settled
 }
 
-// hintID is the ID of the leaf code's hint names, 0 for none, its cell
-// read as latchedRoutes.leafFor reads it, written out.
+// hintID is the ID of the leaf code's hint names, 0 for none: a fraction
+// that equals a cut, where a region's 1024ths are coarser than keys, goes
+// to the leaf starting there, as a separator is at most that leaf's first
+// key, and the leaf's bounds turn away any other.
 func (r *codeHints) hintID(code uint64) uint32 {
 	c := r.cell(code)
 	if c == nil {
@@ -360,10 +359,9 @@ func (s *hintSpan) addCodes(p *innerRoute, low, high, from, to uint64) {
 }
 
 // refreshCodeHints is the hint table in slot for root, made anew where
-// there is none for it or root has doubled its children since, as the
-// latched tree's refreshRoutes makes its own; nil where root is a leaf. Its
-// reads race writers; a heuristic needs no check, and a hint is checked
-// where used.
+// there is none for it or root has doubled its children since; nil where
+// root is a leaf. Its reads race writers; a heuristic needs no check, and
+// a hint is checked where used.
 func refreshCodeHints(slot *atomic.Pointer[codeHints], root *gheader) *codeHints {
 	if root == nil || root.leaf {
 		return nil
@@ -387,7 +385,7 @@ func refreshCodeHints(slot *atomic.Pointer[codeHints], root *gheader) *codeHints
 		// appends' among them, would find no hint.
 		leaves, lo, hi := codeShape(n)
 		codes := routeCodes(n)
-		r.latchedRoutes = *newHintTable(min(codes[1], lo), max(codes[(count-1)&(nodeSize-1)], hi), span, leaves)
+		r.hintTable = *newHintTable(min(codes[1], lo), max(codes[(count-1)&(nodeSize-1)], hi), span, leaves)
 		var f hintFrame
 		r.fillAll(n, 0, 0, &f)
 	}
@@ -546,4 +544,129 @@ func descendCodeFilling(h *gheader, code uint64, r *codeHints, place bool) (*ghe
 	r.fillFrom(&f, code)
 	i, ok := seekCode((*leafRoute)(unsafe.Pointer(h)), racingCount(h), code, place)
 	return h, i, ok
+}
+
+// hintTable is a hint table's cells and their domain: regions of 1<<shift
+// keys from base, indexed directly, or where hashed, by bits of a hash.
+type hintTable struct {
+	base   uint64
+	shift  uint8
+	hashed bool
+	bits   uint8
+	cells  []hintCell
+}
+
+// A cell: four 24-bit leaf IDs and three 10-bit fractions of the region
+// where the second, third and fourth start, as upstream-era Go's leaf cache
+// packed them. A head of 0 is empty; 2 marks a region whose leaves no cell
+// holds, which descends.
+type hintCell struct{ head, tail uint64 }
+
+const (
+	hintIDMask  = 1<<24 - 1
+	hintDescend = 2
+)
+
+// holds reports that fences low and high hold key, high 0 being none.
+func holds(low, high, key uint64) bool { return low <= key && (high == 0 || key < high) }
+
+// cell is key's region's cell, or nil outside the table's domain. A table
+// over a domain no wider than itself indexes regions directly; a sparser
+// one hashes them.
+func (r *hintTable) cell(key uint64) *hintCell {
+	region := (key - r.base) >> r.shift
+	if r.hashed {
+		return &r.cells[region*0x9e3779b97f4a7c15>>(64-r.bits)]
+	}
+	if region < uint64(len(r.cells)) {
+		return &r.cells[region]
+	}
+	return nil
+}
+
+// fraction is key's position in its region, in 1024ths.
+func (r *hintTable) fraction(key uint64) uint64 {
+	if r.shift >= 10 {
+		return key >> (r.shift - 10) & 1023
+	}
+	return (key & (uint64(1)<<r.shift - 1)) << (10 - r.shift)
+}
+
+// regionOf is key's region, from its start to its end.
+func (r *hintTable) regionOf(key uint64) (start, end uint64) {
+	start = r.base + ((key-r.base)>>r.shift)<<r.shift
+	end = start + (uint64(1)<<r.shift - 1)
+	if end < start {
+		end = ^uint64(0)
+	}
+	return start, end
+}
+
+// store names in cell c the leaves span gathered for the region from start
+// to end where they hold it whole, up to four; otherwise, where descend,
+// it marks the cell to descend, and leaves it as it was where not.
+func (r *hintTable) store(c *hintCell, span *hintSpan, start, end uint64, descend bool) {
+	head, tail := uint64(hintDescend), uint64(0)
+	covered := span.n > 0 && span.n <= 4 && span.covers(start, end)
+	if !covered && !descend {
+		return
+	}
+	if covered {
+		ids, cuts := span.ids, [3]uint64{1023, 1023, 1023}
+		for i := span.n; i < 4; i++ {
+			ids[i] = ids[span.n-1]
+		}
+		for i := 1; i < span.n; i++ {
+			cuts[i-1] = r.fraction(span.starts[i])
+		}
+		head = ids[0] | ids[1]<<24 | cuts[0]<<48 | (cuts[1]&63)<<58
+		tail = ids[2] | ids[3]<<24 | (cuts[1]>>6)<<48 | cuts[2]<<52
+	}
+	// Only a change is written: every core reads the table, so a store of
+	// what is there already costs each of them its line.
+	if c.head != head || c.tail != tail {
+		c.tail, c.head = tail, head
+	}
+}
+
+// hintSpan gathers, in key order, the leaves that hold a region and where
+// each starts, up to five: one more than a cell holds, to tell it overflowed.
+type hintSpan struct {
+	ids    [5]uint64
+	starts [5]uint64
+	n      int
+	first  uint64
+	last   uint64
+	broken bool
+}
+
+// covers reports that the gathered leaves hold [start, end] whole.
+func (s *hintSpan) covers(start, end uint64) bool {
+	return !s.broken && s.first == start && s.last == end
+}
+
+// newHintTable makes a hint table for about leaves leaves whose span is
+// about span, over keys from lo to hi. A domain with no more regions of
+// half a leaf's span to a whole one than about two for each leaf is indexed
+// directly. A sparser one, such as clustered keys', is hashed: its regions
+// span a leaf's span up to twice it, within a cell's four leaves, into
+// about four cells for each leaf, as hashed regions collide.
+func newHintTable(lo, hi, span uint64, leaves int) *hintTable {
+	tableBits := min(max(bits.Len(uint(leaves)), 8), 22)
+	shift := max(bits.Len64(span)-1, 0)
+	width := bits.Len64(lo ^ hi)
+	if width < 64 && width+1-shift <= tableBits+1 {
+		// Room for keys beyond the separators, as ascending keys add them.
+		width++
+	}
+	r := &hintTable{shift: uint8(min(shift, 63))}
+	if width-shift <= tableBits+1 {
+		r.base = lo &^ (uint64(1)<<width - 1)
+		r.cells = make([]hintCell, 1<<max(width-shift, 0))
+	} else {
+		r.shift = uint8(min(shift+1, 63))
+		r.hashed, r.bits = true, uint8(min(tableBits+2, 22))
+		r.cells = make([]hintCell, 1<<r.bits)
+	}
+	return r
 }

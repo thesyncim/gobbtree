@@ -6,7 +6,6 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
-	"sort"
 	"testing"
 )
 
@@ -14,10 +13,6 @@ func checkTree[K cmp.Ordered, V any](t testing.TB, tr *Tree[K, V]) { checkCore(t
 
 func checkCore[K any, V any, O keyOrder[K]](t testing.TB, tr *treeCore[K, V, O]) {
 	t.Helper()
-	if tr.words != nil {
-		checkWordTree(t, tr.words, tr.length)
-		return
-	}
 	if tr.generic == nil {
 		if tr.length != 0 {
 			t.Fatal("no tree with nonzero length")
@@ -333,18 +328,15 @@ func TestKernelsMatchScalar(t *testing.T) {
 		for trial := 0; trial < 200; trial++ {
 			var codes [nodeSize]uint64
 			var high [nodeSize]uint32
-			var inline [nodeSize]uint16
 			var tags [nodeSize]uint8
 			for i := range nodeSize {
-				codes[i], high[i], inline[i] = math.MaxUint64, math.MaxUint32, math.MaxUint16
+				codes[i], high[i] = math.MaxUint64, math.MaxUint32
 			}
 			for i := range n {
 				codes[i] = rng.Uint64N(6)<<32 | rng.Uint64N(6)
-				inline[i] = uint16(rng.Uint64N(20))
 				tags[i] = uint8(rng.Uint64N(20))
 			}
 			slices.Sort(codes[:n])
-			slices.Sort(inline[:n])
 			slices.Sort(tags[:n])
 			for i := range n {
 				high[i] = uint32(codes[i] >> 32)
@@ -354,10 +346,6 @@ func TestKernelsMatchScalar(t *testing.T) {
 				want, _ := slices.BinarySearch(codes[:n], code)
 				if a, b := lowerCode(&codes, n, code), lowerCodeScalar(&codes, n, code); a != want || b != want {
 					t.Fatalf("n=%d code=%x lower=%d scalar=%d want=%d", n, code, a, b, want)
-				}
-				want = sort.Search(n, func(i int) bool { return uint64(inline[i]) > q })
-				if a, b := upperWordInline(&inline, n, uint16(q)), upperWordInlineScalar(&inline, n, uint16(q)); a != want || b != want {
-					t.Fatalf("n=%d key=%d inline=%d scalar=%d want=%d", n, q, a, b, want)
 				}
 				want = n
 				if i := slices.Index(tags[:n], uint8(q)); i >= 0 {

@@ -1,7 +1,7 @@
 package gobbtree
 
 // remove removes seek's entry, if condition (when not nil) holds of it, and
-// returns its stored key and value, as latchedTree.remove: an entry whose
+// returns its stored key and value, as upstream's remove: an entry whose
 // leaf keeps its minimum, or whose leaf is the root, comes out with that
 // leaf latched exclusively; otherwise the removal descends again keeping its
 // path, takes the nodes its fixing changes without waiting, and fixes the
@@ -235,7 +235,7 @@ func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, code uint64, c
 }
 
 // takeFixes takes the nodes that fixing the leaf of path changes once a
-// removal leaves it with leafLen entries, as latchedTree.takeFixes: for each
+// removal leaves it with leafLen entries: for each
 // level left underfull, its parent and the sibling the fixing pairs it with.
 func (t *genericTree[K, V, O]) takeFixes(path *gpath[K], leafLen int, held *latchSet) (int, bool) {
 	fixes, childLen := 0, leafLen
@@ -338,3 +338,15 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 	t.refitInner(asInner[K](l), &sep)
 	t.refitInner(asInner[K](r), high)
 }
+
+// fixingSibling is the sibling a fixing pairs child index with: the left one
+// if there is one (upstream's Internal::fixing_sibling).
+func fixingSibling(index int) int {
+	if index > 0 {
+		return index - 1
+	}
+	return index + 1
+}
+
+// fitMerged reports that siblings of left and right entries fit in one node.
+func fitMerged(left, right int) bool { return left+right <= nodeSize }

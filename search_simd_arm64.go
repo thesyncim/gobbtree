@@ -5,7 +5,6 @@ package gobbtree
 import (
 	"simd"
 	"simd/archsimd"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -24,28 +23,6 @@ func lowerCode(keys *[nodeSize]uint64, n int, key uint64) int {
 	d := countEight((*[8]uint64)(keys[24:32]), target)
 	sum := a.Add(b).Add(c.Add(d))
 	return min(-int(sum.GetElem(0)+sum.GetElem(1)), n)
-}
-
-// Unused leaf slots hold MaxUint64, so counting keys below key is the lower
-// bound. Two probes select an aligned run of eight entries; a cold leaf then
-// loads about three cache lines instead of all eight. Each vector holds one
-// key and its value; only the key lanes are summed.
-func lowerEntries(entries *[nodeSize]wordEntry, key uint64) int {
-	if simd.Emulated() {
-		return lowerEntriesScalar(entries, key)
-	}
-	base := 0
-	if entries[nodeSize/2-1].key < key {
-		base = nodeSize / 2
-	}
-	if entries[base+7].key < key {
-		base += 8
-	}
-	words := (*[16]uint64)(unsafe.Pointer(&entries[base&(nodeSize-8)]))
-	target := archsimd.BroadcastUint64x2(key)
-	a := countEight((*[8]uint64)(words[0:8]), target)
-	b := countEight((*[8]uint64)(words[8:16]), target)
-	return base - int(a.Add(b).GetElem(0))
 }
 
 // SIMD reports whether this build uses hardware SIMD and its vector width.
@@ -244,25 +221,4 @@ func firstTag(tags *[nodeSize]uint8, n int, key uint64) int {
 	pb := archsimd.LoadUint8x16(tagPositions[16:]).OrNot(b)
 	i := int(pa.Min(pb).ReduceMin())
 	return min(i, n)
-}
-
-// Each source word is atomic. Constructing vectors in registers avoids a
-// stack snapshot and does not issue vector loads against mutable shared data.
-func sharedTagVectors(words *[4]uint64) (archsimd.Uint8x16, archsimd.Uint8x16) {
-	var a, b archsimd.Uint64x2
-	a = a.SetElem(0, atomic.LoadUint64(&words[0])).SetElem(1, atomic.LoadUint64(&words[1]))
-	b = b.SetElem(0, atomic.LoadUint64(&words[2])).SetElem(1, atomic.LoadUint64(&words[3]))
-	return a.ReshapeToUint8s(), b.ReshapeToUint8s()
-}
-func firstSharedTag(words *[4]uint64, n int, key uint64) int {
-	if simd.Emulated() {
-		return firstSharedTagFallback(words, n, key)
-	}
-	a, b := sharedTagVectors(words)
-	target := archsimd.BroadcastUint8x16(uint8(key))
-	am := a.Equal(target).ToInt8x16().ToBits()
-	bm := b.Equal(target).ToInt8x16().ToBits()
-	pa := archsimd.LoadUint8x16(tagPositions[:16]).OrNot(am)
-	pb := archsimd.LoadUint8x16(tagPositions[16:]).OrNot(bm)
-	return min(int(pa.Min(pb).ReduceMin()), n)
 }

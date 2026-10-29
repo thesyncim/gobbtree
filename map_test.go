@@ -43,11 +43,7 @@ func TestConcurrentMutation(t *testing.T) {
 			t.Fatal("snapshot content")
 		}
 	}
-	if words := m.words.Load(); words != nil {
-		if got := checkLatchedTree(t, &words.tree); got != seqLen(m.All()) {
-			t.Fatalf("tree holds %d entries, want %d", got, seqLen(m.All()))
-		}
-	} else if got := checkGenericTree(t, &m.generic); got != seqLen(m.All()) {
+	if got := checkGenericTree(t, &m.generic); got != seqLen(m.All()) {
 		t.Fatalf("tree holds %d entries, want %d", got, seqLen(m.All()))
 	}
 	// Same-key updates must not lose increments.
@@ -151,11 +147,7 @@ func TestConcurrentReadsScansAndStructure(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if words := m.words.Load(); words != nil {
-		if got := checkLatchedTree(t, &words.tree); got != seqLen(m.All()) {
-			t.Fatalf("tree holds %d entries, want %d", got, seqLen(m.All()))
-		}
-	} else if got := checkGenericTree(t, &m.generic); got != seqLen(m.All()) {
+	if got := checkGenericTree(t, &m.generic); got != seqLen(m.All()) {
 		t.Fatalf("tree holds %d entries, want %d", got, seqLen(m.All()))
 	}
 }

@@ -6,6 +6,15 @@ import (
 	"unsafe"
 )
 
+// What an insert does where the tree holds the key already, upstream's
+// InsertPolicy: replace the value (insert), store merge's result
+// (update_or_insert), or keep it (get_or_insert).
+const (
+	insertReplace = iota
+	insertMerge
+	insertKeep
+)
+
 // latchSet is the nodes an operation takes besides its leaf, upstream's
 // HeldNodes, for the generic tree: internal nodes by a compare-and-swap at
 // a version, leaves exclusively, all without waiting.
@@ -72,7 +81,7 @@ func (s *latchSet) unlock() {
 
 // insert inserts key and value, or, where the tree holds key, does what
 // policy says; it returns the stored value and whether key was there. As
-// latchedTree.insert: the key's leaf, latched exclusively, takes it if it
+// upstream's insert: the key's leaf, latched exclusively, takes it if it
 // has room; otherwise the leaf splits.
 func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, V, V) V) (V, bool) {
 	if t.owner {
@@ -267,7 +276,7 @@ func (t *genericTree[K, V, O]) insertSplitting(key K, code uint64, value V, poli
 }
 
 // split splits leaf, full and held, and inserts key and value, as
-// latchedTree.split: the lowest node on the path with room takes the
+// upstream's split: the lowest node on the path with room takes the
 // separator, every node below it splits, and without one the root splits.
 // It takes those path nodes at the versions the descent read; false, with
 // nothing changed, if one changed or is held. Otherwise it lets go of
@@ -754,4 +763,24 @@ func (t *genericTree[K, V, O]) moveChildEntries(dst *ginner[K], at int, src *gin
 	}
 	dst.count.Store(int32(dstCount + count))
 	src.count.Store(int32(srcCount - count))
+}
+
+// ofSplit is upstream's InsertionSide::of_split (tree/node/mod.rs): where a
+// full node of capacity entries splits for an insertion at index. An append
+// at either end leaves the arriving side twice the minimum, so ordered
+// inserts fill nodes densely; an interior insertion divides the free space
+// evenly. The left half keeps entries [0, cut), the right takes the rest,
+// and the new entry goes left at index when index <= cut, else right at
+// index - cut.
+func ofSplit(capacity, index, minimum int) (cut int, left bool) {
+	arriving := min(2*minimum, capacity/2)
+	switch {
+	case index == 0:
+		cut = arriving - 1
+	case index == capacity:
+		cut = capacity - arriving
+	default:
+		cut = capacity / 2
+	}
+	return cut, index <= cut
 }

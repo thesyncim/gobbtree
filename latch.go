@@ -6,8 +6,8 @@ import (
 	"unsafe"
 )
 
-// A shared tree's node latch, upstream's NodeLatch (tree/node/latch.rs): one
-// word per node, in the node's sequence field. From the low bit: an
+// A node's latch, upstream's NodeLatch (tree/node/latch.rs): one word per
+// node, in its header. From the low bit: an
 // exclusive bit, a count of shared holders (20 bits), and a version (43
 // bits). Letting go of an exclusive hold bumps the version, so a reader that
 // read the node meanwhile fails its check; shared holds leave it alone.
@@ -145,20 +145,6 @@ func (l *nodeLatch) lockSharedContended() {
 
 func (l *nodeLatch) unlockShared() { l.Add(^(latchSharedUnit - 1)) }
 
-// A word node's latch is its sequence word.
-func (n *wordNode) readVersion() uint64             { return n.sequence.readVersion() }
-func (n *wordNode) isUnchanged(version uint64) bool { return n.sequence.isUnchanged(version) }
-func (n *wordNode) isUnchangedAfter(version, acc uint64) bool {
-	return n.sequence.isUnchangedAfter(version, acc)
-}
-func (n *wordNode) tryLockAt(version uint64) bool    { return n.sequence.tryLockAt(version) }
-func (n *wordNode) unlockExclusive(version uint64)   { n.sequence.unlockExclusive(version) }
-func (n *wordNode) tryReadVersion() (uint64, bool)   { return n.sequence.tryReadVersion() }
-func (n *wordNode) tryLockExclusive() (uint64, bool) { return n.sequence.tryLockExclusive() }
-func (n *wordNode) lockExclusive() uint64            { return n.sequence.lockExclusive() }
-func (n *wordNode) lockShared()                      { n.sequence.lockShared() }
-func (n *wordNode) unlockShared()                    { n.sequence.unlockShared() }
-
 // backoff waits exponentially longer, as upstream's does. Go has no spin
 // hint, so past the last round it yields the processor instead.
 type backoff struct{ round uint32 }
@@ -177,3 +163,37 @@ func (b *backoff) spin() {
 
 //go:noinline
 func spinWait() {}
+
+// storeLock is a spin lock, for the leaf blocks. Where stores stay ordered
+// it is released by a plain store instead of sync.Mutex's locked
+// read-modify-write. Waiters yield instead of parking.
+type storeLock struct{ state atomic.Uint32 }
+
+func (l *storeLock) TryLock() bool { return l.state.CompareAndSwap(0, 1) }
+func (l *storeLock) Lock() {
+	for !l.TryLock() {
+		runtime.Gosched()
+	}
+}
+func (l *storeLock) Unlock() {
+	if orderedStores {
+		*(*uint32)(unsafe.Pointer(&l.state)) = 0
+		return
+	}
+	l.state.Store(0)
+}
+
+// plainPointer loads a pointer published by an atomic store, plainly: what
+// it points to is immutable once published, and reached by an address that
+// depends on the load.
+func plainPointer[T any](p *atomic.Pointer[T]) *T { return *(**T)(unsafe.Pointer(p)) }
+
+// storeOrdered stores v with a plain store, for orderedStores targets only.
+func storeOrdered(p *atomic.Uint64, v uint64) { *(*uint64)(unsafe.Pointer(p)) = v }
+
+// Latch modes of a descent's leaf, upstream's LatchMode.
+const (
+	optimistic = iota
+	shared
+	exclusive
+)

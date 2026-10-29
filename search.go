@@ -1,13 +1,7 @@
 package gobbtree
 
-import "encoding/binary"
-
-// Every node holds up to nodeSize entries or children; a single owner's
-// word leaves below minNodeSize merge or borrow.
-const (
-	nodeSize    = 32
-	minNodeSize = nodeSize / 2
-)
+// Every node holds up to nodeSize entries or children.
+const nodeSize = 32
 
 // Routing uses the upper bound: each internal slot is its child's minimum.
 // Keeping this independent of the generic node lets it inline into descent.
@@ -47,43 +41,6 @@ func lowerSummaryScalar(sums *[nodeSize]uint32, n int, t uint32) int {
 		}
 	}
 	return lo
-}
-
-// Broad numeric nodes index the first key in each top-byte bucket.
-// The directory only narrows the search; full codes settle bucket boundaries.
-// Each eight-bucket word starts at the count of keys in earlier words; a key
-// adds one to the buckets above its own within its word.
-func fillDirectory(directory *[256]uint8, codes *[nodeSize]uint64, n int) {
-	const ones = 0x0101010101010101
-	i := 0
-	for word := 0; word < 256/8; word++ {
-		counts := uint64(i) * ones
-		for i < n && int(codes[i]>>59) == word {
-			counts += ones << (8 * (codes[i]>>56&7 + 1))
-			i++
-		}
-		binary.LittleEndian.PutUint64(directory[word*8:], counts)
-	}
-}
-
-// Refill the buckets that interior codes first..last can affect. Their
-// unchanged neighbors bound them, so no other bucket's lower bound moves.
-func refillDirectory(directory *[256]uint8, codes *[nodeSize]uint64, first, last int) {
-	i := first
-	end := int(codes[last+1] >> 56)
-	for bucket := int(codes[first-1]>>56) + 1; bucket <= end; bucket++ {
-		for i <= last && codes[i] < uint64(bucket)<<56 {
-			i++
-		}
-		directory[bucket] = uint8(i)
-	}
-}
-func directoryRoute(codes *[nodeSize]uint64, directory *[256]uint8, n int, code uint64) int {
-	i := int(directory[code>>56])
-	for i < n && codes[i] <= code {
-		i++
-	}
-	return max(0, i-1)
 }
 
 func firstTagScalar(tags *[nodeSize]uint8, n int, tag uint8) int {

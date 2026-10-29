@@ -211,3 +211,41 @@ func numericKey[O keyOrder[K], K any](key K) uint64 {
 	}
 	return windowKey[O](key, 0)
 }
+
+// wordKind is V's kind among the built-in word types, 0 for any other:
+// the kinds whose codes are exact (exactCodes).
+func wordKind[V any]() uint8 {
+	var zero V
+	switch any(zero).(type) {
+	case uint64:
+		return 1
+	case int:
+		return 2
+	case int64:
+		return 3
+	case uint:
+		return 4
+	case uint32:
+		return 5
+	case int32:
+		return 6
+	case uint16:
+		return 7
+	case int16:
+		return 8
+	case uint8:
+		return 9
+	case int8:
+		return 10
+	case float64:
+		return 11
+	case float32:
+		return 12
+	case bool:
+		return 13
+	case uintptr:
+		return 14
+	default:
+		return 0
+	}
+}

@@ -8,9 +8,8 @@ import (
 	"unsafe"
 )
 
-// genericTree is the Map engine for keys or values that don't fit a word,
-// upstream's latched tree (tree/latched/) over nodes of any key and value
-// type, as latchedTree is for words:
+// genericTree is the tree of every Map, Tree and set, upstream's latched
+// tree (tree/latched/) over nodes of any key and value type:
 //
 //   - Descent is optimistic through the internal nodes, by lock coupling:
 //     each node's version is checked after its child's is read. Leaves are
@@ -18,13 +17,14 @@ import (
 //   - A split, or a removal that rebalances, takes without waiting every
 //     node it changes, at the versions its descent read, and starts over if
 //     another goroutine holds one.
-//   - A racing reader reads only words that can't tear: counts, separator
-//     codes and pointers. Keys and values are read with their leaf latched,
-//     as upstream reads what isn't Copy. A separator is a boxed key, never
-//     changed once boxed, so a racing reader compares it whole.
+//   - A racing reader reads only words that can't tear, counts, codes and
+//     pointers, or copies it validates by the leaf's version; keys other
+//     codes don't settle are read with the leaf latched, as upstream reads
+//     what isn't Copy.
 //   - Freed nodes hold nothing and keep their latch, whose version their
-//     release bumps; the garbage collector keeps one alive while a stale
-//     pointer reaches it, so a reader that does fails its check.
+//     release bumps: a node the garbage collector keeps alive while a stale
+//     pointer reaches it, or a leaf block's slot a new leaf takes, so a
+//     reader that reaches one fails its check.
 type genericTree[K any, V any, O keyOrder[K]] struct {
 	root atomic.Pointer[gheader]
 	// shared is what every text key begins with, upstream's shared prefix
@@ -57,6 +57,16 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	handed atomic.Uint32
 }
 
+// Leaves and internal nodes below the root are underfull below these sizes,
+// upstream's max(capacity/8, 4) (D22). Internal nodes count children.
+const (
+	leafMinLen  = max(nodeSize/8, 4)
+	innerMinLen = max(nodeSize/8, 4) + 1
+	// maxDepth bounds the levels above the leaves: an internal node below
+	// the root has at least innerMinLen children.
+	maxDepth = 24
+)
+
 // A node's header. Its count is read racing; whether it is a leaf never
 // changes.
 //
@@ -86,7 +96,7 @@ type gheader struct {
 // A leaf whose codes order its keys exactly keeps a tag for each, its
 // code's low byte, beside its count: a
 // lookup finds its key's slot by its tag, in the header's line, and reads
-// its code and value at once, as the word trees' leaves do, instead of
+// its code and value at once, instead of
 // every code's line before its value's.
 type gleaf[K any, V any] struct {
 	gheader

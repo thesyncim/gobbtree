@@ -130,9 +130,6 @@ func checkOrdered[K Key[K]](t *testing.T, keys []K, ops int, seed uint64) {
 		}
 	}
 	checkCore(t, &tr.treeCore)
-	if tr.words != nil || m.words.Load() != nil {
-		t.Fatal("custom keys reached a numeric arena")
-	}
 	if seqLen(tr.All()) != len(ref) || seqLen(m.All()) != len(ref) {
 		t.Fatalf("len %d/%d, want %d", seqLen(tr.All()), seqLen(m.All()), len(ref))
 	}

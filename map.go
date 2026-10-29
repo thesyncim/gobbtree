@@ -3,7 +3,6 @@ package gobbtree
 import (
 	"cmp"
 	"iter"
-	"sync/atomic"
 )
 
 // Map is a concurrent ordered map. Its zero value is ready to use.
@@ -22,9 +21,7 @@ type Map[K cmp.Ordered, V any] struct{ mapCore[K, V, natural[K]] }
 
 // mapCore implements Map and MapOf for one key ordering.
 type mapCore[K any, V any, O keyOrder[K]] struct {
-	words        atomic.Pointer[wordMap]
-	wordDisabled atomic.Bool
-	generic      genericTree[K, V, O]
+	generic genericTree[K, V, O]
 }
 
 // New creates an empty concurrent ordered map.
@@ -33,102 +30,21 @@ func New[K cmp.Ordered, V any]() *Map[K, V] { return new(Map[K, V]) }
 // IsEmpty reports whether the map held no entry at some moment during the
 // call, as upstream's is_empty.
 func (m *mapCore[K, V, O]) IsEmpty() bool {
-	if words := m.words.Load(); words != nil {
-		return words.isEmpty()
-	}
 	return m.generic.isEmpty()
 }
 
 // Clear removes every entry. As upstream's clear, it is the owner's: no other
 // goroutine may use the map until it returns.
 func (m *mapCore[K, V, O]) Clear() {
-	if words := m.words.Load(); words != nil {
-		words.clear()
-		return
-	}
 	m.generic.clear()
 }
-func (m *mapCore[K, V, O]) Get(key K) (V, bool) {
-	words := m.words.Load()
-	if words == nil && !m.wordDisabled.Load() {
-		// Nothing was stored: every write settles which engine the map runs.
-		var zero V
-		return zero, false
-	}
-	if words != nil {
-		value, found := words.get(numericKey[O](key))
-		if checkedMapWordValues {
-			if !found {
-				value = 0
-			}
-			if decoded, ok := any(value).(V); ok {
-				return decoded, found
-			}
-		} else if words.valueKind == 1 {
-			if !found {
-				value = 0
-			}
-			return any(value).(V), found
-		}
-		return mapWordValue[V](value, found, words.valueKind)
-	}
-	return m.generic.get(key)
-}
+func (m *mapCore[K, V, O]) Get(key K) (V, bool) { return m.generic.get(key) }
 
 func (m *mapCore[K, V, O]) Contains(key K) bool { _, ok := m.Get(key); return ok }
 func (m *mapCore[K, V, O]) Insert(key K, value V) (V, bool) {
-	words := m.words.Load()
-	if words == nil && !m.wordDisabled.Load() {
-		words = m.initNumericMap()
-	}
-	if words != nil {
-		old, found := words.insert(numericKey[O](key), packWord(value))
-		if checkedMapWordValues {
-			if !found {
-				old = 0
-			}
-			if decoded, ok := any(old).(V); ok {
-				return decoded, found
-			}
-		} else if words.valueKind == 1 {
-			if !found {
-				old = 0
-			}
-			return any(old).(V), found
-		}
-		return mapWordValue[V](old, found, words.valueKind)
-	}
-	return m.insertGeneric(key, value)
-}
-func (m *mapCore[K, V, O]) insertGeneric(key K, value V) (V, bool) {
 	return m.generic.insert(key, value, insertReplace, nil)
 }
 func (m *mapCore[K, V, O]) Delete(key K) (V, bool) {
-	words := m.words.Load()
-	if words == nil && !m.wordDisabled.Load() {
-		var zero V
-		return zero, false
-	}
-	if words != nil {
-		old, found := words.delete(numericKey[O](key))
-		if checkedMapWordValues {
-			if !found {
-				old = 0
-			}
-			if decoded, ok := any(old).(V); ok {
-				return decoded, found
-			}
-		} else if words.valueKind == 1 {
-			if !found {
-				old = 0
-			}
-			return any(old).(V), found
-		}
-		return mapWordValue[V](old, found, words.valueKind)
-	}
-	return m.deleteGeneric(key)
-}
-func (m *mapCore[K, V, O]) deleteGeneric(key K) (V, bool) {
 	_, v, ok := m.generic.remove(seekKey, key, nil)
 	return v, ok
 }
@@ -136,9 +52,6 @@ func (m *mapCore[K, V, O]) deleteGeneric(key K) (V, bool) {
 // Read calls visit under a leaf latch if key exists. Values are copies.
 // A panic releases both latches before propagating to the caller.
 func (m *mapCore[K, V, O]) Read(key K, visit func(K, V)) bool {
-	if words := m.numericMap(); words != nil {
-		return words.read(numericKey[O](key), func(k, v uint64) { visit(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind)) })
-	}
 	return m.generic.read(key, visit)
 }
 
@@ -146,12 +59,6 @@ func (m *mapCore[K, V, O]) Read(key K, visit func(K, V)) bool {
 // upstream's update does, and returns the new value. A panic in change leaves
 // the stored value unchanged.
 func (m *mapCore[K, V, O]) Update(key K, change func(K, V) V) (V, bool) {
-	if words := m.numericMap(); words != nil {
-		value, found := words.update(numericKey[O](key), func(k, v uint64) uint64 {
-			return packWord(change(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind)))
-		})
-		return mapWordValue[V](value, found, words.valueKind)
-	}
 	return m.generic.update(key, change)
 }
 
@@ -160,12 +67,6 @@ func (m *mapCore[K, V, O]) Update(key K, change func(K, V) V) (V, bool) {
 // returns the old value and whether key was present. A panic in merge leaves
 // the stored value unchanged.
 func (m *mapCore[K, V, O]) UpdateOrInsert(key K, value V, merge func(key K, old, value V) V) (V, bool) {
-	if words := m.numericMap(); words != nil {
-		old, found := words.updateOrInsert(numericKey[O](key), packWord(value), func(k, a, b uint64) uint64 {
-			return packWord(merge(decodeWordKey[K](k, words.keyKind), unpackWord[V](a, words.valueKind), unpackWord[V](b, words.valueKind)))
-		})
-		return mapWordValue[V](old, found, words.valueKind)
-	}
 	return m.generic.insert(key, value, insertMerge, merge)
 }
 
@@ -173,10 +74,6 @@ func (m *mapCore[K, V, O]) UpdateOrInsert(key K, value V, merge func(key K, old,
 // returns value, as upstream's get_or_insert does. loaded reports that key
 // was present.
 func (m *mapCore[K, V, O]) LoadOrStore(key K, value V) (actual V, loaded bool) {
-	if words := m.numericMap(); words != nil {
-		actual, loaded := words.loadOrStore(numericKey[O](key), packWord(value))
-		return unpackWord[V](actual, words.valueKind), loaded
-	}
 	if old, found := m.generic.insert(key, value, insertKeep, nil); found {
 		return old, true
 	}
@@ -187,22 +84,12 @@ func (m *mapCore[K, V, O]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 // upstream's remove_if does, and returns them. condition may run more than
 // once.
 func (m *mapCore[K, V, O]) DeleteIf(key K, condition func(K, V) bool) (K, V, bool) {
-	if words := m.numericMap(); words != nil {
-		old, found := words.deleteIf(numericKey[O](key), func(k, v uint64) bool {
-			return condition(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
-		})
-		return mapWordEntry[K, V](numericKey[O](key), old, found, words)
-	}
 	return m.generic.remove(seekKey, key, condition)
 }
 
 // Take removes key, returning the stored key and its value, as upstream's
 // remove_entry does.
 func (m *mapCore[K, V, O]) Take(key K) (K, V, bool) {
-	if words := m.numericMap(); words != nil {
-		old, found := words.delete(numericKey[O](key))
-		return mapWordEntry[K, V](numericKey[O](key), old, found, words)
-	}
 	return m.generic.remove(seekKey, key, nil)
 }
 
@@ -213,49 +100,6 @@ func (m *mapCore[K, V, O]) GetMany(keys []K, dst []Result[V]) {
 		panic("gobbtree: GetMany destination too short")
 	}
 	if len(keys) == 0 {
-		return
-	}
-	words := m.words.Load()
-	if words == nil && !m.wordDisabled.Load() {
-		clear(dst[:len(keys)])
-		return
-	}
-	if words != nil {
-		// Whole groups of eight go through the batched lookup.
-		var codes [batchLanes]uint64
-		var values [batchLanes]Result[uint64]
-		for start := 0; start+batchLanes <= len(keys); start += batchLanes {
-			for j := range codes {
-				codes[j] = numericKey[O](keys[start+j])
-			}
-			words.getMany8(&codes, &values)
-			for j, r := range values {
-				dst[start+j].Value, dst[start+j].OK = mapWordValue[V](r.Value, r.OK, words.valueKind)
-			}
-		}
-		for i := len(keys) &^ (batchLanes - 1); i < len(keys); i++ {
-			key := keys[i]
-			v, found := words.get(numericKey[O](key))
-			if checkedMapWordValues {
-				value := v
-				if !found {
-					value = 0
-				}
-				if decoded, ok := any(value).(V); ok {
-					dst[i].Value, dst[i].OK = decoded, found
-				} else {
-					dst[i].Value, dst[i].OK = mapWordValue[V](v, found, words.valueKind)
-				}
-			} else if words.valueKind == 1 {
-				value := v
-				if !found {
-					value = 0
-				}
-				dst[i].Value, dst[i].OK = any(value).(V), found
-			} else {
-				dst[i].Value, dst[i].OK = mapWordValue[V](v, found, words.valueKind)
-			}
-		}
 		return
 	}
 	if seqlockPlainStores && m.generic.wordCodes() {
@@ -333,21 +177,6 @@ func (m *mapCore[K, V, O]) Reverse() iter.Seq2[K, V] {
 
 // scan visits the keys in b.
 func (m *mapCore[K, V, O]) scan(b *Bounds[K], reverse bool, visit func(K, V) bool) {
-	if words := m.numericMap(); words != nil {
-		low, high, open, empty := wordBounds[K, O](b)
-		if empty {
-			return
-		}
-		// An unbounded walk starts at low ascending and at the last key
-		// descending; a bounded one checks both ends.
-		words.walk(low, high, reverse, !open, func(k, v uint64) bool {
-			if open && reverse && k < low {
-				return false
-			}
-			return visit(decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind))
-		})
-		return
-	}
 	m.generic.walk(b, reverse, visit)
 }
 
@@ -370,13 +199,6 @@ func (m *mapCore[K, V, O]) FirstIn(b Bounds[K]) (key K, value V, ok bool) {
 
 // Last returns the largest entry, read like a scan.
 func (m *mapCore[K, V, O]) Last() (key K, value V, ok bool) {
-	if words := m.numericMap(); words != nil {
-		words.walk(0, 0, true, false, func(k, v uint64) bool {
-			key, value, ok = decodeWordKey[K](k, words.keyKind), unpackWord[V](v, words.valueKind), true
-			return false
-		})
-		return key, value, ok
-	}
 	m.generic.walk(&Bounds[K]{}, true, func(k K, v V) bool {
 		key, value, ok = k, v, true
 		return false
@@ -384,18 +206,10 @@ func (m *mapCore[K, V, O]) Last() (key K, value V, ok bool) {
 	return key, value, ok
 }
 func (m *mapCore[K, V, O]) PopFirst() (K, V, bool) {
-	if words := m.numericMap(); words != nil {
-		k, v, found := words.pop(false)
-		return mapWordEntry[K, V](k, v, found, words)
-	}
 	var zero K
 	return m.generic.remove(seekFirst, zero, nil)
 }
 func (m *mapCore[K, V, O]) PopLast() (K, V, bool) {
-	if words := m.numericMap(); words != nil {
-		k, v, found := words.pop(true)
-		return mapWordEntry[K, V](k, v, found, words)
-	}
 	var zero K
 	return m.generic.remove(seekLast, zero, nil)
 }

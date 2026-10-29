@@ -29,23 +29,6 @@ func (t *treeCore[K, V, O]) bound(key K, after bool) (k K, v V, ok bool) {
 	if t.length == 0 {
 		return
 	}
-	if w := t.words; w != nil {
-		code := numericKey[O](key)
-		n := w.node(w.leafFor(code))
-		i := n.lowerEntry(code)
-		if after && i < int(n.n) && n.entries()[i].key == code {
-			i++
-		}
-		if i == int(n.n) {
-			if n.next == 0 {
-				return
-			}
-			n = w.node(n.next)
-			i = 0
-		}
-		e := n.entries()[i]
-		return decodeWordKey[K](e.key, w.keyKind), t.wordValue(e.value), true
-	}
 	if t.generic != nil {
 		b := AtLeast(key)
 		if after {

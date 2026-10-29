@@ -2,7 +2,7 @@ package gobbtree
 
 // walk visits entries in b in key order, or in reverse, a leaf at a time:
 // each leaf's entries are copied with the leaf latched shared and visited
-// once it is let go, as latchedTree.walk, keeping range_cloned's contract.
+// once it is let go, keeping upstream's range_cloned contract.
 // The walk goes on from the leaf's fence, read while the leaf is held, which
 // keeps it: going back, its own head; going on, the next leaf's, through
 // the path, or, where a racing writer changed the node it reads it through,
