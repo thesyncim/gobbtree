@@ -270,7 +270,8 @@ def string_key_section(texts):
             "with `uint64` values. Rust's containers own their keys and Go's share the caller's "
             "immutable strings, so no timed operation allocates a key on either side: the build moves "
             "keys made beforehand, Rust replaces values with `update` and `get_mut`, and its churn "
-            "inserts back the key its removal returned.", "",
+            "inserts back the key its removal returned. Go's `Tree` runs string keys on the `Map`'s tree, "
+            "as its single writer: its lookups and writes take no latches.", "",
             "| Workload | " + " | ".join(f"{labels.get(s, s)}: Go / Rust, ns" for s in sizes) + " |",
             "|---|" + "---:|" * len(sizes)]
     for kind in ("tree", "map"):
