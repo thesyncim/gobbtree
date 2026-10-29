@@ -4,6 +4,7 @@ Requires matplotlib; run from the repository root.
 """
 import argparse
 import json
+import math
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -12,7 +13,7 @@ from statistics import median
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch, Rectangle
+from matplotlib.patches import Rectangle
 
 ROOT = Path(__file__).resolve().parent.parent
 REPORT = ROOT / "benchmarks/arm64-2026-10-29.json"
@@ -37,7 +38,6 @@ PATTERN_NOTES = {
     "sequential": "consecutive even keys; misses and fresh keys fill the gaps",
     "clustered": "runs of 1,024 consecutive even keys at scattered bases",
 }
-GO, RUST = "#148575", "#c45b40"
 INK, MUTED, GRID, BG = "#172b43", "#5e7084", "#e2e8ef", "#f7f9fc"
 
 
@@ -70,8 +70,6 @@ def main():
     cases = {kind: [(case, label) for case, label in CASES
                     if case in available and (kind == "map" or not case.startswith("parallel"))]
              for kind in ("tree", "map")}
-    extra_tree = 48*(len(cases["tree"])-6)
-    extra_total = extra_tree + 48*(len(cases["map"])-8)
     assert all(len(values) == 3 for values in cpu.values())
     assert len(rss) == 16*len(patterns) and all(len(values) == 3 for values in rss.values())
 
@@ -105,85 +103,89 @@ def main():
             fig.savefig(args.preview_dir / f"{name}.png", facecolor=BG, dpi=100)
         plt.close(fig)
 
-    # One matrix keeps every workload label next to its four comparisons.
-    for pattern, heading, suffix in patterns:
-        fig = plt.figure(figsize=(900/72, (1115+extra_total)/72))
-        ax = fig.add_axes([0, 0, 1, 1])
-        ax.set(xlim=(0, 900), ylim=(1115+extra_total, 0))
-        ax.axis("off")
+    # One figure, a column per container: a row per workload, each
+    # measurement Go's speed relative to Rust's on a log scale, 1x parity.
+    def ratio_rows(kind):
+        rows = [("head", "uint64 keys", [])]
+        for case, title in cases[kind]:
+            rows.append(("row", title, [(time(p, size, kind, "rust", case)/time(p, size, kind, "go", case), i)
+                                        for p, _, _ in patterns for i, size in enumerate(SIZES)]))
+        for metric, title in (("build", "Build"), ("peak", "Peak memory")):
+            rows.append(("row", title, [(memory(p, size, kind, "rust", metric)/memory(p, size, kind, "go", metric), i)
+                                        for p, _, _ in patterns for i, size in enumerate(SIZES)]))
+        if texts:
+            rows.append(("head", "string keys", []))
+            for case, title in TEXT_CASES:
+                name = f"text_{kind}_{case}"
+                points = [(median(texts[s, "rust", name])/median(texts[s, "go", name]), SIZES.index(s))
+                          for s in SIZES if (s, "go", name) in texts and (s, "rust", name) in texts]
+                if points:
+                    rows.append(("row", title.replace(", per insert", ""), points))
+        return rows
 
-        def label(x, y, value, size=17, color=INK, weight="normal", align="left"):
-            ax.text(x, y, value, fontsize=size, color=color, weight=weight,
-                    ha=align, va="center")
+    columns = [(kind, ratio_rows(kind)) for kind in ("tree", "map")]
+    step, head_step, top, bottom = 26, 34, 128, 104
+    body = max(sum(head_step if r[0] == "head" else step for r in rows) for _, rows in columns)
+    height = top + body + bottom
+    width = 1240
+    fig = plt.figure(figsize=(width/72, height/72))
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set(xlim=(0, width), ylim=(height, 0))
+    ax.axis("off")
+    low, high = math.log(1/4), math.log(4)
+    shades = ["#9fd8c4", "#5fb39a", "#24806b", "#0b4f42"]
+    ax.text(30, 34, "Go vs Rust", fontsize=24, weight="bold", va="center")
+    ax.text(30, 66, "Go's speed relative to Rust: one dot per measurement, right of 1× means Go is faster; "
+            "memory compares peak RSS", fontsize=14, color=MUTED, va="center")
+    for i, (name, shade) in enumerate(zip(LABELS, shades)):
+        ax.plot([36 + 120*i], [98], "o", color=shade, markersize=8)
+        ax.text(50 + 120*i, 98, name + " entries", fontsize=13, va="center")
+    ax.plot([532, 532], [90, 106], color=INK, linewidth=2.2)
+    ax.text(546, 98, "geometric mean", fontsize=13, va="center")
+    for c, (kind, rows) in enumerate(columns):
+        x0 = 30 + c*610
+        left, right = x0 + 200, x0 + 520
 
-        label(40, 42, "Go vs Rust: operation time", size=28, weight="bold")
-        label(40, 83, "Change in Go time vs Rust. Negative means faster Go.", size=18)
-        label(40, 116, f"{heading} · Apple M4 Max · median of 3 fresh-process runs", size=16, color=MUTED)
-        for x, color, title in [(40, "#d1eee3", "Go uses less time"),
-                                 (335, "#e8edf2", "Within 5%"),
-                                 (560, "#f8dfd3", "Go uses more time")]:
-            ax.add_patch(Rectangle((x, 146), 19, 19, facecolor=color, edgecolor="none"))
-            label(x+29, 156, title, size=16)
-        label(40, 199, "WORKLOAD", size=14, color=MUTED, weight="bold")
-        centers = [407, 537, 667, 797]
-        for x, name in zip(centers, LABELS):
-            label(x, 199, name + " entries", size=17, weight="bold", align="center")
-        for kind, top, first in [("tree", 238, 282), ("map", 588+extra_tree, 632+extra_tree)]:
-            label(40, top, "TREE · single owner" if kind == "tree" else "MAP · concurrent",
-                  size=20, weight="bold")
-            for row, (case, title) in enumerate(cases[kind]):
-                y = first + row*48
-                label(40, y, title)
-                for x, size in zip(centers, SIZES):
-                    change = 100*(time(pattern, size, kind, "go", case)/time(pattern, size, kind, "rust", case)-1)
-                    fill, ink = ("#d1eee3", "#095d48") if change < -5 else ("#f8dfd3", "#922f12")
-                    if abs(change) <= 5:
-                        fill, ink = "#e8edf2", "#405469"
-                    ax.add_patch(Rectangle((x-59, y-21), 118, 42, facecolor=fill, edgecolor="none"))
-                    value = "0%" if round(change, 1) == 0 else f"{change:+.1f}%"
-                    label(x, y, value, size=22, color=ink, weight="bold", align="center")
-        label(40, 1030+extra_total, "Batch: per key · delete + insert: one pair · parallel: 4 workers", size=14)
-        label(40, 1058+extra_total, "Small timing gaps are inconclusive: host CPU activity was present.", size=14, color=MUTED)
-        label(40, 1087+extra_total, f"Go {go_version} / {go_short} · Rust {rust_version} / {rust_short} · (Go time ÷ Rust time − 1) × 100", size=13, color=MUTED)
-        save(fig, f"cpu{suffix}-arm64", f"Percentage change in Go operation time versus Rust, {heading.lower()}")
+        def x_of(ratio):
+            return left + (math.log(min(max(ratio, 1/4), 4)) - low)/(high - low)*(right - left)
 
-    # Four roomy panels per figure; keep memory and build time separate.
-    for pattern, heading, suffix in patterns:
-        for metric in ("peak", "build"):
-            fig, axes = plt.subplots(2, 2, figsize=(900/72, 900/72))
-            fig.subplots_adjust(left=.095, right=.96, top=.755, bottom=.16, hspace=.65, wspace=.32)
-            title = "Go vs Rust: peak memory" if metric == "peak" else "Go vs Rust: construction time"
-            fig.text(.04, .945, title, fontsize=28, weight="bold")
-            subtitle = "Whole-process RSS in MB · lower is better" if metric == "peak" else "Time to insert all entries · lower is better"
-            fig.text(.04, .9, f"{subtitle} · {heading.lower()}", fontsize=18)
-            fig.legend(handles=[Patch(color=GO, label="Go"), Patch(color=RUST, label="Rust")],
-                       loc="upper left", bbox_to_anchor=(.025, .878), ncol=2, frameon=False, fontsize=18)
-            for ax, size, name in zip(axes.flat, SIZES, LABELS):
-                ax.set_facecolor("white")
-                for spine in ax.spines.values():
-                    spine.set_visible(False)
-                ax.tick_params(length=0, pad=8)
-                ax.set_axisbelow(True)
-                factor = 1000 if metric == "build" and size < 1000000 else 1
-                unit = "MB" if metric == "peak" else "ms" if factor == 1000 else "s"
-                maximum = max(memory(pattern, size, k, l, metric)*factor for k in ("tree", "map") for l in ("go", "rust"))
-                for language, offset, color in (("go", -.18, GO), ("rust", .18, RUST)):
-                    values = [memory(pattern, size, k, language, metric)*factor for k in ("tree", "map")]
-                    positions = [i + offset for i in range(2)]
-                    ax.bar(positions, values, width=.31, color=color)
-                    for x, value in zip(positions, values):
-                        text = f"{value:,.1f}" if value >= 10 else f"{value:.2f}"
-                        ax.text(x, value + maximum*.045, text, ha="center", va="bottom", fontsize=17)
-                ax.set_xticks([0, 1], ["Tree", "Map"])
-                ax.set_ylim(0, maximum*1.32)
-                ax.locator_params(axis="y", nbins=4)
-                ax.grid(axis="y", color=GRID, linewidth=.8)
-                ax.set_title(f"{name} entries · {unit}", fontsize=20, weight="bold", pad=19)
-            fig.text(.095, .09, "Each panel starts at zero and uses its own scale.", fontsize=15)
-            detail = "Includes the runtime, GC headroom, and populated read caches." if metric == "peak" else "Construction timings are subject to background CPU activity."
-            fig.text(.095, .06, detail, fontsize=14, color=MUTED)
-            fig.text(.095, .025, f"M4 Max · 3 runs · Go {go_version} / {go_short} · Rust {rust_version} / {rust_short}", fontsize=13, color=MUTED)
-            save(fig, f"{'memory' if metric == 'peak' else 'build'}{suffix}-arm64", f"{title}, {heading.lower()}")
+        y = top
+        ax.text(x0, y + 2, ("Tree · single owner" if kind == "tree" else "Map · concurrent").upper(),
+                fontsize=14, weight="bold", va="center")
+        body_top = y + 16
+        y = body_top
+        for row, title, points in rows:
+            if row == "head":
+                y += head_step
+                ax.text(x0, y - 10, title, fontsize=12, weight="bold", color=MUTED, va="center")
+                continue
+            y += step
+            cy = y - step/2
+            ratios = [r for r, _ in points]
+            mean = math.exp(sum(math.log(r) for r in ratios)/len(ratios))
+            ax.text(x0, cy, title, fontsize=13, va="center")
+            ax.plot([x_of(min(ratios)), x_of(max(ratios))], [cy, cy], color="#cfd8e3", linewidth=6,
+                    solid_capstyle="round", zorder=1)
+            for r, i in points:
+                ax.plot([x_of(r)], [cy], "o", color=shades[i], markersize=5.5, zorder=2, alpha=.9)
+            ax.plot([x_of(mean)]*2, [cy - 8, cy + 8], color=INK, linewidth=2.2, zorder=3)
+            ink = "#095d48" if mean > 1.05 else "#922f12" if mean < 1/1.05 else "#405469"
+            ax.text(right + 14, cy, f"{mean:.2f}×", fontsize=13, weight="bold", color=ink, va="center")
+        body_bottom = y + 4
+        ax.add_patch(Rectangle((left, body_top), x_of(1) - left, body_bottom - body_top,
+                               facecolor="#fbeee8", edgecolor="none", zorder=0))
+        for tick in (1/4, 1/2, 1, 2, 4):
+            x = x_of(tick)
+            ax.plot([x, x], [body_top, body_bottom], color=INK if tick == 1 else GRID,
+                    linewidth=1.2 if tick == 1 else .8, zorder=.5)
+            label = "1×" if tick == 1 else f"{tick:g}×" if tick > 1 else f"1/{1/tick:g}×"
+            ax.text(x, body_bottom + 16, label, fontsize=12, color=MUTED, ha="center", va="center")
+        ax.text(left, body_bottom + 38, "◀ Rust faster", fontsize=12, color="#922f12", va="center")
+        ax.text(right, body_bottom + 38, "Go faster ▶", fontsize=12, color="#095d48", va="center", ha="right")
+    ax.text(30, height - 12, f"Apple M4 Max · medians of 3 runs · Go {go_version} / {go_short} · Rust {rust_version} / {rust_short} · "
+            "uint64 rows: 4K–50M entries, mixed, sequential and clustered keys · string rows: 262K and 5M",
+            fontsize=11, color=MUTED, va="center")
+    save(fig, "summary-arm64", "Go's speed relative to Rust per workload, Tree and Map, uint64 and string keys")
 
     def timing_tables(pattern):
         rows = []
@@ -209,38 +211,22 @@ def main():
 
     text = ["## Benchmarks", "",
             f"Go {go_version} with `GOEXPERIMENT=simd` against the Rust original ({rust_version}, native CPU tuning, full LTO, mimalloc) "
-            f"on an Apple M4 Max. Sources: [Go `{go_short}`](https://github.com/thesyncim/gobbtree/commit/{go_source}), "
-            f"[Rust `{rust_short}`](https://github.com/XiangpengHao/bbtree/tree/{rust_source}). "
-            "`uint64` keys and values; medians of three fresh-process runs over identical datasets, with checked results. "
-            "Every workload runs with three key patterns: " +
-            "; ".join(f"**{heading.lower()}**, {PATTERN_NOTES[pattern]}" for pattern, heading, _ in patterns) + ".", "",
-            "![Change in Go operation time versus Rust across four sizes and multiple workloads, mixed keys](benchmarks/cpu-arm64.svg)", "",
-            "Each cell is the **change in Go time versus Rust**: negative means Go is faster; gray cells are within 5%. "
-            "Batches are per key. Churn is one deletion plus one insertion, of the same key or of a fresh one. "
-            "Parallel rows use four workers; the mixed row replaces values on 10% of operations.", "",
-            "<details>", "<summary>Exact timings, mixed keys — Go / Rust, ns/op; lower is better</summary>", ""]
-    text += timing_tables("mixed")
-    text += ["</details>", "",
-             "![Go versus Rust peak RSS for Tree and Map at four sizes, mixed keys](benchmarks/memory-arm64.svg)", "",
-             "![Go versus Rust construction time for Tree and Map at four sizes, mixed keys](benchmarks/build-arm64.svg)", "",
-             "Memory is whole-process peak RSS, including the Go runtime, GC headroom and read caches. "
-             "Construction inserts every entry into an empty container.", "",
-             "<details>", "<summary>Memory and build measurements, mixed keys — each cell is Go / Rust</summary>", ""]
-    text += memory_table("mixed")
-    text += ["", "</details>", ""]
-    for pattern, heading, suffix in patterns:
-        if pattern == "mixed":
-            continue
-        name = heading.lower()
-        text += [f"### {heading}", "",
-                 f"{PATTERN_NOTES[pattern][0].upper()}{PATTERN_NOTES[pattern][1:]}.", "",
-                 f"![Change in Go operation time versus Rust, {name}](benchmarks/cpu{suffix}-arm64.svg)", "",
-                 f"![Go versus Rust construction time, {name}](benchmarks/build{suffix}-arm64.svg)", "",
-                 f"<details>", f"<summary>Exact timings, memory and build measurements, {name} — Go / Rust</summary>", ""]
+            f"on an Apple M4 Max, from [Go `{go_short}`](https://github.com/thesyncim/gobbtree/commit/{go_source}) and "
+            f"[Rust `{rust_short}`](https://github.com/XiangpengHao/bbtree/tree/{rust_source}): medians of three fresh-process runs "
+            "over identical datasets, with checked results.", "",
+            "![Go's speed relative to Rust for each workload, Tree and Map, uint64 and string keys](benchmarks/summary-arm64.svg)", "",
+            "Each dot is one measurement; `uint64` rows cover 4K to 50M entries with " +
+            ", ".join(f"{heading.lower()} ({PATTERN_NOTES[pattern]})" for pattern, heading, _ in patterns) +
+            ". Batches are per key, churn is one deletion and one insertion, and parallel rows use four workers. "
+            "Memory is whole-process peak RSS, including the Go runtime and GC headroom.", ""]
+    for pattern, heading, _ in patterns:
+        text += ["<details>", f"<summary>Times, {heading.lower()} — Go / Rust, ns/op</summary>", ""]
         text += timing_tables(pattern)
-        text += [f"![Go versus Rust peak RSS, {name}](benchmarks/memory{suffix}-arm64.svg)", ""]
-        text += memory_table(pattern)
-        text += ["", "</details>", ""]
+        text += ["</details>", ""]
+    text += ["<details>", "<summary>Memory and build — Go / Rust</summary>", ""]
+    for pattern, heading, _ in patterns:
+        text += [f"**{heading}**", ""] + memory_table(pattern) + [""]
+    text += ["</details>", ""]
     if texts:
         text += string_key_section(texts)
     text += [f"Small gaps are within run-to-run noise. The [raw report]({report_link}) adds Go's built-in `map` and `sync.Map`; "
@@ -250,7 +236,7 @@ def main():
     start = old.index("## Benchmarks")
     end = old.index("## Reproducing the benchmarks", start)
     updated = old[:start] + "\n".join(text) + "\n" + old[end:]
-    updated = re.sub(r"use source checkpoint `[0-9a-f]+`", f"use source checkpoint `{go_short}`", updated)
+    updated = re.sub(r"source checkpoint `[0-9a-f]+`", f"source checkpoint `{go_short}`", updated)
     readme.write_text(updated)
 
 
@@ -265,14 +251,12 @@ def string_key_section(texts):
     """The string-keyed cells: Go / Rust ns/op and Go's change, per size."""
     sizes = sorted({entries for entries, _, _ in texts})
     labels = {s: l for s, l in zip(SIZES, LABELS)}
-    rows = ["### String keys", "",
+    rows = ["<details>", "<summary>String keys — Go / Rust, ns/op</summary>", "",
             "`string` keys against Rust's `String`, each mixed key written as `user:` and 16 hex digits, "
-            "with `uint64` values. Rust's containers own their keys and Go's share the caller's "
-            "immutable strings, so no timed operation allocates a key on either side: the build moves "
-            "keys made beforehand, Rust replaces values with `update` and `get_mut`, and its churn "
-            "inserts back the key its removal returned. Go's `Tree` runs string keys on the `Map`'s tree, "
-            "as its single writer: its lookups and writes take no latches.", "",
-            "| Workload | " + " | ".join(f"{labels.get(s, s)}: Go / Rust, ns" for s in sizes) + " |",
+            "with `uint64` values. Rust's containers move in keys made beforehand; Go's copy each key's bytes "
+            "into their leaves, in buffers the collector doesn't scan. Rust replaces values with `update` and "
+            "`get_mut`, and its churn inserts back the key its removal returned.", "",
+            "| Workload | " + " | ".join(f"{labels.get(s, s)}" for s in sizes) + " |",
             "|---|" + "---:|" * len(sizes)]
     for kind in ("tree", "map"):
         for case, label in TEXT_CASES:
@@ -288,7 +272,7 @@ def string_key_section(texts):
                 g, r = median(go), median(rust)
                 cells.append(f"{g:.1f} / {r:.1f} ({100*(g/r-1):+.0f}%)")
             rows.append(f"| {kind.title()} · {label} | " + " | ".join(cells) + " |")
-    return rows + [""]
+    return rows + ["", "</details>", ""]
 
 
 if __name__ == "__main__":
