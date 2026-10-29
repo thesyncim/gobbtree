@@ -311,6 +311,7 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 	// in, which ofSplit leaves to the left where they would tie; the halves
 	// take what the separator shares with the leaf's fences.
 	separator := t.separator(right)
+	t.setHead(right)
 	if prefixed[O, K]() {
 		var low, high *K
 		if path.depth > 0 {

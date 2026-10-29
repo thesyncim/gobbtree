@@ -105,6 +105,7 @@ func (t *genericTree[K, V, O]) takePromotion(path *gpath[K], level int, held *la
 // which it rarely does, as the new separator is the old one's successor.
 func (t *genericTree[K, V, O]) promote(path *gpath[K], level int, n *gleaf[K, V]) {
 	sep := t.separator(n)
+	t.setHead(n)
 	at := path.levels[level]
 	t.replaceSeparator(at.n, at.edge, sep)
 	// The right subtree's left border, n's path below the separator: their
@@ -272,6 +273,7 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(parent *ginner[K], index int, l
 			low, _ := leafFences(parent, left)
 			_, high := leafFences(parent, right)
 			t.fitLeaf(asLeaf[K, V](l), low, high)
+			t.clearHead(asLeaf[K, V](r))
 		} else {
 			// The merged node spans both: its fences are l's low and r's.
 			asInner[K](l).high.Store(asInner[K](r).high.Load())
@@ -286,6 +288,7 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(parent *ginner[K], index int, l
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
 		t.moveLeafEntries(c, 0, o, int(o.count.Load())-1, 1)
 		t.setSeparator(parent, index, t.separator(c))
+		t.setHead(c)
 		t.fitChild(c, parent, index)
 		t.fitChild(o, parent, sibling)
 	case sibling < index:
@@ -298,6 +301,7 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(parent *ginner[K], index int, l
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
 		t.moveLeafEntries(c, int(c.count.Load()), o, 0, 1)
 		t.setSeparator(parent, sibling, t.separator(o))
+		t.setHead(o)
 		t.fitChild(c, parent, index)
 		t.fitChild(o, parent, sibling)
 	default:

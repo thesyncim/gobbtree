@@ -74,6 +74,7 @@ type gleaf[K any, V any] struct {
 type keyedLeaf[K any, V any] struct {
 	gleaf[K, V]
 	keys [nodeSize]K
+	head atomic.Pointer[K]
 }
 
 // A text leaf also keeps, for each key, its window past the code's (its
@@ -101,6 +102,7 @@ type textColumns struct {
 	used, size uint32
 	epoch      uint32
 	hole       uint64
+	head       atomic.Pointer[byte]
 }
 
 // A text slot: a key's tail, and its ref, which a lookup reads together.
@@ -122,6 +124,73 @@ func keyAt(buf unsafe.Pointer, ref uint64) string {
 		return ""
 	}
 	return unsafe.String((*byte)(unsafe.Add(buf, ref>>32)), length)
+}
+
+// A leaf's head is a copy of its first key, its separator, upstream's head
+// key (D49), which internal nodes keep no copy of: a separator is the head of
+// the leftmost leaf below its edge. A head is set only with its leaf and the
+// separator's node both held, and never changes in place, so a goroutine
+// holding neither reads it racing, whole, by one atomic load. Upstream keeps
+// it in a slot of the page that doesn't move while the separator's node is
+// held; Go has no such slot, so the copy is an object of its own. The tree's
+// leftmost leaf has no separator and no head, and keys whose codes order
+// them exactly need none: a node's codes are its separators.
+
+// headed reports keys whose leaves keep heads.
+func headed[O keyOrder[K], K any]() bool { return !exactCodes[O, K]() }
+
+// head is leaf n's head, false where it has none.
+func (t *genericTree[K, V, O]) head(n *gleaf[K, V]) (K, bool) {
+	var k K
+	if !headed[O, K]() {
+		return k, false
+	}
+	if prefixed[O, K]() {
+		p := n.text().head.Load()
+		if p == nil {
+			return k, false
+		}
+		length := int(*(*uint64)(unsafe.Pointer(p)))
+		if length == 0 {
+			return keyOfText[K](""), true
+		}
+		return keyOfText[K](unsafe.String((*byte)(unsafe.Add(unsafe.Pointer(p), 8)), length)), true
+	}
+	p := (*keyedLeaf[K, V])(unsafe.Pointer(n)).head.Load()
+	if p == nil {
+		return k, false
+	}
+	return *p, true
+}
+
+// setHead makes leaf n's head a copy of its first key, n and its
+// separator's node held. A text head is one allocation without pointers:
+// the key's length, then its bytes.
+func (t *genericTree[K, V, O]) setHead(n *gleaf[K, V]) {
+	if !headed[O, K]() {
+		return
+	}
+	if prefixed[O, K]() {
+		s := t.keyText(n, 0)
+		b := make([]byte, 8+len(s))
+		*(*uint64)(unsafe.Pointer(&b[0])) = uint64(len(s))
+		copy(b[8:], s)
+		n.text().head.Store(&b[0])
+		return
+	}
+	k := n.keyed()[0]
+	(*keyedLeaf[K, V])(unsafe.Pointer(n)).head.Store(&k)
+}
+
+// clearHead drops leaf n's head, for a leaf merged away.
+func (t *genericTree[K, V, O]) clearHead(n *gleaf[K, V]) {
+	switch {
+	case !headed[O, K]():
+	case prefixed[O, K]():
+		n.text().head.Store(nil)
+	default:
+		(*keyedLeaf[K, V])(unsafe.Pointer(n)).head.Store(nil)
+	}
 }
 
 // keyed is keyed leaf n's keys.

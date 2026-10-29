@@ -75,6 +75,13 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				t.Fatalf("leaf holds %d entries", count)
 			}
 			n := asLeaf[K, V](h)
+			// A leaf's head is its separator, its low fence, and its first
+			// key; the leftmost leaf, and leaves of exact codes, have none.
+			if head, ok := tree.head(n); ok != (headed[O, K]() && low != nil) {
+				t.Fatalf("leaf head present %v, low fence %v", ok, low != nil)
+			} else if ok && (compareKeys[O](head, *low) != 0 || count == 0 || compareKeys[O](head, tree.key(n, 0)) != 0) {
+				t.Fatalf("leaf head %v is not its separator %v and first key", head, *low)
+			}
 			// A leaf's prefix is what its fences share (D26), the shared
 			// prefix standing in for one missing on a border (D50).
 			if prefixed[O, K]() && count > 0 {
