@@ -77,6 +77,7 @@ func lowerCompact(keys *[nodeSize]uint64, high *[nodeSize]uint32, n int, key uin
 	}
 	return i
 }
+
 // lowerSummary counts a text internal node's 4-byte summaries below t, all
 // 32 in one 128-byte line, as lowerCode counts codes.
 func lowerSummary(sums *[nodeSize]uint32, n int, t uint32) int {
