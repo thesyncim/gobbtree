@@ -40,6 +40,10 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	// the kinds' type switch is a call. Only an owner's lookups and plain
 	// stores' read it racing; one that finds it unset goes the general way.
 	exact bool
+	// whole caches codeKeys, as exact does exactCodes, and flip what a
+	// code's sign bit is flipped by, for decoding.
+	whole bool
+	flip  uint64
 	// Such a tree names its leaves by ID, for its hint table.
 	leaves leafDir
 	hints  atomic.Pointer[codeHints]
@@ -242,8 +246,8 @@ func (t *genericTree[K, V, O]) key(n *gleaf[K, V], i int) K {
 		}
 		return keyOfText[K](t.keyText(n, i))
 	}
-	if codeKeys[O, K]() {
-		return decodeWordKey[K](n.codes[i&(nodeSize-1)], wordKeyKind[O, K]())
+	if t.wholeCodes() {
+		return t.decode(n.codes[i&(nodeSize-1)])
 	}
 	return n.keyed()[i&(nodeSize-1)]
 }
@@ -584,7 +588,15 @@ func (t *genericTree[K, V, O]) nextFence(p *gpath[K]) (k K, has, ok bool) {
 		if l.edge+1 >= l.count {
 			continue
 		}
-		k, found := t.separatorKey(l.n, l.edge+1)
+		// Keys their codes hold whole take the separator's code, which
+		// the node's version vouches for, without reading the next leaf,
+		// whose first key may go meanwhile.
+		var found bool
+		if t.wholeCodes() {
+			k, found = t.decode(l.n.codes[(l.edge+1)&(nodeSize-1)].Load()), true
+		} else {
+			k, found = t.separatorKey(l.n, l.edge+1)
+		}
 		if !t.owner && !l.n.latch.isUnchanged(l.version) || !found {
 			return k, false, false
 		}
@@ -691,7 +703,12 @@ restart:
 	}
 }
 
-func (t *genericTree[K, V, O]) code(key K) uint64 { return windowKey[O](key, 0) }
+func (t *genericTree[K, V, O]) code(key K) uint64 {
+	if t.wordCodes() {
+		return numericKey[O](key)
+	}
+	return windowKey[O](key, 0)
+}
 
 // prefixed reports keys whose nodes keep prefixes: built-in text, whose
 // bytes are compared directly, with no user code.
@@ -1018,11 +1035,31 @@ func (t *genericTree[K, V, O]) start() {
 	t.starting.Lock()
 	defer t.starting.Unlock()
 	if t.root.Load() == nil {
-		t.exact = exactCodes[O, K]()
+		t.exact, t.whole = exactCodes[O, K](), codeKeys[O, K]()
+		if t.whole {
+			switch wordKind[K]() {
+			case 2, 3, 6, 8, 10:
+				t.flip = 1 << 63
+			}
+		}
 		n := t.newLeaf()
 		n.latch.unlockExclusive(0)
 		t.root.Store(&n.gheader)
 	}
+}
+
+// wholeCodes is codeKeys for the hot paths, as wordCodes is exactCodes.
+func (t *genericTree[K, V, O]) wholeCodes() bool { return wordSized[O, K]() && t.whole }
+
+// decode is the key of code c, of a key its codes hold whole: its low
+// bytes, its sign flipped back.
+func (t *genericTree[K, V, O]) decode(c uint64) K {
+	c ^= t.flip
+	p := unsafe.Pointer(&c)
+	if bigEndian {
+		p = unsafe.Add(p, 8-unsafe.Sizeof(*(*K)(nil)))
+	}
+	return *(*K)(p)
 }
 
 // wordCodes is exactCodes for the hot paths: t.exact, set once the root is,

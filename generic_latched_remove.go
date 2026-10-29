@@ -18,6 +18,11 @@ func (t *genericTree[K, V, O]) remove(seek int, key K, condition func(K, V) bool
 	var code uint64
 	if seek == seekKey {
 		code = t.code(key)
+		if seqlockPlainStores && t.wordCodes() && condition == nil {
+			if k, v, done := t.removeHinted(code); done {
+				return k, v, true
+			}
+		}
 	}
 	if k, v, removed, done := t.removeLatched(seek, key, code, condition); done {
 		return k, v, removed
@@ -51,7 +56,7 @@ func (t *genericTree[K, V, O]) removeLatched(seek int, key K, code uint64, condi
 	if !ok || condition != nil && !condition(t.key(n, i), n.values[i]) {
 		return k, v, false, true
 	}
-	if t.root.Load() != &n.gheader && (int(n.count.Load()) <= leafMinLen || i == 0 && seek != seekFirst) {
+	if t.root.Load() != &n.gheader && (int(n.count.Load()) <= leafMinLen || i == 0 && seek != seekFirst && !t.whole) {
 		// Underfull, or the leaf's first key, which may be a separator.
 		return k, v, false, false
 	}
@@ -59,7 +64,13 @@ func (t *genericTree[K, V, O]) removeLatched(seek int, key K, code uint64, condi
 	return k, v, true, true
 }
 
-// Separators are keys the tree holds (D49): separator i of an internal node
+// Separators are keys the tree holds (D49), but for keys their codes hold
+// whole (codeKeys), whose separators are their codes, decoded where a key
+// is needed: any code above the left subtree's keys and at most the
+// right's first separates them, so removing a leaf's first key leaves its
+// separator as it was.
+//
+// Separator i of an internal node
 // is the first key of the leftmost leaf below its child i. A removal of a
 // leaf's first key, where the leaf has one, the separator of the lowest
 // ancestor its path turns right at, promotes the leaf's next key: that
@@ -174,7 +185,7 @@ func (t *genericTree[K, V, O]) removeRebalancing(seek int, key K, code uint64, c
 		return k, v, false, true
 	}
 	promoted := -1
-	if i == 0 && seek != seekFirst {
+	if i == 0 && seek != seekFirst && !t.whole {
 		promoted = path.separatorLevel()
 	}
 	// Another goroutine may have filled the leaf since.

@@ -84,6 +84,11 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 	if prefixed[O, K]() {
 		t.admit(key)
 	}
+	if seqlockPlainStores && t.wordCodes() && policy != insertMerge {
+		if old, found, done := t.insertHinted(key, numericKey[O](key), value, policy); done {
+			return old, found
+		}
+	}
 	code := t.code(key)
 	if old, found, done := t.insertLatched(key, code, value, policy, merge); done {
 		return old, found
@@ -402,12 +407,14 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 		copy(c.slots[i+1:count+1], c.slots[i:count])
 		n.codes[i] = stringCode(s, p)
 		c.slots[i] = textSlot{stringCode(s, p+8), ref}
+	} else if t.wholeCodes() {
+		n.codes[i] = numericKey[O](key)
+		copy(n.tags[i+1:count+1], n.tags[i:count])
+		n.tags[i] = uint8(n.codes[i])
 	} else {
-		if !codeKeys[O, K]() {
-			keys := n.keyed()
-			copy(keys[i+1:count+1], keys[i:count])
-			keys[i] = ownKey[O](key)
-		}
+		keys := n.keyed()
+		copy(keys[i+1:count+1], keys[i:count])
+		keys[i] = ownKey[O](key)
 		n.codes[i] = windowKey[O](key, p)
 		if exactCodes[O, K]() {
 			copy(n.tags[i+1:count+1], n.tags[i:count])
@@ -544,7 +551,7 @@ func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int, handOut bool) 
 	copy(n.values[i:count-1], n.values[i+1:count])
 	var zv V
 	n.codes[count-1], n.values[count-1] = codePad, zv
-	if exactCodes[O, K]() {
+	if t.wordCodes() {
 		copy(n.tags[i:count-1], n.tags[i+1:count])
 		n.tags[count-1] = 0
 	}
@@ -555,7 +562,7 @@ func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int, handOut bool) 
 		if count == 1 {
 			c.buf, c.used, c.size, c.hole = nil, 0, 0, 0
 		}
-	} else if !codeKeys[O, K]() {
+	} else if !t.wholeCodes() {
 		keys := n.keyed()
 		copy(keys[i:count-1], keys[i+1:count])
 		var zk K
@@ -592,7 +599,7 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 		}
 		copy(sc.slots[from:srcCount-count], sc.slots[from+count:srcCount])
 		clear(sc.slots[srcCount-count : srcCount])
-	} else if !codeKeys[O, K]() {
+	} else if !t.wholeCodes() {
 		dk, sk := dst.keyed(), src.keyed()
 		copy(dk[at+count:dstCount+count], dk[at:dstCount])
 		copy(dk[at:at+count], sk[from:from+count])
@@ -609,7 +616,7 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 		src.codes[j] = codePad
 	}
 	clear(src.values[srcCount-count : srcCount])
-	if exactCodes[O, K]() {
+	if t.wordCodes() {
 		retag(dst, dstCount+count)
 		retag(src, srcCount-count)
 	}

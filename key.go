@@ -108,7 +108,9 @@ func keyString[K cmp.Ordered](k K) (string, bool) {
 	if s, ok := any(k).(string); ok {
 		return s, true
 	}
-	if reflect.TypeFor[K]().Kind() == reflect.String {
+	// Only string kinds have a string's size, a constant for each shape:
+	// other keys skip reflection.
+	if unsafe.Sizeof(k) == unsafe.Sizeof("") && reflect.TypeFor[K]().Kind() == reflect.String {
 		// A defined string type shares string's representation.
 		return *(*string)(unsafe.Pointer(&k)), true
 	}

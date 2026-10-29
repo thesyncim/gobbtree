@@ -187,6 +187,14 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 		if low != nil && compareKeys[O](firstBelow(0), *low) != 0 {
 			t.Fatal("internal node's first key is not its low fence")
 		}
+		lastBelow := func(i int) K {
+			h := n.children[i].Load()
+			for !h.leaf {
+				in := asInner[K](h)
+				h = in.children[in.count.Load()-1].Load()
+			}
+			return tree.key(asLeaf[K, V](h), int(h.count.Load())-1)
+		}
 		seps := make([]K, count)
 		for i := 1; i < count; i++ {
 			seps[i] = firstBelow(i)
@@ -221,7 +229,9 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				t.Fatal("internal code 0 is not 0, or a prefix without text keys")
 			}
 			for i := 1; i < count; i++ {
-				if n.codes[i].Load() != windowKey[O](seps[i], 0) {
+				// An exact code separates its subtrees: above the left's
+				// keys, at most the right's first (D49's exception).
+				if code := n.codes[i].Load(); codeKeys[O, K]() && (code > windowKey[O](seps[i], 0) || code <= windowKey[O](lastBelow(i-1), 0)) || !codeKeys[O, K]() && code != windowKey[O](seps[i], 0) {
 					t.Fatalf("separator %d code is stale", i)
 				}
 			}

@@ -257,7 +257,7 @@ func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V)
 	if !ok || condition != nil && !condition(t.key(n, i), n.values[i]) {
 		return k, v, false
 	}
-	if plainPointer(&t.root) == &n.gheader || owned(&n.count) > leafMinLen && (i > 0 || seek == seekFirst) {
+	if plainPointer(&t.root) == &n.gheader || owned(&n.count) > leafMinLen && (i > 0 || seek == seekFirst || t.whole) {
 		k, v = t.removeEntry(n, i, handOut)
 		return k, v, true
 	}

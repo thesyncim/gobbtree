@@ -93,10 +93,16 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 			count++
 		}
 		// The leaf's low fence: its first key, its head where it keeps one,
-		// none for the leftmost leaf, which no path turns right to.
+		// none for the leftmost leaf, which no path turns right to. Keys
+		// their codes hold whole take their separator's code, which may
+		// lie below the first key; the leaf, held, keeps it a fence.
 		var low *K
-		if path.separatorLevel() >= 0 && n.count.Load() > 0 {
+		if level := path.separatorLevel(); level >= 0 && n.count.Load() > 0 {
 			k := t.firstKey(n)
+			if t.wholeCodes() {
+				l := &path.levels[level]
+				k = t.decode(l.n.codes[l.edge&(nodeSize-1)].Load())
+			}
 			low = &k
 		}
 		n.latch.unlockShared()
