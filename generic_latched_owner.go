@@ -1,6 +1,9 @@
 package gobbtree
 
-import "unsafe"
+import (
+	"sync/atomic"
+	"unsafe"
+)
 
 // An owner's tree is a Tree's: one goroutine changes it, and others read it
 // only while none does, as upstream's unsync tree is used. Its lookups and
@@ -9,6 +12,11 @@ import "unsafe"
 // that splits or rebalances takes the latched way, whose latches no other
 // goroutine contends. A plain write leaves the leaf's version as it was,
 // which only racing readers, an owner's tree has none, would need moved.
+
+// owned loads a word of an owner's tree plainly. The latched paths' atomic
+// loads are acquires, which on arm64 hold the loads after them, a leaf's
+// codes behind its header: two waves of misses for one.
+func owned(p *atomic.Int32) int { return int(*(*int32)(unsafe.Pointer(p))) }
 
 // ownerLeaf is key's leaf, by a descent with plain loads.
 func (t *genericTree[K, V, O]) ownerLeaf(key K, code uint64) *gleaf[K, V] {
@@ -46,11 +54,11 @@ func (t *genericTree[K, V, O]) ownerLeaf(key K, code uint64) *gleaf[K, V] {
 // readTextLeaf settles it, and otherwise by the leaf's search.
 func (t *genericTree[K, V, O]) ownerFind(n *gleaf[K, V], key K, code uint64) (int, bool) {
 	if prefixed[O, K]() {
-		count := int(n.count.Load())
-		p := int(n.prefix.Load())
+		count := owned(&n.count)
+		p := owned(&n.prefix)
 		s := textView(&key)
 		if p <= 16 && len(s) <= p+16 && len(s) < 255 {
-			if len(s) < p || (stringCode(s, 0)^n.head[0].Load())&headMask(p) != 0 || p > 8 && (stringCode(s, 8)^n.head[1].Load())&headMask(p-8) != 0 {
+			if len(s) < p || (stringCode(s, 0)^*(*uint64)(unsafe.Pointer(&n.head[0])))&headMask(p) != 0 || p > 8 && (stringCode(s, 8)^*(*uint64)(unsafe.Pointer(&n.head[1])))&headMask(p-8) != 0 {
 				return t.find(n, key, code)
 			}
 			c := stringCode(s, p)
@@ -74,7 +82,7 @@ func (t *genericTree[K, V, O]) ownerFind(n *gleaf[K, V], key K, code uint64) (in
 }
 
 func (t *genericTree[K, V, O]) ownerGet(key K) (value V, found bool) {
-	if t.root.Load() == nil {
+	if plainPointer(&t.root) == nil {
 		return value, false
 	}
 	code := uint64(0)
@@ -89,7 +97,7 @@ func (t *genericTree[K, V, O]) ownerGet(key K) (value V, found bool) {
 }
 
 func (t *genericTree[K, V, O]) ownerRead(key K, visit func(K, V)) bool {
-	if t.root.Load() == nil {
+	if plainPointer(&t.root) == nil {
 		return false
 	}
 	code := t.code(key)
@@ -103,7 +111,7 @@ func (t *genericTree[K, V, O]) ownerRead(key K, visit func(K, V)) bool {
 
 func (t *genericTree[K, V, O]) ownerUpdate(key K, change func(K, V) V) (V, bool) {
 	var zero V
-	if t.root.Load() == nil {
+	if plainPointer(&t.root) == nil {
 		return zero, false
 	}
 	code := t.code(key)
@@ -120,7 +128,7 @@ func (t *genericTree[K, V, O]) ownerUpdate(key K, change func(K, V) V) (V, bool)
 // ownerInsert is insert into an owner's tree: into key's leaf if it holds
 // key or has room, else by the latched split.
 func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge func(K, V, V) V) (V, bool) {
-	if t.root.Load() == nil {
+	if plainPointer(&t.root) == nil {
 		t.start()
 	}
 	code := uint64(0)
@@ -135,7 +143,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 		t.admit(key)
 		n = t.ownerLeaf(key, code)
 		i, found = t.ownerFind(n, key, code)
-	} else if !found && prefixed[O, K]() && t.shared.Load() == nil {
+	} else if !found && prefixed[O, K]() && plainPointer(&t.shared) == nil {
 		t.admit(key)
 	}
 	if found {
@@ -148,7 +156,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 		}
 		return old, true
 	}
-	if int(n.count.Load()) < nodeSize {
+	if owned(&n.count) < nodeSize {
 		t.insertEntry(n, i, ownKey[O](key), value)
 		var zero V
 		return zero, false
@@ -161,7 +169,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V) bool) (K, V, bool) {
 	var k K
 	var v V
-	if t.root.Load() == nil {
+	if plainPointer(&t.root) == nil {
 		return k, v, false
 	}
 	var n *gleaf[K, V]
@@ -179,7 +187,7 @@ func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V)
 	if !ok || condition != nil && !condition(n.keys[i], n.values[i]) {
 		return k, v, false
 	}
-	if int(n.count.Load()) > leafMinLen || t.root.Load() == &n.gheader {
+	if owned(&n.count) > leafMinLen || plainPointer(&t.root) == &n.gheader {
 		k, v = t.removeEntry(n, i)
 		return k, v, true
 	}
