@@ -180,7 +180,8 @@ func (t *latchedTree) splitAtParentHint(leaf *wordNode, leafID uint32, version, 
 	var path treePath
 	path.levels[0] = pathLevel{n: parent, id: parentID, version: parentVersion, edge: edge, count: count}
 	path.depth = 1
-	if t.redistribute(&path, leaf, key, value) {
+	// A key past the leaf's last splits it nearly full, as insertSplitting.
+	if key < leaf.entries()[nodeSize-1].key && t.redistribute(&path, leaf, key, value) {
 		leaf.unlockExclusive(version)
 		return true
 	}

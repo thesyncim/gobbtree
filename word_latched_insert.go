@@ -169,8 +169,9 @@ func (t *latchedTree) insertSplitting(key, value uint64, policy int, merge func(
 			leaf.unlockExclusive(version)
 			return old, found
 		}
-		// An append at the last leaf splits it, nearly full, instead.
-		appending := t.rightmost.Load() == leafID && key > leaf.entries()[nodeSize-1].key
+		// A key past a full leaf's last splits it nearly full instead, as
+		// an ascending run brings more keys after it.
+		appending := key > leaf.entries()[nodeSize-1].key
 		if !appending && t.redistribute(&path, leaf, key, value) {
 			leaf.unlockExclusive(version)
 			return 0, false
@@ -405,10 +406,10 @@ func (t *latchedTree) split(path *treePath, leaf *wordNode, leafID uint32, leafV
 	rightID, right, version := t.alloc(true)
 	fresh.push(right, version)
 	index := leaf.lowerEntry(key)
-	// An append past the last leaf's last key leaves it nearly full: the
-	// new last leaf takes only the minimum, as ascending keys refill it.
+	// A key past the leaf's last leaves it nearly full: the new leaf takes
+	// only the minimum, as an ascending run refills it.
 	minimum := leafMinLen
-	if index == nodeSize && t.rightmost.Load() == leafID {
+	if index == nodeSize {
 		minimum = leafMinLen / 2
 	}
 	cut, left := ofSplit(nodeSize, index, minimum)
@@ -473,31 +474,10 @@ func (t *latchedTree) split(path *treePath, leaf *wordNode, leafID uint32, leafV
 		}
 		t.root.Store(rootID)
 	}
-	if routes := t.routes.Load(); seqlockPlainStores && routes != nil && depth > 0 {
-		// Name the halves in the hints: a split leaves its leaves'
-		// regions to them. Hints are checked where used.
-		t.fillSplit(routes, path, leaf, right)
-	}
 	held.unlock()
 	leaf.unlockExclusive(leafVersion)
 	fresh.unlock()
 	return true
-}
-
-// fillSplit fills the hint cells of the regions leaf and right, the halves of
-// a split, now hold, through their parents, which their parent hints name.
-func (t *latchedTree) fillSplit(routes *latchedRoutes, path *treePath, leaf, right *wordNode) {
-	dir := t.dir()
-	var g *wordNode
-	edge := 0
-	if d := path.depth; d > 1 {
-		g, edge = path.levels[d-2].n, path.levels[d-2].edge
-	}
-	for _, half := range [2]*wordNode{leaf, right} {
-		if p := t.node(half.directory); p != nil && half.n > 0 {
-			routes.fillRange(dir, p, g, edge, lowFence(half), half.entries()[half.n-1].key)
-		}
-	}
 }
 
 // Node changes, made with the node held exclusively, in the stores that
