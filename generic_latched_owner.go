@@ -159,31 +159,6 @@ func (t *genericTree[K, V, O]) ownerUpdate(key K, change func(K, V) V) (V, bool)
 	return value, true
 }
 
-// removedSlot is where a removal left a gap: leaf, slot and code. A key
-// put back goes there where the codes beside the slot still bracket its
-// code, which shows the leaf holds its place whatever changed since: the
-// word trees' undone deletion, kept without tracking what changes.
-type removedSlot struct {
-	leaf *gheader
-	code uint64
-	slot int
-}
-
-// reinsert is the slot code goes back into, where the last removal left
-// one between two of the leaf's codes, as removedSlot checks.
-func (r *removedSlot) reinsert(code uint64) (*gheader, int, bool) {
-	h, i := r.leaf, r.slot
-	if h == nil || code != r.code {
-		return nil, 0, false
-	}
-	n := (*leafRoute)(unsafe.Pointer(h))
-	count := owned(&n.count)
-	if i <= 0 || i >= count || count >= nodeSize || n.codes[(i-1)&(nodeSize-1)] >= code || n.codes[i&(nodeSize-1)] <= code {
-		return nil, 0, false
-	}
-	return h, i, true
-}
-
 // ownerInsert is insert into an owner's tree: into key's leaf if it holds
 // key or has room, else by the latched split.
 func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge func(K, V, V) V) (V, bool) {
@@ -193,14 +168,6 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 	code := uint64(0)
 	if !prefixed[O, K]() {
 		code = numericKey[O](key)
-	}
-	if t.wholeCodes() {
-		if h, i, ok := t.removed.reinsert(code); ok {
-			t.removed.leaf = nil
-			t.insertEntry(asLeaf[K, V](h), i, key, value)
-			var zero V
-			return zero, false
-		}
 	}
 	n, i, found, fits := t.ownerSeek(key, code, true)
 	if !found && prefixed[O, K]() {
@@ -292,9 +259,6 @@ func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V)
 	}
 	if plainPointer(&t.root) == &n.gheader || owned(&n.count) > leafMinLen && (i > 0 || seek == seekFirst || t.whole) {
 		k, v = t.removeEntry(n, i, handOut)
-		if t.wholeCodes() {
-			t.removed = removedSlot{&n.gheader, code, i}
-		}
 		return k, v, true
 	}
 	if owned(&n.count) > leafMinLen && seek == seekKey {
