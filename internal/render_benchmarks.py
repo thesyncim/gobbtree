@@ -141,9 +141,10 @@ def main():
             f"[`{rust_short}`](https://github.com/XiangpengHao/bbtree/tree/{rust_source}). "
             "Each cell is the median of three fresh-process runs over identical keys, with checked results.", "",
             # This summary describes the checked-in report; revise it with a new one.
-            "gobbtree is faster in every `uint64` timing below. Building `uint64` maps is close on mixed and sequential keys, "
-            "each side winning some cells, and 1.5–2.3× faster in Go on clustered keys from 262K entries up. "
-            "Go's process is a few megabytes larger at 4K and 262K entries, and smaller from 5M up. "
+            "gobbtree is faster in every `uint64` timing below. Building `uint64` maps is faster in Rust at 4K entries, "
+            "and 1.4× faster for the sequential `Tree` at 262K and 5M; Go builds clustered keys 1.5–2.3× faster from 262K up, "
+            "and the other builds are within 20% either way. "
+            "Go's process peaks 1.4–3.6 MB higher at 4K and 262K entries, and lower from 5M up. "
             "With string keys Rust still wins 14 of 22 cells, among them every build and most of the `Map`'s.", "",
             f"The tables cover `uint64` keys and values from 4K to 50M entries, with {described}. "
             "Batch cells are per key, churn cells per delete-and-insert pair, and parallel cells use four workers.", ""]
