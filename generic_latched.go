@@ -750,6 +750,14 @@ func (t *genericTree[K, V, O]) getText(key K, code uint64) (value V, found, done
 // get is key's value. With optimistic leaves it is read without latching
 // the leaf, a few times while writers change it, before it latches shared.
 func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
+	if optimisticText[O, K]() {
+		// The ordered lookup needs no code; a nil root fails it.
+		if n, word, ok := t.textLeafOrdered(key); ok {
+			if value, found, ok := t.readTextLeaf(n, word, key); ok {
+				return value, found
+			}
+		}
+	}
 	if t.root.Load() == nil {
 		return value, false
 	}
