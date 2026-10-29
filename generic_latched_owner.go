@@ -172,7 +172,9 @@ func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V)
 	var ok bool
 	code := uint64(0)
 	if seek == seekKey {
-		code = t.code(key)
+		if !prefixed[O, K]() {
+			code = t.code(key)
+		}
 		n, i, ok, _ = t.ownerSeek(key, code)
 	} else {
 		n, _ = t.descend(key, 0, seek, false, optimistic, nil)
