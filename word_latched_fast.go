@@ -187,7 +187,6 @@ func (t *latchedTree) splitAtParentHint(leaf *wordNode, leafID uint32, version, 
 	return t.split(&path, leaf, leafID, version, key, value)
 }
 
-
 // getOrdered is get's optimistic descent with plain loads only
 // (leafOrdered), and a read of its leaf as a hinted one is read.
 func (t *latchedTree) getOrdered(key uint64) (value uint64, found, ok bool) {
