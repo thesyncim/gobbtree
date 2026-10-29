@@ -2,7 +2,6 @@ package gobbtree
 
 import (
 	"math/bits"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -16,7 +15,7 @@ type wordNode struct {
 	directory, prev, next uint32
 	tags                  [nodeSize]uint8
 	// A latched tree's node latch (word_latch.go); a Tree's nodes leave it.
-	sequence atomic.Uint64
+	sequence nodeLatch
 	// A latched tree's node fence above its keys: the lower bound of the
 	// next node's, 0 on the tree's right border (word_latched_routes.go).
 	high    uint64

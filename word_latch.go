@@ -2,6 +2,7 @@ package gobbtree
 
 import (
 	"runtime"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -36,20 +37,23 @@ func after[T any](p *T, acc uint64) *T {
 	return (*T)(unsafe.Add(unsafe.Pointer(p), uintptr(acc)&orderingZero))
 }
 
+// nodeLatch is a node's latch word.
+type nodeLatch struct{ atomic.Uint64 }
+
 // readVersion is the node's version once no thread holds it exclusively.
-func (n *wordNode) readVersion() uint64 {
-	if word := n.sequence.Load(); word&latchExclusive == 0 {
+func (l *nodeLatch) readVersion() uint64 {
+	if word := l.Load(); word&latchExclusive == 0 {
 		return word &^ latchSharedMask
 	}
-	return n.readVersionContended()
+	return l.readVersionContended()
 }
 
 //go:noinline
-func (n *wordNode) readVersionContended() uint64 {
+func (l *nodeLatch) readVersionContended() uint64 {
 	var b backoff
 	for {
 		b.spin()
-		if word := n.sequence.Load(); word&latchExclusive == 0 {
+		if word := l.Load(); word&latchExclusive == 0 {
 			return word &^ latchSharedMask
 		}
 	}
@@ -58,62 +62,62 @@ func (n *wordNode) readVersionContended() uint64 {
 // isUnchanged reports that the node is still at version, read before. The
 // caller's plain loads of the node must complete first: on arm64 it passes
 // them through after, or orders them with loadFence.
-func (n *wordNode) isUnchanged(version uint64) bool {
-	return n.sequence.Load()&^latchSharedMask == version
+func (l *nodeLatch) isUnchanged(version uint64) bool {
+	return l.Load()&^latchSharedMask == version
 }
 
 // isUnchangedAfter is isUnchanged for a reader whose plain loads all feed acc:
 // the latch word's address depends on them, so it loads after them.
-func (n *wordNode) isUnchangedAfter(version, acc uint64) bool {
+func (l *nodeLatch) isUnchangedAfter(version, acc uint64) bool {
 	if !seqlockPlainStores {
-		return n.isUnchanged(version)
+		return l.isUnchanged(version)
 	}
-	return *after((*uint64)(unsafe.Pointer(&n.sequence)), acc)&^latchSharedMask == version
+	return *after((*uint64)(unsafe.Pointer(&l.Uint64)), acc)&^latchSharedMask == version
 }
 
 // tryLockAt takes the node exclusively if it is at version, unheld.
-func (n *wordNode) tryLockAt(version uint64) bool {
-	return n.sequence.CompareAndSwap(version, version|latchExclusive)
+func (l *nodeLatch) tryLockAt(version uint64) bool {
+	return l.CompareAndSwap(version, version|latchExclusive)
 }
 
 // unlockExclusive lets go of a node held from version, at the next version.
-func (n *wordNode) unlockExclusive(version uint64) {
+func (l *nodeLatch) unlockExclusive(version uint64) {
 	if orderedStores {
-		storeOrdered(&n.sequence, version+latchVersion)
+		storeOrdered(&l.Uint64, version+latchVersion)
 		return
 	}
-	n.sequence.Store(version + latchVersion)
+	l.Store(version + latchVersion)
 }
 
 // tryReadVersion is the node's version, unless a thread holds it exclusively.
-func (n *wordNode) tryReadVersion() (uint64, bool) {
-	word := n.sequence.Load()
+func (l *nodeLatch) tryReadVersion() (uint64, bool) {
+	word := l.Load()
 	return word &^ latchSharedMask, word&latchExclusive == 0
 }
 
 // tryLockExclusive takes the node exclusively unless any thread holds it.
-func (n *wordNode) tryLockExclusive() (uint64, bool) {
-	word := n.sequence.Load()
-	if word&(latchExclusive|latchSharedMask) != 0 || !n.tryLockAt(word) {
+func (l *nodeLatch) tryLockExclusive() (uint64, bool) {
+	word := l.Load()
+	if word&(latchExclusive|latchSharedMask) != 0 || !l.tryLockAt(word) {
 		return 0, false
 	}
 	return word, true
 }
 
 // lockExclusive waits for the node and takes it exclusively.
-func (n *wordNode) lockExclusive() uint64 {
-	if word := n.sequence.Load(); word&(latchExclusive|latchSharedMask) == 0 && n.tryLockAt(word) {
+func (l *nodeLatch) lockExclusive() uint64 {
+	if word := l.Load(); word&(latchExclusive|latchSharedMask) == 0 && l.tryLockAt(word) {
 		return word
 	}
-	return n.lockExclusiveContended()
+	return l.lockExclusiveContended()
 }
 
 //go:noinline
-func (n *wordNode) lockExclusiveContended() uint64 {
+func (l *nodeLatch) lockExclusiveContended() uint64 {
 	var b backoff
 	for {
 		b.spin()
-		if word := n.sequence.Load(); word&(latchExclusive|latchSharedMask) == 0 && n.tryLockAt(word) {
+		if word := l.Load(); word&(latchExclusive|latchSharedMask) == 0 && l.tryLockAt(word) {
 			return word
 		}
 	}
@@ -121,25 +125,39 @@ func (n *wordNode) lockExclusiveContended() uint64 {
 
 // lockShared waits while a thread holds the node exclusively, then holds it
 // shared. The latch has no writer preference.
-func (n *wordNode) lockShared() {
-	if word := n.sequence.Load(); word&latchExclusive == 0 && n.sequence.CompareAndSwap(word, word+latchSharedUnit) {
+func (l *nodeLatch) lockShared() {
+	if word := l.Load(); word&latchExclusive == 0 && l.CompareAndSwap(word, word+latchSharedUnit) {
 		return
 	}
-	n.lockSharedContended()
+	l.lockSharedContended()
 }
 
 //go:noinline
-func (n *wordNode) lockSharedContended() {
+func (l *nodeLatch) lockSharedContended() {
 	var b backoff
 	for {
-		if word := n.sequence.Load(); word&latchExclusive == 0 && n.sequence.CompareAndSwap(word, word+latchSharedUnit) {
+		if word := l.Load(); word&latchExclusive == 0 && l.CompareAndSwap(word, word+latchSharedUnit) {
 			return
 		}
 		b.spin()
 	}
 }
 
-func (n *wordNode) unlockShared() { n.sequence.Add(^(latchSharedUnit - 1)) }
+func (l *nodeLatch) unlockShared() { l.Add(^(latchSharedUnit - 1)) }
+
+// A word node's latch is its sequence word.
+func (n *wordNode) readVersion() uint64             { return n.sequence.readVersion() }
+func (n *wordNode) isUnchanged(version uint64) bool { return n.sequence.isUnchanged(version) }
+func (n *wordNode) isUnchangedAfter(version, acc uint64) bool {
+	return n.sequence.isUnchangedAfter(version, acc)
+}
+func (n *wordNode) tryLockAt(version uint64) bool    { return n.sequence.tryLockAt(version) }
+func (n *wordNode) unlockExclusive(version uint64)   { n.sequence.unlockExclusive(version) }
+func (n *wordNode) tryReadVersion() (uint64, bool)   { return n.sequence.tryReadVersion() }
+func (n *wordNode) tryLockExclusive() (uint64, bool) { return n.sequence.tryLockExclusive() }
+func (n *wordNode) lockExclusive() uint64            { return n.sequence.lockExclusive() }
+func (n *wordNode) lockShared()                      { n.sequence.lockShared() }
+func (n *wordNode) unlockShared()                    { n.sequence.unlockShared() }
 
 // backoff waits exponentially longer, as upstream's does. Go has no spin
 // hint, so past the last round it yields the processor instead.
