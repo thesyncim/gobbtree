@@ -142,11 +142,10 @@ func (t *genericTree[K, V, O]) admit(key K) {
 			}
 			continue
 		}
-		p := commonPrefix(s, *cur)
-		if p >= len(*cur) {
+		if strings.HasPrefix(s, *cur) {
 			return
 		}
-		t.shrinkShared(cur, p)
+		t.shrinkShared(cur, commonPrefix(s, *cur))
 	}
 }
 
