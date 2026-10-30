@@ -318,9 +318,16 @@ type ginner[K any] struct {
 // separatorKey is internal node n's separator i: the first key of the
 // leftmost leaf below child i, its head, or for keys of exact codes, which
 // keep no heads, the key itself, read only by a writer holding n, under
-// which neither changes. A racing reader's walk may meet a freed or emptied
-// node, and reports false; its version check settles the rest.
+// which neither changes. Keys their codes hold whole keep their separators
+// as codes instead, which stay when a leaf's first key goes, so the leaf
+// below one may begin past it, and its writer may put a key back between
+// them: separator i > 0 is its code. A racing reader's walk may meet a
+// freed or emptied node, and reports false; its version check settles the
+// rest.
 func (t *genericTree[K, V, O]) separatorKey(n *ginner[K], i int) (K, bool) {
+	if t.wholeCodes() && i > 0 {
+		return t.decode(n.codes[i&(nodeSize-1)].Load()), true
+	}
 	h := n.children[i&(nodeSize-1)].Load()
 	for depth := 0; h != nil && !h.leaf && depth < maxDepth; depth++ {
 		h = asInner[K](h).children[0].Load()
@@ -955,9 +962,21 @@ func slotOrder[K any, V any](n *gleaf[K, V], i int, k *textProbe, p int) (order 
 // refitInner sets internal node n's prefix, for text keys what its fences
 // share, its low the head of its leftmost leaf and high given, and
 // recomputes its codes or summaries from its separators, padding the slots
-// past its count. n is held.
+// past its count. Whole codes are their separators, which moved with their
+// children: they stay. n is held.
 func (t *genericTree[K, V, O]) refitInner(n *ginner[K], high *K) {
 	count := int(n.count.Load())
+	if t.wholeCodes() {
+		for i := 0; i < nodeSize; i++ {
+			switch {
+			case i == 0 && count > 0:
+				n.codes[i].Store(0)
+			case i >= count:
+				n.codes[i].Store(codePad)
+			}
+		}
+		return
+	}
 	if !prefixed[O, K]() {
 		for i := 0; i < nodeSize; i++ {
 			code := codePad

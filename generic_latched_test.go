@@ -1028,6 +1028,63 @@ func TestSeparatorPromotion(t *testing.T) {
 	}
 }
 
+// TestWholeSeparatorsSurviveRefits keeps the separators of whole codes, which
+// stay when the first key below them goes, through their node's split: a
+// refit that took them from the leaves' first keys again would raise them
+// past keys a writer it doesn't hold may be putting back below those.
+func TestWholeSeparatorsSurviveRefits(t *testing.T) {
+	m := New[uint64, uint64]()
+	const n = 2 * nodeSize * nodeSize
+	for i := uint64(0); i < n; i++ {
+		m.Insert(1000*i, i)
+	}
+	g := &m.generic
+	h := g.root.Load()
+	for !asInner[uint64](h).children[0].Load().leaf {
+		h = asInner[uint64](h).children[0].Load()
+	}
+	// The right half of the first node above the leaves loses the keys its
+	// separators are, far from the inserts below.
+	parent := asInner[uint64](h)
+	count := int(parent.count.Load())
+	var relaxed []uint64
+	for i := count / 2; i < count; i++ {
+		sep := parent.codes[i].Load()
+		if _, ok := m.Delete(sep); !ok {
+			t.Fatalf("separator %d is no key", sep)
+		}
+		relaxed = append(relaxed, sep)
+	}
+	// Keys below the first leaf's last split it until the node splits.
+	for k := uint64(1); k < 1000; k++ {
+		m.Insert(k, k)
+	}
+	if int(parent.count.Load()) >= count {
+		t.Fatalf("the node holds %d children, %d before: it never split", parent.count.Load(), count)
+	}
+	codes := map[uint64]bool{}
+	var walk func(h *gheader)
+	walk = func(h *gheader) {
+		if h.leaf {
+			return
+		}
+		in := asInner[uint64](h)
+		for i := range int(in.count.Load()) {
+			if i > 0 {
+				codes[in.codes[i].Load()] = true
+			}
+			walk(in.children[i].Load())
+		}
+	}
+	walk(g.root.Load())
+	for _, sep := range relaxed {
+		if !codes[sep] {
+			t.Fatalf("separator %d was taken from the leaf below it", sep)
+		}
+	}
+	checkMap(t, &m.mapCore)
+}
+
 // A Map's separators change while lookups race them: writers remove and put
 // back keys that are leaves' first keys, so their separators are promoted,
 // leaves borrow and merge, and readers settle ties against the heads of

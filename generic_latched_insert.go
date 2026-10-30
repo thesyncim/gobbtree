@@ -491,6 +491,9 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 		high := t.nodeHigh(path, level)
 		cut, left := ofSplit(nodeSize, edge, innerMinLen)
 		t.moveChildEntries(split, 0, n, cut, nodeSize-cut)
+		// Whole codes moved with their children: split's first is the
+		// separator between the halves, unless carried goes first.
+		first := split.codes[0].Load()
 		if left {
 			t.insertChild(n, edge, separator, carried)
 		} else {
@@ -498,7 +501,12 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 		}
 		// The halves' fences: the separator between them, the first key
 		// below split, and n's.
-		separator, _ = t.separatorKey(split, 0)
+		switch {
+		case !t.wholeCodes():
+			separator, _ = t.separatorKey(split, 0)
+		case left || edge > cut:
+			separator = t.decode(first)
+		}
 		carried = &split.gheader
 		t.refitInner(n, &separator)
 		t.refitInner(split, high)
@@ -886,9 +894,25 @@ func (t *genericTree[K, V, O]) removeChild(n *ginner[K], i int) {
 }
 
 // moveChildEntries moves count children of src from from to dst at at, as
-// moveLeafEntries moves entries, leaving both nodes' codes to their refits.
+// moveLeafEntries moves entries, leaving both nodes' codes to their refits;
+// whole codes, their separators, move with them, the callers settling
+// those that cross a node's first slot, which holds 0.
 func (t *genericTree[K, V, O]) moveChildEntries(dst *ginner[K], at int, src *ginner[K], from, count int) {
 	srcCount, dstCount := int(src.count.Load()), int(dst.count.Load())
+	if t.wholeCodes() {
+		for j := dstCount - 1; j >= at; j-- {
+			dst.codes[j+count].Store(dst.codes[j].Load())
+		}
+		for j := 0; j < count; j++ {
+			dst.codes[at+j].Store(src.codes[from+j].Load())
+		}
+		for j := from; j+count < srcCount; j++ {
+			src.codes[j].Store(src.codes[j+count].Load())
+		}
+		for j := srcCount - count; j < srcCount; j++ {
+			src.codes[j].Store(codePad)
+		}
+	}
 	for j := dstCount - 1; j >= at; j-- {
 		dst.children[j+count].Store(dst.children[j].Load())
 	}

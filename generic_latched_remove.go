@@ -305,7 +305,12 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 			t.clearHead(asLeaf[K, V](r))
 			t.leaves.remove(r)
 		} else {
-			t.moveChildEntries(asInner[K](l), int(l.count.Load()), asInner[K](r), 0, int(r.count.Load()))
+			// r's first child takes the separator between them.
+			at, sep := int(l.count.Load()), parent.codes[right].Load()
+			t.moveChildEntries(asInner[K](l), at, asInner[K](r), 0, int(r.count.Load()))
+			if t.wholeCodes() {
+				asInner[K](l).codes[at].Store(sep)
+			}
 			t.removeChild(parent, right)
 			t.refitInner(asInner[K](l), high)
 		}
@@ -316,6 +321,10 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 	// the separator between them.
 	pairLeft, pairRight := min(index, sibling), max(index, sibling)
 	high := t.childHigh(path, level, pairRight)
+	// Whole codes: the child crossing takes the separator between the
+	// pair, and the code it leaves at the right one's front replaces it.
+	whole, old := t.wholeCodes(), parent.codes[pairRight].Load()
+	var sep K
 	switch {
 	case sibling < index && leaves:
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
@@ -324,16 +333,31 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 	case sibling < index:
 		c, o := asInner[K](child), asInner[K](other)
 		t.moveChildEntries(c, 0, o, int(o.count.Load())-1, 1)
+		if whole {
+			sep = t.decode(c.codes[0].Load())
+			c.codes[1].Store(old)
+		}
 	case leaves:
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
 		t.moveLeafEntries(c, int(c.count.Load()), o, 0, 1)
 		t.setHead(o)
 	default:
 		c, o := asInner[K](child), asInner[K](other)
-		t.moveChildEntries(c, int(c.count.Load()), o, 0, 1)
+		at := int(c.count.Load())
+		t.moveChildEntries(c, at, o, 0, 1)
+		if whole {
+			c.codes[at].Store(old)
+			sep = t.decode(o.codes[0].Load())
+		}
 	}
 	l, r := parent.children[pairLeft].Load(), parent.children[pairRight].Load()
-	sep, _ := t.separatorKey(parent, pairRight)
+	switch {
+	case !whole:
+		sep, _ = t.separatorKey(parent, pairRight)
+	case leaves:
+		// The right leaf's new first key, which it holds.
+		sep = t.firstKey(asLeaf[K, V](r))
+	}
 	t.replaceSeparator(parent, pairRight, sep)
 	if leaves {
 		if t.wordCodes() {
