@@ -228,9 +228,13 @@ func (t *genericTree[K, V, O]) ownerPath(path *gpath[K], n *gleaf[K, V], key K, 
 func (t *genericTree[K, V, O]) ownerSplit(n *gleaf[K, V], i int, key K, code uint64, value V) {
 	var path gpath[K]
 	t.ownerPath(&path, n, key, code)
-	var fresh latchSet
-	t.splitHeld(&path, path.room(), n, i, key, value, &fresh)
-	fresh.unlock()
+	var held latchSet
+	if !t.redistribute(&path, n, i, key, value, &held) {
+		var fresh latchSet
+		t.splitHeld(&path, path.room(), n, i, key, value, &fresh)
+		fresh.unlock()
+	}
+	held.unlock()
 }
 
 // ownerRemove is remove from an owner's tree: from its leaf where the leaf

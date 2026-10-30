@@ -296,11 +296,90 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 		return false
 	}
 	index, _ := t.find(leaf, key, code)
-	var fresh latchSet
-	t.splitHeld(path, top, leaf, index, key, value, &fresh)
+	if !t.redistribute(path, leaf, index, key, value, &held) {
+		var fresh latchSet
+		t.splitHeld(path, top, leaf, index, key, value, &fresh)
+		fresh.unlock()
+	}
 	held.unlock()
 	leaf.latch.unlockExclusive(leafVersion)
-	fresh.unlock()
+	return true
+}
+
+// redistributionSlack is the room a full leaf's sibling must have to take
+// some of its entries instead of the leaf splitting.
+const redistributionSlack = 8
+
+// redistribute makes room in leaf, full and held, for key and value at
+// index, B*-tree fashion: half the room of a sibling under the same parent
+// with redistributionSlack or more takes as many of the leaf's entries,
+// and the separator between them moves with them; key goes into whichever
+// leaf now holds its place. Leaves stay fuller than splits leave them,
+// about a sixth, which a tree's memory and lookups both feel. An insert at
+// either end splits as it did: ordered inserts fill leaves densely. path's
+// nodes from the parent down are held, and the fence holder above them; the
+// sibling is taken without waiting, added to held. false, with nothing
+// changed, where no sibling has the room or can be taken.
+func (t *genericTree[K, V, O]) redistribute(path *gpath[K], leaf *gleaf[K, V], index int, key K, value V, held *latchSet) bool {
+	if path.depth == 0 || index == 0 || index == nodeSize {
+		return false
+	}
+	level := path.depth - 1
+	parent, edge := path.levels[level].n, path.levels[level].edge
+	count := int(parent.count.Load())
+	best, bestCount := -1, nodeSize-redistributionSlack+1
+	for _, sib := range [2]int{edge - 1, edge + 1} {
+		if sib < 0 || sib >= count {
+			continue
+		}
+		if c := int(parent.children[sib].Load().count.Load()); c < bestCount {
+			best, bestCount = sib, c
+		}
+	}
+	if best < 0 || !held.takeLeaf(parent.children[best].Load()) {
+		return false
+	}
+	sib := asLeaf[K, V](parent.children[best].Load())
+	moved := (nodeSize - int(sib.count.Load())) / 2
+	if best < edge {
+		// The leaf's first entries go to the end of its left sibling; the
+		// leaf's new first key is their separator.
+		t.moveLeafEntries(sib, int(sib.count.Load()), leaf, 0, moved)
+		separator := t.firstKey(leaf)
+		t.setHead(leaf)
+		t.replaceSeparator(parent, edge, separator)
+		if t.wordCodes() {
+			setHigh(&sib.gheader, t.code(separator))
+		}
+		t.fitLeaf(sib, t.leafLow(sib), &separator)
+		t.fitLeaf(leaf, &separator, t.childHigh(path, level, edge))
+		// A key below the leaf's new first, the separator, is the
+		// sibling's.
+		if index <= moved {
+			i, _ := t.find(sib, key, t.code(key))
+			t.insertEntry(sib, i, key, value)
+		} else {
+			t.insertEntry(leaf, index-moved, key, value)
+		}
+		return true
+	}
+	// The leaf's last entries go to the front of its right sibling, whose
+	// new first key is their separator.
+	t.moveLeafEntries(sib, 0, leaf, nodeSize-moved, moved)
+	separator := t.firstKey(sib)
+	t.setHead(sib)
+	t.replaceSeparator(parent, best, separator)
+	if t.wordCodes() {
+		setHigh(&leaf.gheader, t.code(separator))
+	}
+	t.fitLeaf(leaf, t.leafLow(leaf), &separator)
+	t.fitLeaf(sib, &separator, t.childHigh(path, level, best))
+	if index <= nodeSize-moved {
+		t.insertEntry(leaf, index, key, value)
+	} else {
+		i, _ := t.find(sib, key, t.code(key))
+		t.insertEntry(sib, i, key, value)
+	}
 	return true
 }
 
