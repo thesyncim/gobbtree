@@ -533,7 +533,7 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 		}
 		p = int(n.prefix.Load())
 	}
-	if i < count {
+	if i < count && !prefixed[O, K]() {
 		copy(n.codes[i+1:count+1], n.codes[i:count])
 		copy(n.values[i+1:count+1], n.values[i:count])
 	}
@@ -542,7 +542,13 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 		// must be the leaf's count, unshifted.
 		s, c := textView(&key), n.text()
 		ref := t.placeKey(n, s)
-		copy(c.slots[i+1:count+1], c.slots[i:count])
+		// One loop shifts the codes, values and slots: three copies each
+		// dispatch on a length that waits for the search, and cost more.
+		for j := count & (nodeSize - 1); j > i; j-- {
+			n.codes[j] = n.codes[(j-1)&(nodeSize-1)]
+			n.values[j] = n.values[(j-1)&(nodeSize-1)]
+			c.slots[j] = c.slots[(j-1)&(nodeSize-1)]
+		}
 		n.codes[i] = stringCode(s, p)
 		c.slots[i] = textSlot{stringCode(s, p+8), ref}
 	} else if t.wholeCodes() {
