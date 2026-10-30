@@ -13,6 +13,8 @@ const (
 	insertReplace = iota
 	insertMerge
 	insertKeep
+	// hintedRemove is hintedWrite's removal.
+	hintedRemove
 )
 
 // latchSet is the nodes an operation takes besides its leaf, upstream's
@@ -179,7 +181,7 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 	if seqlockPlainStores && t.wordCodes() && policy != insertMerge {
 		// The code once: in shared code each is a check of the key's type.
 		code := numericKey[O](key)
-		old, found, done, full := t.insertHinted(key, code, value, policy)
+		_, old, found, done, full := t.hintedWrite(key, code, value, policy)
 		if done {
 			return old, found
 		}

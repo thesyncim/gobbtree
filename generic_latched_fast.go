@@ -345,106 +345,69 @@ func (t *genericTree[K, V, O]) appendTail(key K, code uint64, value V) (done boo
 	return true, nil
 }
 
-// seekHinted searches the leaf code's hint names, with plain loads after
-// its latch word, which it returns, unheld: code's slot and whether it is there, false where
-// the leaf is held, or code lies outside it or at either of its ends
-// without being there. A compare-and-swap at the word, which succeeds only
-// where nothing changed the leaf since, makes the search hold.
-func (t *genericTree[K, V, O]) seekHinted(code uint64) (n *gleaf[K, V], word uint64, count, i int, found, ok bool) {
+// hintedWrite is a write through code's hint, for a policy that runs no
+// user code: the leaf the hint names is searched, with plain loads after
+// its latch word, then taken at that word by a compare-and-swap, which
+// succeeds only where nothing changed the leaf since, and changed. An
+// insert puts key and value in by policy where the search found key, or
+// room for it; a removal, hintedRemove, takes key out where the leaf holds
+// it and is left its minimum, with its first key too: exact codes separate
+// leaves without it. done is false where it can't settle; full, where an
+// insert's leaf is full, for the caller to split it. Insert and removal
+// share it, as the seek's calls cost them.
+func (t *genericTree[K, V, O]) hintedWrite(key K, code uint64, value V, policy int) (k K, old V, found, done, full bool) {
 	r := plainPointer(&t.hints)
 	if r == nil {
-		return nil, 0, 0, 0, false, false
+		return k, old, false, false, false
 	}
 	h := r.hintedLeaf(&t.leaves, code)
 	if h == nil {
-		return nil, 0, 0, 0, false, false
-	}
-	n = asLeaf[K, V](h)
-	word = *(*uint64)(unsafe.Pointer(&n.latch))
-	if word&(latchExclusive|latchSharedMask) != 0 {
-		return nil, 0, 0, 0, false, false
-	}
-	m := after(n, word)
-	count = int(*(*int32)(unsafe.Pointer(&m.count)))
-	if count <= 0 || count > nodeSize {
-		return nil, 0, 0, 0, false, false
-	}
-	i = firstTag(&m.tags, count, code)
-	if i < count && m.codes[i&(nodeSize-1)] == code {
-		return n, word, count, i, true, true
-	}
-	if first, high := bounds(&m.gheader); !owns(count, first, high, code) {
-		return nil, 0, 0, 0, false, false
-	}
-	i = lowerCode(&m.codes, count, code)
-	return n, word, count, i, i < count && m.codes[i&(nodeSize-1)] == code, true
-}
-
-// insertHinted is insert through key's hint, for a policy that runs no
-// user code: the leaf is searched, then taken at the word the search read,
-// and changed where the search found key, or room for it. done is false
-// where it can't settle; full, where the leaf it settled in is full, for
-// the caller to split it.
-func (t *genericTree[K, V, O]) insertHinted(key K, code uint64, value V, policy int) (old V, found, done, full bool) {
-	// seekHinted, written out: a write's calls before its store cost it.
-	r := plainPointer(&t.hints)
-	if r == nil {
-		return old, false, false, false
-	}
-	h := r.hintedLeaf(&t.leaves, code)
-	if h == nil {
-		return old, false, false, false
+		return k, old, false, false, false
 	}
 	n := asLeaf[K, V](h)
 	word := *(*uint64)(unsafe.Pointer(&n.latch))
 	if word&(latchExclusive|latchSharedMask) != 0 {
-		return old, false, false, false
+		return k, old, false, false, false
 	}
 	m := after(n, word)
 	count := int(*(*int32)(unsafe.Pointer(&m.count)))
 	if count <= 0 || count > nodeSize {
-		return old, false, false, false
+		return k, old, false, false, false
 	}
 	i := firstTag(&m.tags, count, code)
 	found = i < count && m.codes[i&(nodeSize-1)] == code
 	if !found {
 		if first, high := bounds(&m.gheader); !owns(count, first, high, code) {
-			return old, false, false, false
+			return k, old, false, false, false
 		}
 		i = lowerCode(&m.codes, count, code)
 		found = i < count && m.codes[i&(nodeSize-1)] == code
 	}
-	if !found && count == nodeSize {
-		return old, false, false, true
+	switch {
+	case policy == hintedRemove:
+		if !found || count <= leafMinLen || i == 0 && !t.whole {
+			return k, old, false, false, false
+		}
+	case !found && count == nodeSize:
+		return k, old, false, false, true
 	}
 	if !n.latch.tryLockAt(word) {
-		return old, false, false, false
+		return k, old, false, false, false
 	}
 	i &= nodeSize - 1
-	if found {
+	switch {
+	case policy == hintedRemove:
+		k, old = t.removeEntry(n, i, true)
+	case found:
 		old = n.values[i]
 		if policy == insertReplace {
 			n.values[i] = value
 		}
-	} else {
+	default:
 		t.insertEntry(n, i, key, value)
 	}
 	n.latch.unlockExclusive(word)
-	return old, found, true, false
-}
-
-// removeHinted is remove of key through its hint: the leaf is searched,
-// then taken at the word the search read, where it holds key and isn't
-// left underfull. Its first key goes too: exact codes separate leaves
-// without it.
-func (t *genericTree[K, V, O]) removeHinted(code uint64) (k K, v V, done bool) {
-	n, word, count, i, found, ok := t.seekHinted(code)
-	if !ok || !found || count <= leafMinLen || i == 0 && !t.whole || !n.latch.tryLockAt(word) {
-		return k, v, false
-	}
-	k, v = t.removeEntry(n, i&(nodeSize-1), true)
-	n.latch.unlockExclusive(word)
-	return k, v, true
+	return k, old, found, true, false
 }
 
 // hintedLatched is code's leaf latched in mode through its hint, and the
@@ -529,7 +492,7 @@ func (t *genericTree[K, V, O]) readCodeLeaf(n *gleaf[K, V], word, code uint64) (
 // key is there, false where the windows don't settle it, the leaf is
 // empty, or key lacks its prefix. No key's bytes are read: a compare-and-
 // swap at the word, which holds only where nothing changed the leaf since,
-// makes the search hold, as seekHinted's does.
+// makes the search hold, as hintedWrite's does.
 func (t *genericTree[K, V, O]) seekText(n *gleaf[K, V], word uint64, key K) (i int, found, ok bool) {
 	n = after(n, word)
 	count := int(*(*int32)(unsafe.Pointer(&n.count)))

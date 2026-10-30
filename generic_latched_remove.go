@@ -19,7 +19,8 @@ func (t *genericTree[K, V, O]) remove(seek int, key K, condition func(K, V) bool
 	if seek == seekKey {
 		code = t.code(key)
 		if seqlockPlainStores && t.wordCodes() && condition == nil {
-			if k, v, done := t.removeHinted(code); done {
+			var zv V
+			if k, v, _, done, _ := t.hintedWrite(key, code, zv, hintedRemove); done {
 				return k, v, true
 			}
 		}
