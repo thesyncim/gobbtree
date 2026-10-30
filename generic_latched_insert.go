@@ -995,7 +995,7 @@ func (t *genericTree[K, V, O]) insertChild(n *ginner[K], i int, separator K, chi
 	}
 	code := uint64(0)
 	if i > 0 {
-		code = windowKey[O](separator, 0)
+		code = t.code(separator)
 	}
 	n.codes[i].Store(code)
 }

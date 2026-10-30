@@ -167,7 +167,7 @@ func (t *genericTree[K, V, O]) replaceSeparator(n *ginner[K], i int, sep K) {
 		storeSum(n.sums(), i, summaryOf(textView(&sep), int(n.prefix.Load())))
 		return
 	}
-	n.codes[i].Store(windowKey[O](sep, 0))
+	n.codes[i].Store(t.code(sep))
 }
 
 // refitMoved refits text leaf n, held, whose windows are its keys' at its

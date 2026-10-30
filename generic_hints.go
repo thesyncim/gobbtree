@@ -66,10 +66,12 @@ func (d *leafDir) alloc() (h *gheader, fresh bool) {
 	blocks := d.blocks.Load()
 	if blocks == nil || int(id/leafBlock) >= len(*blocks) {
 		// A reader of the old blocks misses the leaves made since, which
-		// descend.
+		// descend. The new block goes past the old ones' length, where
+		// their array has room, which no reader of them reads: the blocks
+		// grow by appending, not by a copy a block.
 		var grown []unsafe.Pointer
 		if blocks != nil {
-			grown = append(grown, *blocks...)
+			grown = *blocks
 		}
 		// Each slot is a leaf of its ID from the block's making, before
 		// any reader can reach it: a reader on a merged-away leaf reads

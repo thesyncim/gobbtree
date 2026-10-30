@@ -993,7 +993,7 @@ func (t *genericTree[K, V, O]) refitInner(n *ginner[K], high *K) {
 				code = 0
 			case i < count:
 				sep, _ := t.separatorKey(n, i)
-				code = windowKey[O](sep, 0)
+				code = t.code(sep)
 			}
 			n.codes[i].Store(code)
 		}
