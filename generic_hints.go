@@ -544,9 +544,35 @@ func (r *codeHints) fillAll(n *innerRoute, low, high uint64, f *hintFrame, from 
 	defer func() { f.depth-- }()
 	step := uint64(1) << r.shift
 	start := r.base + ((max(low, r.base, from)-r.base)>>r.shift)<<r.shift
+	codes, edge := routeCodes(n), 0
 	for key, regions := start, 0; key <= last && regions <= 4*nodeSize; key, regions = key+step, regions+1 {
-		if c := r.cell(max(key, low)); c != nil {
+		c := r.cell(max(key, low))
+		end := key + step - 1
+		switch {
+		case c == nil:
+		case key < low || end < key || high != 0 && end >= high:
+			// A region past n's fences takes the leaves beside it too.
 			r.fill(c, max(key, low), f, true)
+		default:
+			// A region within them, the leaves n's children are from
+			// where the last region's began, as fill would gather them.
+			for edge+1 < count && codes[(edge+1)&(nodeSize-1)] <= key {
+				edge++
+			}
+			span := hintSpan{first: key, last: end}
+			for k := edge; k < count && (k == edge || codes[k&(nodeSize-1)] <= end); k++ {
+				child := plainPointer(&n.children[k&(nodeSize-1)])
+				if child == nil || !child.leaf || child.id == 0 || span.n == len(span.ids) {
+					span.broken = true
+					break
+				}
+				span.ids[span.n], span.starts[span.n] = uint64(child.id), key
+				if k > edge {
+					span.starts[span.n] = codes[k&(nodeSize-1)]
+				}
+				span.n++
+			}
+			r.store(c, &span, key, end, true)
 		}
 		if key+step < key {
 			return
