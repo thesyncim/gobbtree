@@ -47,9 +47,9 @@ type leafDir struct {
 
 const leafBlock = 256
 
-// alloc is a slot for a new leaf and its ID: a merged-away leaf's, or the
-// next; nil once every ID a cell can name is taken.
-func (d *leafDir) alloc() (*gheader, uint32) {
+// alloc is a slot for a new leaf, which keeps its ID: a merged-away
+// leaf's, or the next; nil once every ID a cell can name is taken.
+func (d *leafDir) alloc() *gheader {
 	d.mu.Lock()
 	id := uint32(0)
 	if n := len(d.free); n > 0 {
@@ -60,7 +60,7 @@ func (d *leafDir) alloc() (*gheader, uint32) {
 	}
 	if id == 0 {
 		d.mu.Unlock()
-		return nil, 0
+		return nil
 	}
 	blocks := d.blocks.Load()
 	if blocks == nil || int(id/leafBlock) >= len(*blocks) {
@@ -70,13 +70,23 @@ func (d *leafDir) alloc() (*gheader, uint32) {
 		if blocks != nil {
 			grown = append(grown, *blocks...)
 		}
-		grown = append(grown, d.newBlock())
+		// Each slot is a leaf of its ID from the block's making, before
+		// any reader can reach it: a reader on a merged-away leaf reads
+		// these racing as its slot is taken again, so they never change.
+		block := d.newBlock()
+		for j := uintptr(0); j < leafBlock; j++ {
+			if slot := uint32(len(grown)*leafBlock) + uint32(j); slot != 0 {
+				h := (*gheader)(unsafe.Add(block, j*d.stride))
+				h.leaf, h.id = true, slot
+			}
+		}
+		grown = append(grown, block)
 		d.blocks.Store(&grown)
 		blocks = &grown
 	}
 	h := (*gheader)(unsafe.Add((*blocks)[id/leafBlock], uintptr(id%leafBlock)*d.stride))
 	d.mu.Unlock()
-	return h, id
+	return h
 }
 
 // remove gives leaf h's slot back, for a leaf merged away.

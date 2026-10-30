@@ -425,12 +425,11 @@ func (h *gheader) freed() { h.count.Store(0) }
 // merged-away leaf's, at the version its latch had: newLeaf returns it.
 func (t *genericTree[K, V, O]) newLeaf() (*gleaf[K, V], uint64) {
 	if t.exact {
-		if h, id := t.leaves.alloc(); h != nil {
+		if h := t.leaves.alloc(); h != nil {
 			version := h.latch.lockExclusive()
 			n := asLeaf[K, V](h)
 			n.count.Store(0)
 			n.prefix.Store(0)
-			n.leaf, n.id = true, id
 			n.tags = [nodeSize]uint8{}
 			n.head[0].Store(0)
 			n.head[1].Store(0)
