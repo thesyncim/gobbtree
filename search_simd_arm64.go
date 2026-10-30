@@ -194,8 +194,8 @@ func hintedCode(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, 
 }
 
 // descendTextOrdered descends a racing reader's text tree by s, as
-// textLeafOrdered does, and searches the leaf by its code, as readTextLeaf
-// does: the leaf, its latch word, the slot, what it found there, and the
+// textLeafOrdered does, and searches the leaf by its code, a key that fits
+// its windows and lacks its prefix being absent: the leaf, its latch word, the slot, what it found there, and the
 // words read of the leaf, for the caller's closing check; false where it
 // can't settle. Summaries and codes are counted inline, as descendText
 // counts them: a call per level spills the descent's registers.

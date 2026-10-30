@@ -8,8 +8,8 @@ package gobbtree
 func descendText(h *gheader, s string) (*gheader, int, int) { return descendTextBy(h, s) }
 
 // descendTextOrdered descends a racing reader's text tree by s, as
-// textLeafOrdered does, and searches the leaf by its code, as readTextLeaf
-// does: the leaf, its latch word, the slot, what it found there, and the
+// textLeafOrdered does, and searches the leaf by its code, a key that fits
+// its windows and lacks its prefix being absent: the leaf, its latch word, the slot, what it found there, and the
 // words read of the leaf, for the caller's closing check; false where it
 // can't settle.
 func descendTextOrdered(root **gheader, s string) (*gheader, uint64, int, int, uint64, bool) {

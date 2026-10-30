@@ -34,7 +34,7 @@ func (t *genericTree[K, V, O]) ownerLeaf(key K, code uint64) *gleaf[K, V] {
 // whether key fits the leaf's windows, so begins with its prefix. A text
 // key descends and is checked in its leaf in one loop, calls costing a
 // lookup what its loads do: a key that fits its windows is there exactly
-// where a slot's code, tail and length are its, as readTextLeaf settles it;
+// where a slot's code, tail and length are its;
 // any other goes to the leaf's search. A key without the shared prefix
 // routes anywhere, but it is in no leaf, and a writer admits its key first.
 //

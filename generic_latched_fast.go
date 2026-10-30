@@ -65,8 +65,7 @@ func (t *genericTree[K, V, O]) textLeafOrdered(key K) (*gleaf[K, V], uint64, boo
 }
 
 // getTextOrdered is get through descendTextOrdered: where its code is
-// key's, the slot's tail and length settle key there, as readTextLeaf's
-// do, and its value is copied before the leaf's closing check, which the
+// key's, the slot's tail and length settle key there, and its value is copied before the leaf's closing check, which the
 // words read feed. false where it can't settle.
 func (t *genericTree[K, V, O]) getTextOrdered(key K) (value V, found, ok bool) {
 	s := textView(&key)
@@ -416,7 +415,8 @@ func (t *genericTree[K, V, O]) hintedLatched(code uint64, mode int) (*gleaf[K, V
 	return nil, 0, false
 }
 
-// readCodeLeaf is readTextLeaf for keys that codes order exactly: key is
+// readCodeLeaf settles key in leaf n, whose latch word the caller read, for
+// keys that codes order exactly: key is
 // in leaf n exactly where its code is, the slot every code below it
 // counts to, which feeds the closing check.
 func (t *genericTree[K, V, O]) readCodeLeaf(n *gleaf[K, V], word, code uint64) (value V, found, ok bool) {
