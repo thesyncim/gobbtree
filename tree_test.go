@@ -24,6 +24,99 @@ func checkCore[K any, V any, O keyOrder[K]](t testing.TB, tr *treeCore[K, V, O])
 	}
 }
 
+// TestTreeAppendsAcrossChanges interleaves runs of appends, which take the
+// last-leaf shortcut, with what moves or merges the tree's last leaf or
+// stops the appending: replaces, removals at the end and elsewhere, and
+// keys below the last.
+func TestTreeAppendsAcrossChanges(t *testing.T) {
+	t.Run("uint64", func(t *testing.T) { checkAppendsAcrossChanges(t, func(x uint64) uint64 { return x }) })
+	t.Run("int64", func(t *testing.T) { checkAppendsAcrossChanges(t, func(x uint64) int64 { return int64(x) - 1<<40 }) })
+	t.Run("float64", func(t *testing.T) { checkAppendsAcrossChanges(t, func(x uint64) float64 { return float64(x) - 1e6 }) })
+}
+
+func checkAppendsAcrossChanges[K cmp.Ordered](t *testing.T, key func(uint64) K) {
+	var tr Tree[K, uint64]
+	// The model: keys in order, with their values.
+	var keys []uint64
+	values := map[uint64]uint64{}
+	put := func(x, v uint64) {
+		if i, found := slices.BinarySearch(keys, x); !found {
+			keys = slices.Insert(keys, i, x)
+		}
+		values[x] = v
+	}
+	drop := func(x uint64) {
+		i, _ := slices.BinarySearch(keys, x)
+		keys = slices.Delete(keys, i, i+1)
+		delete(values, x)
+	}
+	popLast := func(round int) {
+		k, v, ok := tr.PopLast()
+		if !ok {
+			if len(keys) != 0 {
+				t.Fatalf("round %d: PopLast found nothing", round)
+			}
+			return
+		}
+		x := keys[len(keys)-1]
+		if k != key(x) || v != values[x] {
+			t.Fatalf("round %d: PopLast %v %d, want %v %d", round, k, v, key(x), values[x])
+		}
+		drop(x)
+	}
+	rng := rand.New(rand.NewPCG(5, 6))
+	next := uint64(0)
+	for round := range 150 {
+		for range rng.IntN(300) {
+			next += 2
+			if _, ok := tr.Insert(key(next), next); ok {
+				t.Fatalf("round %d: append %d replaced", round, next)
+			}
+			put(next, next)
+		}
+		for range rng.IntN(40) {
+			switch op := rng.IntN(5); {
+			case op == 0 && len(keys) > 0:
+				x := keys[rng.IntN(len(keys))]
+				if old, ok := tr.Insert(key(x), x+1); !ok || old != values[x] {
+					t.Fatalf("round %d: replace %d: %d %v", round, x, old, ok)
+				}
+				put(x, x+1)
+			case op == 1:
+				popLast(round)
+			case op == 2 && len(keys) > 0:
+				x := keys[rng.IntN(len(keys))]
+				if old, ok := tr.Delete(key(x)); !ok || old != values[x] {
+					t.Fatalf("round %d: delete %d: %d %v", round, x, old, ok)
+				}
+				drop(x)
+			case op == 3 && next > 0:
+				x := rng.Uint64N(next) | 1
+				_, had := values[x]
+				if _, ok := tr.Insert(key(x), x); ok != had {
+					t.Fatalf("round %d: insert %d replaced %v", round, x, ok)
+				}
+				put(x, x)
+			case op == 4:
+				for range rng.IntN(70) {
+					popLast(round)
+				}
+			}
+		}
+		checkTree(t, &tr)
+		if tr.Len() != len(keys) {
+			t.Fatalf("round %d: %d entries, model %d", round, tr.Len(), len(keys))
+		}
+		j := 0
+		for k, v := range tr.All() {
+			if k != key(keys[j]) || v != values[keys[j]] {
+				t.Fatalf("round %d: entry %d is %v %d, want %v %d", round, j, k, v, key(keys[j]), values[keys[j]])
+			}
+			j++
+		}
+	}
+}
+
 func TestTreeGrowthAndCollapse(t *testing.T) {
 	for _, order := range []string{"ascending", "descending", "random"} {
 		t.Run(order, func(t *testing.T) {

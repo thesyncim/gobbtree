@@ -59,6 +59,10 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	// merged away or a slot another leaf took, sends the key the general
 	// way.
 	tail atomic.Pointer[gheader]
+	// appending is whether an owner's last insert of a new key went past
+	// the tail, upstream's last-leaf shortcut (D45): Tree.Insert then tries
+	// the tail first (ownerPush).
+	appending bool
 	// An owner's text leaves reuse their buffers' bytes, a removed key's for
 	// the next to go in and a full buffer's for its live keys, while no key
 	// read over them is out: epoch is the generation of buffers the writer

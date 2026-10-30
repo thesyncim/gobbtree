@@ -181,40 +181,33 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i in
 		n, i, found, fits = t.ownerSeekText(key, code)
 		return t.ownerInsertText(n, i, found, fits, key, value)
 	case t.wordCodes():
-		// ownerSeek, with a key the hints don't place, as one past the
-		// table's domain, tried past the tail before a descent.
 		h, j, f, ok := hintedCode(plainPointer(&t.hints), &t.leaves, code, true)
-		if ok {
-			n, i, found = asLeaf[K, V](h), j, f
-			break
+		if ok && f {
+			return asLeaf[K, V](h), j & (nodeSize - 1), true
 		}
-		if t.pastTail(code) {
-			// appendTail, for an owner, written out: past the last key of
-			// the rightmost leaf, which nothing holds, the key goes last.
-			h := plainPointer(&t.tail)
-			n := asLeaf[K, V](h)
-			if _, high := bounds(h); high == 0 {
-				count := owned(&n.count)
-				switch {
-				case count == nodeSize:
-					t.ownerSplit(n, nodeSize, key, code, value)
-					// A tree grown by appends descends none: its hints
-					// follow its growth here, as a descent's would.
-					currentHints(&t.hints, &t.making, &t.reshaped, plainPointer(&t.root))
-				case t.wholeCodes():
-					n.pushCode(count, code, value)
-				default:
-					t.insertEntry(n, count, key, value)
-				}
-				return nil, 0, false
-			}
-		}
-		n, i, found, _ = t.ownerDescend(code, true)
+		return t.ownerPlace(key, code, value, asLeaf[K, V](h), j, ok)
 	default:
 		n, i, found, _ = t.ownerSeek(key, code, true)
 	}
 	if found {
 		return n, i & (nodeSize - 1), true
+	}
+	return t.ownerPlace(key, code, value, n, i, true)
+}
+
+// ownerPlace inserts key, absent, at slot i of leaf n, where a seek or the
+// hints placed it. A key not placed, as one past the hint table's domain,
+// goes past the tail, which starts the tree appending, or where a descent
+// places it; one the descent finds is returned, as ownerInsert returns it.
+func (t *genericTree[K, V, O]) ownerPlace(key K, code uint64, value V, n *gleaf[K, V], i int, placed bool) (*gleaf[K, V], int, bool) {
+	if !placed {
+		if t.ownerAppend(key, code, value) {
+			return nil, 0, false
+		}
+		var found bool
+		if n, i, found, _ = t.ownerDescend(code, true); found {
+			return n, i & (nodeSize - 1), true
+		}
 	}
 	if owned(&n.count) < nodeSize {
 		t.insertEntry(n, i, key, value)
@@ -222,6 +215,59 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i in
 		t.ownerSplit(n, i, key, code, value)
 	}
 	return nil, 0, false
+}
+
+// ownerAppend inserts key last in the tail, splitting it where full, where
+// code is past its last key, which nothing holds, and records whether it
+// could: the tree is then appending.
+func (t *genericTree[K, V, O]) ownerAppend(key K, code uint64, value V) bool {
+	n, count, ok := t.tailFor(code)
+	t.appending = ok
+	if !ok {
+		return false
+	}
+	switch {
+	case count == nodeSize:
+		t.ownerSplit(n, nodeSize, key, code, value)
+		// A tree grown by appends descends none: its hints follow its
+		// growth here, as a descent's would.
+		currentHints(&t.hints, &t.making, &t.reshaped, plainPointer(&t.root))
+	case t.wholeCodes():
+		n.pushCode(count, code, value)
+	default:
+		t.insertEntry(n, count, key, value)
+	}
+	return true
+}
+
+// ownerPush is upstream's last-leaf shortcut (D45), for a tree appending:
+// code, a key its codes hold whole, goes last in the tail, where it has
+// room and code is past its last, with no search. A key that isn't one
+// stops the appending, so inserts of other orders pay only its test; the
+// next append past the tail (ownerAppend), which also splits a full one,
+// starts it again.
+func (t *genericTree[K, V, O]) ownerPush(code uint64, value V) bool {
+	n, count, ok := t.tailFor(code)
+	if ok && count < nodeSize && t.wholeCodes() {
+		n.pushCode(count, code, value)
+		return true
+	}
+	t.appending = ok
+	return false
+}
+
+// tailFor is the tail and its count, and whether code goes past its last
+// key: an owner's tail is its rightmost leaf, which a split or a merge
+// there moves, and holds the keys nothing holds after.
+func (t *genericTree[K, V, O]) tailFor(code uint64) (n *gleaf[K, V], count int, ok bool) {
+	h := plainPointer(&t.tail)
+	if h == nil {
+		return nil, 0, false
+	}
+	n, count = asLeaf[K, V](h), owned(&h.count)
+	// An empty tail's last slot holds codePad, past every code.
+	_, high := bounds(h)
+	return n, count, high == 0 && n.codes[(count-1)&(nodeSize-1)] < code
 }
 
 // ownerInsertText is ownerInsert for a text key, from ownerSeekText's

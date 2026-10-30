@@ -83,7 +83,26 @@ func (t *treeCore[K, V, O]) Insert(key K, value V) (V, bool) {
 		var zero V
 		return zero, false
 	}
-	n, i, found := t.generic.ownerInsert(key, value)
+	// A key of word codes is sought here, as ownerInsert would, and one
+	// found replaced here, without its call, whose frame its store would
+	// wait behind; while the tree is appending, the tail is tried first.
+	var n *gleaf[K, V]
+	var i int
+	var found bool
+	if g := t.generic; g.wordCodes() {
+		code := numericKey[O](key)
+		if g.appending && g.ownerPush(code, value) {
+			t.length++
+			var zero V
+			return zero, false
+		}
+		h, j, f, ok := hintedCode(plainPointer(&g.hints), &g.leaves, code, true)
+		if n, i, found = asLeaf[K, V](h), j, f; !ok || !f {
+			n, i, found = g.ownerPlace(key, code, value, n, i, ok)
+		}
+	} else {
+		n, i, found = g.ownerInsert(key, value)
+	}
 	if !found {
 		t.length++
 		var zero V
