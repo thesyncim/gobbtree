@@ -76,6 +76,79 @@ func descendCodeBy(h *gheader, code uint64, place bool) (*gheader, int, bool) {
 	return h, i, ok
 }
 
+// What descendTextOrdered finds in its leaf: key's code at the slot, or no
+// code of key's there or key lacking the leaf's prefix, so key absent.
+const (
+	orderedCode = iota
+	orderedAbsent
+)
+
+// descendTextOrderedBy is descendTextOrdered by calls to the search
+// kernels.
+func descendTextOrderedBy(root **gheader, s string) (h *gheader, word uint64, lo, state int, acc uint64, ok bool) {
+	h = *root
+	if h == nil {
+		return nil, 0, 0, 0, 0, false
+	}
+	word = h.latch.Load()
+	if *after(root, word) != h {
+		return nil, 0, 0, 0, 0, false
+	}
+	for depth := 0; ; depth++ {
+		if word&latchExclusive != 0 || depth == maxDepth {
+			return nil, 0, 0, 0, 0, false
+		}
+		if h.leaf {
+			break
+		}
+		n := (*innerRoute)(unsafe.Pointer(h))
+		count := int(*(*int32)(unsafe.Pointer(&n.count)))
+		if count < 1 || count > nodeSize {
+			return nil, 0, 0, 0, 0, false
+		}
+		p := int(*(*int32)(unsafe.Pointer(&n.prefix)))
+		sum := summaryOf(s, p)
+		sums := (*[nodeSize]uint32)(unsafe.Pointer(&n.codes))
+		i := max(lowerSummary(sums, count, sum)-1, 0)
+		below, next := sums[i&(nodeSize-1)], sums[(i+1)&(nodeSize-1)]
+		if i > 0 && below >= sum || i+1 < count && next <= sum {
+			return nil, 0, 0, 0, 0, false
+		}
+		a := uint64(i) ^ uint64(count) ^ uint64(p)<<8 ^ uint64(below)<<16 ^ uint64(next)<<32
+		child := *after((**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)])), a)
+		if child == nil {
+			return nil, 0, 0, 0, 0, false
+		}
+		childWord := child.latch.Load()
+		if *after((*uint64)(unsafe.Pointer(&h.latch)), a^childWord^uint64(uintptr(unsafe.Pointer(child))))&^latchSharedMask != word&^latchSharedMask {
+			return nil, 0, 0, 0, 0, false
+		}
+		h, word = child, childWord
+	}
+	n := (*leafRoute)(unsafe.Pointer(h))
+	count := int(*(*int32)(unsafe.Pointer(&n.count)))
+	p := int(*(*int32)(unsafe.Pointer(&n.prefix)))
+	if count < 0 || count > nodeSize || p > 16 {
+		return nil, 0, 0, 0, 0, false
+	}
+	h0, h1 := *(*uint64)(unsafe.Pointer(&n.head[0])), *(*uint64)(unsafe.Pointer(&n.head[1]))
+	acc = uint64(count) ^ uint64(p)<<8 ^ h0 ^ h1<<1
+	if len(s) < p || headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) != 0 {
+		return h, word, 0, orderedAbsent, acc, true
+	}
+	if len(s) > p+16 {
+		return nil, 0, 0, 0, 0, false
+	}
+	code := stringCode(s, p)
+	lo = lowerCode(&n.codes, count, code)
+	c := n.codes[lo&(nodeSize-1)]
+	acc ^= uint64(lo)<<40 ^ c
+	if lo < count && c == code {
+		return h, word, lo, orderedCode, acc, true
+	}
+	return h, word, lo, orderedAbsent, acc, true
+}
+
 // descendTextBy is descendText by calls to the search kernels.
 func descendTextBy(h *gheader, s string) (*gheader, int, int) {
 	for !h.leaf {

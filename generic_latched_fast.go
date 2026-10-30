@@ -64,6 +64,48 @@ func (t *genericTree[K, V, O]) textLeafOrdered(key K) (*gleaf[K, V], uint64, boo
 	return nil, 0, false
 }
 
+// getTextOrdered is get through descendTextOrdered: where its code is
+// key's, the slot's tail and length settle key there, as readTextLeaf's
+// do, and its value is copied before the leaf's closing check, which the
+// words read feed. false where it can't settle.
+func (t *genericTree[K, V, O]) getTextOrdered(key K) (value V, found, ok bool) {
+	s := textView(&key)
+	h, word, lo, state, acc, ok := descendTextOrdered((**gheader)(unsafe.Pointer(&t.root)), s)
+	if !ok {
+		return value, false, false
+	}
+	n := asLeaf[K, V](h)
+	if state == orderedCode {
+		p := int(*(*int32)(unsafe.Pointer(&n.prefix)))
+		tail, fast := fastWindow(s, p+8)
+		if !fast {
+			tail = stringCode(s, p+8)
+		}
+		slot := n.text().slots[lo&(nodeSize-1)]
+		acc ^= slot.tail<<3 ^ slot.ref<<5
+		if slot.tail != tail || refLen(slot.ref) != len(s) {
+			// Another key of the same code: key may follow it.
+			return value, false, false
+		}
+		found = true
+		value = n.values[lo&(nodeSize-1)]
+		if unsafe.Sizeof(value) == 8 {
+			acc ^= *(*uint64)(unsafe.Pointer(&value))
+		} else {
+			loadFence()
+		}
+	}
+	closing := *after((*uint64)(unsafe.Pointer(&n.latch)), acc)
+	if closing&^latchSharedMask != word&^latchSharedMask {
+		return value, false, false
+	}
+	if !found {
+		var zero V
+		return zero, false, true
+	}
+	return value, true, true
+}
+
 // readTextLeaf settles text key in leaf n, whose latch word the caller
 // read: its value and whether key is there, or false where it can't. A
 // lookup needs only equality: key, if it has the leaf's prefix and fits its

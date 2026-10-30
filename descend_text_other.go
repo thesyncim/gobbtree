@@ -7,6 +7,15 @@ package gobbtree
 // slot and what it found there, a text constant.
 func descendText(h *gheader, s string) (*gheader, int, int) { return descendTextBy(h, s) }
 
+// descendTextOrdered descends a racing reader's text tree by s, as
+// textLeafOrdered does, and searches the leaf by its code, as readTextLeaf
+// does: the leaf, its latch word, the slot, what it found there, and the
+// words read of the leaf, for the caller's closing check; false where it
+// can't settle.
+func descendTextOrdered(root **gheader, s string) (*gheader, uint64, int, int, uint64, bool) {
+	return descendTextOrderedBy(root, s)
+}
+
 // hintedCode settles code through r's hint in an owner's tree, with plain
 // loads: the leaf the hint names, code's slot there and whether code is
 // there, settled where the leaf holds it or it lies between the leaf's

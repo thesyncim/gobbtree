@@ -1228,10 +1228,8 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 	}
 	if optimisticText[O, K]() {
 		// The ordered lookup needs no code; a nil root fails it.
-		if n, word, ok := t.textLeafOrdered(key); ok {
-			if value, found, ok := t.readTextLeaf(n, word, key); ok {
-				return value, found
-			}
+		if value, found, ok := t.getTextOrdered(key); ok {
+			return value, found
 		}
 	}
 	if seqlockPlainStores && t.wordCodes() {

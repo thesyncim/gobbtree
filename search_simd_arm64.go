@@ -193,6 +193,93 @@ func hintedCode(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, 
 	return h, i, false, true
 }
 
+// descendTextOrdered descends a racing reader's text tree by s, as
+// textLeafOrdered does, and searches the leaf by its code, as readTextLeaf
+// does: the leaf, its latch word, the slot, what it found there, and the
+// words read of the leaf, for the caller's closing check; false where it
+// can't settle. Summaries and codes are counted inline, as descendText
+// counts them: a call per level spills the descent's registers.
+func descendTextOrdered(root **gheader, s string) (h *gheader, word uint64, lo, state int, acc uint64, ok bool) {
+	if simd.Emulated() {
+		return descendTextOrderedBy(root, s)
+	}
+	h = *root
+	if h == nil {
+		return nil, 0, 0, 0, 0, false
+	}
+	word = h.latch.Load()
+	if *after(root, word) != h {
+		return nil, 0, 0, 0, 0, false
+	}
+	for depth := 0; ; depth++ {
+		if word&latchExclusive != 0 || depth == maxDepth {
+			return nil, 0, 0, 0, 0, false
+		}
+		if h.leaf {
+			break
+		}
+		n := (*innerRoute)(unsafe.Pointer(h))
+		count := int(*(*int32)(unsafe.Pointer(&n.count)))
+		if count < 1 || count > nodeSize {
+			return nil, 0, 0, 0, 0, false
+		}
+		p := int(*(*int32)(unsafe.Pointer(&n.prefix)))
+		sum := summaryOf(s, p)
+		sums := (*[nodeSize]uint32)(unsafe.Pointer(&n.codes))
+		target := archsimd.BroadcastUint32x4(sum)
+		ca := countEight32((*[8]uint32)(sums[0:8]), target)
+		cb := countEight32((*[8]uint32)(sums[8:16]), target)
+		cc := countEight32((*[8]uint32)(sums[16:24]), target)
+		cd := countEight32((*[8]uint32)(sums[24:32]), target)
+		i := max(min(-int(ca.Add(cb).Add(cc.Add(cd)).ReduceSum()), count)-1, 0)
+		// The summaries that bracket the route prove it in the snapshot
+		// the closing check vouches for; one equal to key's is a tie.
+		below, next := sums[i&(nodeSize-1)], sums[(i+1)&(nodeSize-1)]
+		if i > 0 && below >= sum || i+1 < count && next <= sum {
+			return nil, 0, 0, 0, 0, false
+		}
+		a := uint64(i) ^ uint64(count) ^ uint64(p)<<8 ^ uint64(below)<<16 ^ uint64(next)<<32
+		child := *after((**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)])), a)
+		if child == nil {
+			return nil, 0, 0, 0, 0, false
+		}
+		childWord := child.latch.Load()
+		if *after((*uint64)(unsafe.Pointer(&h.latch)), a^childWord^uint64(uintptr(unsafe.Pointer(child))))&^latchSharedMask != word&^latchSharedMask {
+			return nil, 0, 0, 0, 0, false
+		}
+		h, word = child, childWord
+	}
+	n := (*leafRoute)(unsafe.Pointer(h))
+	count := int(*(*int32)(unsafe.Pointer(&n.count)))
+	p := int(*(*int32)(unsafe.Pointer(&n.prefix)))
+	if count < 0 || count > nodeSize || p > 16 {
+		return nil, 0, 0, 0, 0, false
+	}
+	h0, h1 := *(*uint64)(unsafe.Pointer(&n.head[0])), *(*uint64)(unsafe.Pointer(&n.head[1]))
+	acc = uint64(count) ^ uint64(p)<<8 ^ h0 ^ h1<<1
+	// Key has the leaf's prefix where its first p bytes are the head's.
+	if len(s) < p || headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) != 0 {
+		return h, word, 0, orderedAbsent, acc, true
+	}
+	if len(s) > p+16 {
+		return nil, 0, 0, 0, 0, false
+	}
+	code := stringCode(s, p)
+	target := archsimd.BroadcastUint64x2(code)
+	ca := countEight((*[8]uint64)(n.codes[0:8]), target)
+	cb := countEight((*[8]uint64)(n.codes[8:16]), target)
+	cc := countEight((*[8]uint64)(n.codes[16:24]), target)
+	cd := countEight((*[8]uint64)(n.codes[24:32]), target)
+	sum := ca.Add(cb).Add(cc.Add(cd))
+	lo = min(-int(sum.GetElem(0)+sum.GetElem(1)), count)
+	c := n.codes[lo&(nodeSize-1)]
+	acc ^= uint64(lo)<<40 ^ c
+	if lo < count && c == code {
+		return h, word, lo, orderedCode, acc, true
+	}
+	return h, word, lo, orderedAbsent, acc, true
+}
+
 // countEightAtMost is countEight counting keys no greater than target.
 func countEightAtMost(keys *[8]uint64, target archsimd.Uint64x2) archsimd.Int64x2 {
 	a := archsimd.LoadUint64x2(keys[0:2]).LessEqual(target).ToInt64x2()
