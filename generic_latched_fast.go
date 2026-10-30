@@ -283,6 +283,14 @@ func (t *genericTree[K, V, O]) getMany8(keys *[batchLanes]K, dst *[batchLanes]Re
 	}
 }
 
+// pushCode puts code, a key its codes hold whole, and value last in leaf n,
+// of count entries and room: nothing shifts.
+func (n *gleaf[K, V]) pushCode(count int, code uint64, value V) {
+	i := count & (nodeSize - 1)
+	n.codes[i], n.tags[i], n.values[i] = code, uint8(code), value
+	n.count.Store(int32(count + 1))
+}
+
 // appendTail is insert of key, past every key the tree holds, into its
 // rightmost leaf, as appends make the next key: the leaf t.tail names,
 // where it still has no high fence, and so is the rightmost, and holds a
@@ -327,9 +335,7 @@ func (t *genericTree[K, V, O]) appendTail(key K, code uint64, value V) (done boo
 		return false, nil
 	}
 	if t.wholeCodes() {
-		// Last: nothing shifts.
-		n.codes[count], n.tags[count], n.values[count] = code, uint8(code), value
-		n.count.Store(int32(count + 1))
+		n.pushCode(count, code, value)
 	} else {
 		t.insertEntry(n, count, key, value)
 	}

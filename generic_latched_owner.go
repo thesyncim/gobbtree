@@ -202,9 +202,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i in
 					// follow its growth here, as a descent's would.
 					currentHints(&t.hints, &t.making, &t.reshaped, plainPointer(&t.root))
 				case t.wholeCodes():
-					// Last: nothing shifts.
-					n.codes[count&(nodeSize-1)], n.tags[count&(nodeSize-1)], n.values[count&(nodeSize-1)] = code, uint8(code), value
-					n.count.Store(int32(count + 1))
+					n.pushCode(count, code, value)
 				default:
 					t.insertEntry(n, count, key, value)
 				}

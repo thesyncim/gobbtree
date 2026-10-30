@@ -1,6 +1,7 @@
 package gobbtree
 
 import (
+	"math/rand/v2"
 	"testing"
 	"unsafe"
 )
@@ -83,6 +84,42 @@ func fillRegions(r *codeHints, n *innerRoute, low, high uint64, f *hintFrame) {
 		}
 		if key+step < key {
 			return
+		}
+	}
+}
+
+// TestCellIDPicksTheLastCutBelow checks cellID against the cuts compared
+// one by one, for cells as store packs them: cuts in order, unused ones
+// 1023, and unused IDs the last one's.
+func TestCellIDPicksTheLastCutBelow(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	for range 20000 {
+		n := 1 + rng.IntN(4)
+		ids := [4]uint64{}
+		cuts := [3]uint64{1023, 1023, 1023}
+		for i := range ids {
+			ids[i] = uint64(rng.IntN(hintIDMask + 1))
+		}
+		for i := n; i < 4; i++ {
+			ids[i] = ids[n-1]
+		}
+		prev := uint64(0)
+		for i := 1; i < n; i++ {
+			prev += uint64(rng.IntN(int(1024 - prev)))
+			cuts[i-1] = prev
+		}
+		head := ids[0] | ids[1]<<24 | cuts[0]<<48 | (cuts[1]&63)<<58
+		tail := ids[2] | ids[3]<<24 | (cuts[1]>>6)<<48 | cuts[2]<<52
+		for q := uint64(0); q < 1024; q++ {
+			want := ids[0]
+			for i, cut := range cuts {
+				if q >= cut {
+					want = ids[i+1]
+				}
+			}
+			if got := cellID(head, tail, q); got != want {
+				t.Fatalf("ids %v cuts %v q %d: %d, want %d", ids, cuts, q, got, want)
+			}
 		}
 	}
 }

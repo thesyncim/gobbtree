@@ -158,16 +158,7 @@ func hintedCode(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, 
 	if r.shift >= 10 {
 		q = code >> (r.shift - 10) & 1023
 	}
-	id := head & hintIDMask
-	if q >= head>>48&1023 {
-		id = head >> 24 & hintIDMask
-	}
-	if q >= head>>58|(tail>>48&15)<<6 {
-		id = tail & hintIDMask
-	}
-	if q >= tail>>52&1023 {
-		id = tail >> 24 & hintIDMask
-	}
+	id := cellID(head, tail, q)
 	blocks := plainPointer(&d.blocks)
 	if blocks == nil || id/leafBlock >= uint64(len(*blocks)) {
 		return nil, 0, false, false

@@ -246,22 +246,7 @@ func (r *codeHints) hintedLeaf(d *leafDir, code uint64) *gheader {
 	if head <= hintDescend {
 		return nil
 	}
-	q := r.fraction(code)
-	id := head & hintIDMask
-	if q >= head>>48&1023 {
-		id = head >> 24 & hintIDMask
-	}
-	if q >= head>>58|(tail>>48&15)<<6 {
-		id = tail & hintIDMask
-	}
-	if q >= tail>>52&1023 {
-		id = tail >> 24 & hintIDMask
-	}
-	blocks := plainPointer(&d.blocks)
-	if blocks == nil || id/leafBlock >= uint64(len(*blocks)) {
-		return nil
-	}
-	return (*gheader)(unsafe.Add((*blocks)[id/leafBlock], uintptr(id%leafBlock)*d.stride))
+	return d.leaf(uint32(cellID(head, tail, r.fraction(code))))
 }
 
 // hintedCodeBy is hintedCode by calls to its parts.
@@ -289,7 +274,14 @@ func (r *codeHints) hintID(code uint64) uint32 {
 	if head <= hintDescend {
 		return 0
 	}
-	q := r.fraction(code)
+	return uint32(cellID(head, tail, r.fraction(code)))
+}
+
+// cellID is the ID of the leaf a cell of head and tail names for a key at
+// fraction q of its region: the last whose start is at most q. Most cells
+// name one leaf or two, so the core predicts these branches and goes on;
+// selects, which wait for every cut, measured slower.
+func cellID(head, tail, q uint64) uint64 {
 	id := head & hintIDMask
 	if q >= head>>48&1023 {
 		id = head >> 24 & hintIDMask
@@ -300,7 +292,7 @@ func (r *codeHints) hintID(code uint64) uint32 {
 	if q >= tail>>52&1023 {
 		id = tail >> 24 & hintIDMask
 	}
-	return uint32(id)
+	return id
 }
 
 // settleCode is hintedCode's search of the leaf h its hint named.
