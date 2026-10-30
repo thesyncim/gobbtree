@@ -94,6 +94,17 @@ func (p *gpath[K]) separatorLevel() int {
 	return -1
 }
 
+// unchanged reports whether path's nodes from level down are as its
+// descent read them, for a racing reader that read through them since.
+func (p *gpath[K]) unchanged(level int) bool {
+	for l := level; l < p.depth; l++ {
+		if !p.levels[l].n.latch.isUnchanged(p.levels[l].version) {
+			return false
+		}
+	}
+	return true
+}
+
 // takePromotion takes what promoting the separator at level of path
 // changes: the path's nodes from it down, and the right border, leaf
 // included, of the subtree left of the separator.

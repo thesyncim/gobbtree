@@ -92,28 +92,44 @@ func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V)
 			keys[count], values[count] = k, n.values[i]
 			count++
 		}
-		// The leaf's low fence: its first key, its head where it keeps one,
-		// none for the leftmost leaf, which no path turns right to. Keys
-		// their codes hold whole take their separator's code, which may
-		// lie below the first key; the leaf, held, keeps it a fence.
-		var low *K
-		if level := path.separatorLevel(); level >= 0 && n.count.Load() > 0 {
-			k := t.firstKey(n)
-			if t.wholeCodes() {
-				l := &path.levels[level]
-				k = t.decode(l.n.codes[l.edge&(nodeSize-1)].Load())
-			}
-			low = &k
-		}
+		low, more := t.walkLow(n, &path)
 		n.latch.unlockShared()
 		for i := 0; i < count; i++ {
 			if !visit(keys[i], values[i]) {
 				return
 			}
 		}
-		if done || low == nil {
+		if done || !more {
 			return
 		}
-		seek, below, strict, fenced = seekKey, *low, true, true
+		seek, below, strict, fenced = seekKey, low, true, true
 	}
+}
+
+// walkLow is the low fence of leaf n, held, which path leads to: its first
+// key, its head where it keeps one, and none for the leftmost leaf, which
+// no path turns right to. Keys their codes hold whole take their
+// separator's code, which may lie below the first key. The leaf, held,
+// keeps the separator's code, but not where the path found it: a writer
+// splitting or merging a node above moves it, and the node's slot then
+// holds another's. Where a node of the path from the separator's down
+// changed since the descent, the walk goes on from the first key, as a
+// forward walk does from its last.
+func (t *genericTree[K, V, O]) walkLow(n *gleaf[K, V], path *gpath[K]) (K, bool) {
+	var k K
+	level := path.separatorLevel()
+	if level < 0 {
+		return k, false
+	}
+	if t.wholeCodes() {
+		l := &path.levels[level]
+		k = t.decode(l.n.codes[l.edge&(nodeSize-1)].Load())
+		if t.owner || path.unchanged(level) {
+			return k, true
+		}
+	}
+	if n.count.Load() == 0 {
+		return k, false
+	}
+	return t.firstKey(n), true
 }

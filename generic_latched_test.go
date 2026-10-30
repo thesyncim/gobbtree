@@ -1028,6 +1028,47 @@ func TestSeparatorPromotion(t *testing.T) {
 	}
 }
 
+// TestWalkLowAfterSplitBeside reads a reverse walk's low fence after a
+// writer split the leaf left of the walk's, which the walk holds: the
+// parent's slot the path names then holds the new leaf's separator, below
+// the walk's leaf, and a walk going on from it skips the new leaf's keys.
+func TestWalkLowAfterSplitBeside(t *testing.T) {
+	m := New[uint64, uint64]()
+	for i := uint64(0); i < 4*nodeSize*nodeSize; i++ {
+		m.Insert(16*i, i)
+	}
+	g := &m.generic
+	key := uint64(16 * 2 * nodeSize * nodeSize)
+	var path gpath[uint64]
+	n, _ := g.descend(key, g.code(key), seekKey, false, shared, &path)
+	level := path.depth - 1
+	parent, edge := path.levels[level].n, path.levels[level].edge
+	if edge == 0 {
+		n.latch.unlockShared()
+		t.Fatal("the leaf is its parent's first")
+	}
+	want := parent.codes[edge].Load()
+	first := g.key(asLeaf[uint64, uint64](parent.children[edge-1].Load()), 0)
+	// Keys of the left leaf split it, the walk's leaf held.
+	for k := first + 1; parent.children[edge].Load() == &n.gheader; k++ {
+		if k >= want {
+			n.latch.unlockShared()
+			t.Fatal("the left leaf never split")
+		}
+		m.Insert(k, k)
+	}
+	if parent.codes[edge].Load() >= want {
+		n.latch.unlockShared()
+		t.Fatal("the slot still holds the leaf's separator")
+	}
+	low, ok := g.walkLow(n, &path)
+	n.latch.unlockShared()
+	if !ok || low < want {
+		t.Fatalf("low fence %d (%v), the leaf's separator %d", low, ok, want)
+	}
+	checkMap(t, &m.mapCore)
+}
+
 // TestWholeSeparatorsSurviveRefits keeps the separators of whole codes, which
 // stay when the first key below them goes, through their node's split: a
 // refit that took them from the leaves' first keys again would raise them
