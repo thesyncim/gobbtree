@@ -131,6 +131,46 @@ def main():
                 rows.append(f"| {kind.title()} | {label} | " + " | ".join(cells) + " |")
         return rows
 
+    def summary():
+        """What the report says, counted from it: the timings each side
+        wins, the builds' and peaks' ranges, and the byte-string cells."""
+        times = [(p, size, kind, case) for p, _, _ in patterns for size in SIZES
+                 for kind in ("tree", "map") for case, _ in cases[kind]]
+        lost = [(p, size, kind, case) for p, size, kind, case in times
+                if time(p, size, kind, "go", case) > time(p, size, kind, "rust", case)]
+        names = dict(CASES)
+        if lost:
+            losses = "; ".join(f"{kind.title()} {names[case].lower()} at {dict(zip(SIZES, LABELS))[size]} {p} keys"
+                               for p, size, kind, case in lost[:4])
+            more = f", and {len(lost) - 4} more" if len(lost) > 4 else ""
+            line = (f"gobbtree is faster in {len(times) - len(lost)} of the {len(times)} `uint64` timings below; "
+                    f"Rust wins {losses}{more}.")
+        else:
+            line = f"gobbtree is faster in every one of the {len(times)} `uint64` timings below."
+        builds = [memory(p, size, kind, "rust", "build") / memory(p, size, kind, "go", "build")
+                  for p, _, _ in patterns for size in SIZES for kind in ("tree", "map")]
+        slower = sum(1 for r in builds if r < 1)
+        line += (f" Go builds faster in {len(builds) - slower} of {len(builds)} build cells, at "
+                 f"{min(builds):.2f}× to {max(builds):.2f}× Rust's speed.")
+        peaks = {size: [memory(p, size, kind, "go", "peak") - memory(p, size, kind, "rust", "peak")
+                        for p, _, _ in patterns for kind in ("tree", "map")] for size in SIZES}
+        parts = []
+        for size, label in zip(SIZES, LABELS):
+            lo, hi = min(peaks[size]), max(peaks[size])
+            if hi <= 0:
+                parts.append(f"{abs(hi):.1f}–{abs(lo):.1f} MB lower at {label}")
+            elif lo >= 0:
+                parts.append(f"{lo:.1f}–{hi:.1f} MB higher at {label}")
+            else:
+                parts.append(f"from {abs(lo):.1f} MB lower to {hi:.1f} MB higher at {label}")
+        line += " Go's process peaks " + ", ".join(parts) + " entries, against Rust's."
+        lines = [line]
+        if texts:
+            cells = [(size, name) for size, language, name in texts if language == "go" and (size, "rust", name) in texts]
+            won = sum(1 for size, name in cells if median(texts[size, "go", name]) < median(texts[size, "rust", name]))
+            lines += ["", f"With byte-string keys, Go `Bytes` against Rust `String`, Go wins {won} of {len(cells)} cells."]
+        return lines
+
     described = [f"{heading.lower()} ({PATTERN_NOTES[pattern]})" for pattern, heading, _ in patterns]
     described = ", ".join(described[:-1]) + " and " + described[-1] if len(described) > 1 else described[0]
     text = ["## Benchmarks", "",
@@ -140,12 +180,7 @@ def main():
             f"Rust {rust_version} with native CPU tuning, full LTO and mimalloc at "
             f"[`{rust_short}`](https://github.com/XiangpengHao/bbtree/tree/{rust_source}). "
             "Each cell is the median of three fresh-process runs over identical keys, with checked results.", "",
-            # This summary describes the checked-in report; revise it with a new one.
-            "gobbtree is faster in every `uint64` timing below. Building `uint64` maps is faster in Rust at 4K entries, "
-            "and 1.4× faster for the sequential `Tree` at 262K and 5M; Go builds clustered keys 1.5–2.3× faster from 262K up, "
-            "and the other builds are within 20% either way. "
-            "Go's process peaks 1.4–3.6 MB higher at 4K and 262K entries, and lower from 5M up. "
-            "With string keys Rust still wins 14 of 22 cells, among them every build and most of the `Map`'s.", "",
+            *summary(), "",
             f"The tables cover `uint64` keys and values from 4K to 50M entries, with {described}. "
             "Batch cells are per key, churn cells per delete-and-insert pair, and parallel cells use four workers.", ""]
     for pattern, heading, _ in patterns:
@@ -259,10 +294,10 @@ def string_key_section(texts):
     """The string-keyed cells: Go / Rust ns/op and Go's change, per size."""
     sizes = sorted({entries for entries, _, _ in texts})
     labels = {s: l for s, l in zip(SIZES, LABELS)}
-    rows = ["<details>", "<summary>String keys — Go / Rust, ns/op</summary>", "",
-            "Go `string` keys against Rust `String`s, each a mixed key written as `user:` and 16 hex digits, "
-            "with `uint64` values. Rust's containers move in keys made before the timed build; Go's copy each "
-            "key's bytes into their leaves. Rust replaces values with `update` and `get_mut`, and its churn "
+    rows = ["<details>", "<summary>Byte-string keys — Go / Rust, ns/op</summary>", "",
+            "Go `Bytes` keys, byte slices a program can reuse, against Rust `String`s, each a mixed key written "
+            "as `user:` and 16 hex digits, with `uint64` values. Rust's containers move in keys made before the "
+            "timed build; Go's copy each key's bytes into their leaves. Rust replaces values with `update` and `get_mut`, and its churn "
             "reinserts the key its removal returned. In parentheses, Go's time against Rust's: negative is faster.", "",
             "| Workload | " + " | ".join(f"{labels.get(s, s)}" for s in sizes) + " |",
             "|---|" + "---:|" * len(sizes)]
