@@ -30,11 +30,13 @@ func SIMD() (hardware bool, bits int) { return !simd.Emulated(), simd.VectorBitS
 
 // Four compares reduce in a balanced tree. Fixed slices let the compiler
 // emit constant-offset loads without a loop, bounds checks, or index arithmetic.
+// The kernels call the load and compare intrinsics themselves, not their
+// slice and Less wrappers: each wrapper inlined leaves a no-op behind.
 func countEight(keys *[8]uint64, target archsimd.Uint64x2) archsimd.Int64x2 {
-	a := archsimd.LoadUint64x2(keys[0:2]).Less(target).ToInt64x2()
-	b := archsimd.LoadUint64x2(keys[2:4]).Less(target).ToInt64x2()
-	c := archsimd.LoadUint64x2(keys[4:6]).Less(target).ToInt64x2()
-	d := archsimd.LoadUint64x2(keys[6:8]).Less(target).ToInt64x2()
+	a := target.Greater(archsimd.LoadUint64x2Array((*[2]uint64)(keys[0:2]))).ToInt64x2()
+	b := target.Greater(archsimd.LoadUint64x2Array((*[2]uint64)(keys[2:4]))).ToInt64x2()
+	c := target.Greater(archsimd.LoadUint64x2Array((*[2]uint64)(keys[4:6]))).ToInt64x2()
+	d := target.Greater(archsimd.LoadUint64x2Array((*[2]uint64)(keys[6:8]))).ToInt64x2()
 	return a.Add(b).Add(c.Add(d))
 }
 
@@ -174,10 +176,10 @@ func hintedCode(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, 
 	n := (*leafRoute)(unsafe.Pointer(h))
 	count := owned(&n.count)
 	target := archsimd.BroadcastUint8x16(uint8(code))
-	ta := archsimd.LoadUint8x16(n.tags[:16]).Equal(target).ToInt8x16().ToBits()
-	tb := archsimd.LoadUint8x16(n.tags[16:]).Equal(target).ToInt8x16().ToBits()
-	pa := archsimd.LoadUint8x16(tagPositions[:16]).OrNot(ta)
-	pb := archsimd.LoadUint8x16(tagPositions[16:]).OrNot(tb)
+	ta := archsimd.LoadUint8x16Array((*[16]uint8)(n.tags[:16])).Equal(target).ToInt8x16().ToBits()
+	tb := archsimd.LoadUint8x16Array((*[16]uint8)(n.tags[16:])).Equal(target).ToInt8x16().ToBits()
+	pa := archsimd.LoadUint8x16Array((*[16]uint8)(tagPositions[:16])).OrNot(ta)
+	pb := archsimd.LoadUint8x16Array((*[16]uint8)(tagPositions[16:])).OrNot(tb)
 	i = min(int(pa.Min(pb).ReduceMin()), count)
 	if i < count && n.codes[i&(nodeSize-1)] == code {
 		return h, i, true, true
@@ -285,16 +287,16 @@ func descendTextOrdered(root **gheader, s string) (h *gheader, word uint64, lo, 
 
 // countEightAtMost is countEight counting keys no greater than target.
 func countEightAtMost(keys *[8]uint64, target archsimd.Uint64x2) archsimd.Int64x2 {
-	a := archsimd.LoadUint64x2(keys[0:2]).LessEqual(target).ToInt64x2()
-	b := archsimd.LoadUint64x2(keys[2:4]).LessEqual(target).ToInt64x2()
-	c := archsimd.LoadUint64x2(keys[4:6]).LessEqual(target).ToInt64x2()
-	d := archsimd.LoadUint64x2(keys[6:8]).LessEqual(target).ToInt64x2()
+	a := target.GreaterEqual(archsimd.LoadUint64x2Array((*[2]uint64)(keys[0:2]))).ToInt64x2()
+	b := target.GreaterEqual(archsimd.LoadUint64x2Array((*[2]uint64)(keys[2:4]))).ToInt64x2()
+	c := target.GreaterEqual(archsimd.LoadUint64x2Array((*[2]uint64)(keys[4:6]))).ToInt64x2()
+	d := target.GreaterEqual(archsimd.LoadUint64x2Array((*[2]uint64)(keys[6:8]))).ToInt64x2()
 	return a.Add(b).Add(c.Add(d))
 }
 
 func countEight32(keys *[8]uint32, target archsimd.Uint32x4) archsimd.Int32x4 {
-	a := archsimd.LoadUint32x4(keys[0:4]).Less(target).ToInt32x4()
-	b := archsimd.LoadUint32x4(keys[4:8]).Less(target).ToInt32x4()
+	a := target.Greater(archsimd.LoadUint32x4Array((*[4]uint32)(keys[0:4]))).ToInt32x4()
+	b := target.Greater(archsimd.LoadUint32x4Array((*[4]uint32)(keys[4:8]))).ToInt32x4()
 	return a.Add(b)
 }
 
@@ -305,10 +307,10 @@ func firstTag(tags *[nodeSize]uint8, n int, key uint64) int {
 		return firstTagScalar(tags, n, uint8(key))
 	}
 	target := archsimd.BroadcastUint8x16(uint8(key))
-	a := archsimd.LoadUint8x16(tags[:16]).Equal(target).ToInt8x16().ToBits()
-	b := archsimd.LoadUint8x16(tags[16:]).Equal(target).ToInt8x16().ToBits()
-	pa := archsimd.LoadUint8x16(tagPositions[:16]).OrNot(a)
-	pb := archsimd.LoadUint8x16(tagPositions[16:]).OrNot(b)
+	a := archsimd.LoadUint8x16Array((*[16]uint8)(tags[:16])).Equal(target).ToInt8x16().ToBits()
+	b := archsimd.LoadUint8x16Array((*[16]uint8)(tags[16:])).Equal(target).ToInt8x16().ToBits()
+	pa := archsimd.LoadUint8x16Array((*[16]uint8)(tagPositions[:16])).OrNot(a)
+	pb := archsimd.LoadUint8x16Array((*[16]uint8)(tagPositions[16:])).OrNot(b)
 	i := int(pa.Min(pb).ReduceMin())
 	return min(i, n)
 }
