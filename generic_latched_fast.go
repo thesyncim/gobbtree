@@ -106,69 +106,6 @@ func (t *genericTree[K, V, O]) getTextOrdered(key K) (value V, found, ok bool) {
 	return value, true, true
 }
 
-// readTextLeaf settles text key in leaf n, whose latch word the caller
-// read: its value and whether key is there, or false where it can't. A
-// lookup needs only equality: key, if it has the leaf's prefix and fits its
-// windows, is there exactly where a slot's code, tail and length are its.
-// A word-sized value feeds the closing check's address; a wider one is
-// ordered before it by a load fence.
-func (t *genericTree[K, V, O]) readTextLeaf(n *gleaf[K, V], word uint64, key K) (value V, found, ok bool) {
-	if word&latchExclusive != 0 {
-		return value, false, false
-	}
-	m := n
-	count := int(*(*int32)(unsafe.Pointer(&m.count)))
-	p := int(*(*int32)(unsafe.Pointer(&m.prefix)))
-	if count < 0 || count > nodeSize || p > 16 {
-		return value, false, false
-	}
-	s := textView(&key)
-	h0 := *(*uint64)(unsafe.Pointer(&m.head[0]))
-	h1 := *(*uint64)(unsafe.Pointer(&m.head[1]))
-	acc := uint64(count) ^ uint64(p)<<8 ^ h0 ^ h1<<1
-	// Key has the leaf's prefix where its first p bytes are the head's.
-	shares := len(s) >= p && headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) == 0
-	if shares {
-		code := stringCode(s, p)
-		tail, fast := fastWindow(s, p+8)
-		if !fast {
-			tail = stringCode(s, p+8)
-		}
-		if len(s) > p+16 {
-			// Too long to settle by windows.
-			return value, false, false
-		}
-		lo := lowerCode(&m.codes, count, code) & (nodeSize - 1)
-		c := m.codes[lo]
-		text := m.text()
-		slotTail, slotRef := text.slots[lo].tail, text.slots[lo].ref
-		acc ^= uint64(lo)<<40 ^ c ^ slotTail<<3 ^ slotRef<<5
-		// A slot past the count holds the padding, a code a key may share.
-		if lo < count && c == code {
-			if slotTail != tail || refLen(slotRef) != len(s) {
-				// Another key of the same code: key may follow it.
-				return value, false, false
-			}
-			found = true
-			value = m.values[lo]
-			if unsafe.Sizeof(value) == 8 {
-				acc ^= *(*uint64)(unsafe.Pointer(&value))
-			} else {
-				loadFence()
-			}
-		}
-	}
-	closing := *after((*uint64)(unsafe.Pointer(&n.latch)), acc)
-	if closing&^latchSharedMask != word&^latchSharedMask {
-		return value, false, false
-	}
-	if !found {
-		var zero V
-		return zero, false, true
-	}
-	return value, true, true
-}
-
 // codeLeafOrdered is textLeafOrdered for keys that codes order exactly,
 // by code, from the root at root: an internal node's codes are its
 // separators', its first 0, and its route the last child whose separator
