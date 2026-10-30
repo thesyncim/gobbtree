@@ -259,7 +259,7 @@ func descendTextOrdered(root **gheader, s string) (h *gheader, word uint64, lo, 
 	acc = uint64(count) ^ uint64(p)<<8 ^ h0 ^ h1<<1
 	// Key has the leaf's prefix where its first p bytes are the head's.
 	if len(s) < p || headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) != 0 {
-		return h, word, 0, orderedAbsent, acc, true
+		return h, word, 0, orderedOutside, acc, true
 	}
 	if len(s) > p+16 {
 		return nil, 0, 0, 0, 0, false

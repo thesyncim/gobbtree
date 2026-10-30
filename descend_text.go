@@ -76,11 +76,13 @@ func descendCodeBy(h *gheader, code uint64, place bool) (*gheader, int, bool) {
 	return h, i, ok
 }
 
-// What descendTextOrdered finds in its leaf: key's code at the slot, or no
-// code of key's there or key lacking the leaf's prefix, so key absent.
+// What descendTextOrdered finds in its leaf: key's code at the slot; no
+// code of key's, key absent and its place the slot; or key lacking the
+// leaf's prefix, key absent, with no place there.
 const (
 	orderedCode = iota
 	orderedAbsent
+	orderedOutside
 )
 
 // descendTextOrderedBy is descendTextOrdered by calls to the search
@@ -134,7 +136,7 @@ func descendTextOrderedBy(root **gheader, s string) (h *gheader, word uint64, lo
 	h0, h1 := *(*uint64)(unsafe.Pointer(&n.head[0])), *(*uint64)(unsafe.Pointer(&n.head[1]))
 	acc = uint64(count) ^ uint64(p)<<8 ^ h0 ^ h1<<1
 	if len(s) < p || headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) != 0 {
-		return h, word, 0, orderedAbsent, acc, true
+		return h, word, 0, orderedOutside, acc, true
 	}
 	if len(s) > p+16 {
 		return nil, 0, 0, 0, 0, false

@@ -496,21 +496,45 @@ func (t *genericTree[K, V, O]) seekText(n *gleaf[K, V], word uint64, key K) (i i
 	return hi, false, true
 }
 
+// seekTextOrdered is key's leaf by descendTextOrdered, its latch word and
+// key's slot there, and whether key is there: settled by windows, as
+// seekText settles it, false where they don't settle it or key lacks the
+// leaf's prefix. The slot's tail and length settle a code of key's; a
+// compare-and-swap at the word makes the search hold.
+func (t *genericTree[K, V, O]) seekTextOrdered(key K) (n *gleaf[K, V], word uint64, i int, found, ok bool) {
+	s := textView(&key)
+	h, word, lo, state, _, ok := descendTextOrdered((**gheader)(unsafe.Pointer(&t.root)), s)
+	if !ok || state == orderedOutside || word&(latchExclusive|latchSharedMask) != 0 {
+		return nil, 0, 0, false, false
+	}
+	n = asLeaf[K, V](h)
+	if state == orderedAbsent {
+		return n, word, lo, false, true
+	}
+	p := int(*(*int32)(unsafe.Pointer(&n.prefix)))
+	tail, fast := fastWindow(s, p+8)
+	if !fast {
+		tail = stringCode(s, p+8)
+	}
+	if slot := n.text().slots[lo&(nodeSize-1)]; slot.tail == tail && refLen(slot.ref) == len(s) {
+		return n, word, lo, true, true
+	}
+	// Another key of key's code: the windows order them.
+	i, found, ok = t.seekText(n, word, key)
+	return n, word, i, found, ok
+}
+
 // insertText is insert of text key through the ordered descent, for a
 // policy that runs no user code: its leaf is searched by windows, then
 // taken at the word the descent read, and changed where the search found
 // key, or room for it. done is false where it can't settle; full, where
 // the leaf it settled in is full, for the caller to split it.
 func (t *genericTree[K, V, O]) insertText(key K, value V, policy int) (old V, found, done, full bool) {
-	n, word, ok := t.textLeafOrdered(key)
-	if !ok || word&(latchExclusive|latchSharedMask) != 0 {
-		return old, false, false, false
-	}
-	i, found, ok := t.seekText(n, word, key)
+	n, word, i, found, ok := t.seekTextOrdered(key)
 	if !ok {
 		return old, false, false, false
 	}
-	if !found && int(*(*int32)(unsafe.Pointer(&after(n, word).count))) == nodeSize {
+	if !found && int(*(*int32)(unsafe.Pointer(&n.count))) == nodeSize {
 		return old, false, false, true
 	}
 	if !n.latch.tryLockAt(word) {
@@ -534,11 +558,7 @@ func (t *genericTree[K, V, O]) insertText(key K, value V, policy int) (old V, fo
 // holds key, not its first, which may be a separator, and isn't left
 // underfull.
 func (t *genericTree[K, V, O]) removeText(key K) (k K, v V, done bool) {
-	n, word, ok := t.textLeafOrdered(key)
-	if !ok || word&(latchExclusive|latchSharedMask) != 0 {
-		return k, v, false
-	}
-	i, found, ok := t.seekText(n, word, key)
+	n, word, i, found, ok := t.seekTextOrdered(key)
 	if !ok || !found || i == 0 || int(*(*int32)(unsafe.Pointer(&n.count))) <= leafMinLen || !n.latch.tryLockAt(word) {
 		return k, v, false
 	}
