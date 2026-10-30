@@ -1,6 +1,9 @@
 package gobbtree
 
-import "unsafe"
+import (
+	"strings"
+	"unsafe"
+)
 
 // The generic tree's fast lookups, a tight loop of the general descent's
 // checks: an integer node's latch word is loaded plainly and feeds the
@@ -547,8 +550,15 @@ func (t *genericTree[K, V, O]) insertText(key K, value V, policy int) (old V, fo
 	if !ok {
 		return old, false, false, false
 	}
-	if !found && int(*(*int32)(unsafe.Pointer(&n.count))) == nodeSize {
-		return old, false, false, true
+	if !found {
+		// A key the tree holds has the shared prefix; a new one goes in
+		// here only with it, as admit would find it.
+		if shared := t.shared.Load(); shared == nil || !strings.HasPrefix(textView(&key), *shared) {
+			return old, false, false, false
+		}
+		if int(*(*int32)(unsafe.Pointer(&n.count))) == nodeSize {
+			return old, false, false, true
+		}
 	}
 	if !n.latch.tryLockAt(word) {
 		return old, false, false, false

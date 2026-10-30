@@ -93,15 +93,17 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 	// A leaf the fast paths find full splits at once: they have searched
 	// it, and the latched path would search it again to find it full.
 	if prefixed[O, K]() {
-		t.admit(key)
 		if seqlockPlainStores && policy != insertMerge {
 			old, found, done, full := t.insertText(key, value, policy)
 			if done {
 				return old, found
 			}
+			t.admit(key)
 			if full {
 				return t.insertSplitting(key, t.code(key), value, policy, merge)
 			}
+		} else {
+			t.admit(key)
 		}
 	}
 	if seqlockPlainStores && t.wordCodes() && policy != insertMerge {
