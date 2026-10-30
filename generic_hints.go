@@ -48,19 +48,20 @@ type leafDir struct {
 const leafBlock = 256
 
 // alloc is a slot for a new leaf, which keeps its ID: a merged-away
-// leaf's, or the next; nil once every ID a cell can name is taken.
-func (d *leafDir) alloc() *gheader {
+// leaf's, or the next, fresh, as its block made it; nil once every ID a
+// cell can name is taken.
+func (d *leafDir) alloc() (h *gheader, fresh bool) {
 	d.mu.Lock()
 	id := uint32(0)
 	if n := len(d.free); n > 0 {
 		id, d.free = d.free[n-1], d.free[:n-1]
 	} else if d.next < hintIDMask {
 		d.next++
-		id = d.next
+		id, fresh = d.next, true
 	}
 	if id == 0 {
 		d.mu.Unlock()
-		return nil
+		return nil, false
 	}
 	blocks := d.blocks.Load()
 	if blocks == nil || int(id/leafBlock) >= len(*blocks) {
@@ -84,9 +85,9 @@ func (d *leafDir) alloc() *gheader {
 		d.blocks.Store(&grown)
 		blocks = &grown
 	}
-	h := (*gheader)(unsafe.Add((*blocks)[id/leafBlock], uintptr(id%leafBlock)*d.stride))
+	h = (*gheader)(unsafe.Add((*blocks)[id/leafBlock], uintptr(id%leafBlock)*d.stride))
 	d.mu.Unlock()
-	return h
+	return h, fresh
 }
 
 // remove gives leaf h's slot back, for a leaf merged away.

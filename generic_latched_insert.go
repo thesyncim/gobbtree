@@ -851,6 +851,12 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 		t.splitLeafEntries(dst, src, from, count)
 		return
 	}
+	if !prefixed[O, K]() && dstCount == 0 && from+count == srcCount {
+		// A split's new half, src's end: one loop moves each entry and
+		// frees its slot, where a copy a column would each be a call.
+		t.splitEntries(dst, src, from, count)
+		return
+	}
 	if prefixed[O, K]() {
 		sc, dc := src.text(), dst.text()
 		moved := 0
@@ -901,6 +907,33 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 	}
 	dst.count.Store(int32(dstCount + count))
 	src.count.Store(int32(srcCount - count))
+}
+
+// splitEntries is moveLeafEntries into dst, empty, of src's last count
+// entries, from from, for leaves of keys that aren't text.
+func (t *genericTree[K, V, O]) splitEntries(dst, src *gleaf[K, V], from, count int) {
+	var zv V
+	var zk K
+	keyed := !t.wholeCodes()
+	for j := 0; j < count; j++ {
+		k, d := (from+j)&(nodeSize-1), j&(nodeSize-1)
+		dst.codes[d], dst.values[d], dst.tags[d] = src.codes[k], src.values[k], src.tags[k]
+		src.codes[k], src.values[k], src.tags[k] = codePad, zv, 0
+		if keyed {
+			dk, sk := dst.keyed(), src.keyed()
+			dk[d], sk[k] = sk[k], zk
+		}
+	}
+	if t.wordCodes() {
+		// The leaves' cells from src's first key on go stale.
+		if low := src.codes[0]; low < t.reshaped.Load() {
+			t.reshaped.Store(low)
+		}
+		t.setFirst(dst, count)
+		t.setFirst(src, from)
+	}
+	dst.count.Store(int32(count))
+	src.count.Store(int32(from))
 }
 
 // splitLeafEntries is moveLeafEntries into dst, empty, for text leaves: the
