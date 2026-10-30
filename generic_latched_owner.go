@@ -179,6 +179,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i in
 	switch {
 	case prefixed[O, K]():
 		n, i, found, fits = t.ownerSeekText(key, code)
+		return t.ownerInsertText(n, i, found, fits, key, value)
 	case t.wordCodes():
 		// ownerSeek, with a key the hints don't place, as one past the
 		// table's domain, tried past the tail before a descent.
@@ -199,11 +200,26 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i in
 				return nil, 0, false
 			}
 		}
-		n, i, found, fits = t.ownerDescend(code, true)
+		n, i, found, _ = t.ownerDescend(code, true)
 	default:
-		n, i, found, fits = t.ownerSeek(key, code, true)
+		n, i, found, _ = t.ownerSeek(key, code, true)
 	}
-	if !found && prefixed[O, K]() {
+	if found {
+		return n, i & (nodeSize - 1), true
+	}
+	if owned(&n.count) < nodeSize {
+		t.insertEntry(n, i, key, value)
+	} else {
+		t.ownerSplit(n, i, key, code, value)
+	}
+	return nil, 0, false
+}
+
+// ownerInsertText is ownerInsert for a text key, from ownerSeekText's
+// result: a Tree's insert seeks itself, and replaces a key it finds
+// without the call between, whose frame its store would wait behind.
+func (t *genericTree[K, V, O]) ownerInsertText(n *gleaf[K, V], i int, found, fits bool, key K, value V) (*gleaf[K, V], int, bool) {
+	if !found {
 		// A key with the prefix of a leaf whose keys share the shared
 		// prefix has it too; any other is checked.
 		shared := plainPointer(&t.shared)
@@ -215,7 +231,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i in
 			// refits the borders its route may have crossed: route it
 			// again.
 			t.admit(key)
-			n, i, found, fits = t.ownerSeek(key, code, true)
+			n, i, found, _ = t.ownerSeekText(key, 0)
 		}
 	}
 	if found {
@@ -224,7 +240,7 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i in
 	if owned(&n.count) < nodeSize {
 		t.insertEntry(n, i, key, value)
 	} else {
-		t.ownerSplit(n, i, key, code, value)
+		t.ownerSplit(n, i, key, 0, value)
 	}
 	return nil, 0, false
 }

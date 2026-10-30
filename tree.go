@@ -3,6 +3,7 @@ package gobbtree
 import (
 	"cmp"
 	"iter"
+	"unsafe"
 )
 
 // Pair is a key and value, as batch operations take them.
@@ -40,11 +41,22 @@ func (t *treeCore[K, V, O]) Clear() {
 
 // Get returns a copy of the value associated with key.
 func (t *treeCore[K, V, O]) Get(key K) (V, bool) {
-	if t.generic != nil {
-		return t.generic.ownerGet(key)
-	}
 	var zero V
-	return zero, false
+	g := t.generic
+	if g == nil {
+		return zero, false
+	}
+	// A text key is sought here, as Insert seeks it.
+	if unsafe.Sizeof(key) >= unsafe.Sizeof("") && prefixed[O, K]() {
+		if plainPointer(&g.root) == nil {
+			return zero, false
+		}
+		if n, i, ok, _ := g.ownerSeekText(key, 0); ok {
+			return n.values[i&(nodeSize-1)], true
+		}
+		return zero, false
+	}
+	return g.ownerGet(key)
 }
 func (t *treeCore[K, V, O]) Contains(key K) bool { _, ok := t.Get(key); return ok }
 
@@ -53,6 +65,23 @@ func (t *treeCore[K, V, O]) Contains(key K) bool { _, ok := t.Get(key); return o
 func (t *treeCore[K, V, O]) Insert(key K, value V) (V, bool) {
 	if t.generic == nil {
 		t.generic = &genericTree[K, V, O]{owner: true}
+	}
+	// A text key is sought here, and a key found replaced here. Keys
+	// smaller than text's settle that by their size, which folds.
+	if g := t.generic; unsafe.Sizeof(key) >= unsafe.Sizeof("") && prefixed[O, K]() && plainPointer(&g.root) != nil {
+		n, i, found, fits := g.ownerSeekText(key, 0)
+		if !found {
+			n, i, found = g.ownerInsertText(n, i, found, fits, key, value)
+		}
+		if found {
+			i &= nodeSize - 1
+			old := n.values[i]
+			n.values[i] = value
+			return old, true
+		}
+		t.length++
+		var zero V
+		return zero, false
 	}
 	n, i, found := t.generic.ownerInsert(key, value)
 	if !found {
