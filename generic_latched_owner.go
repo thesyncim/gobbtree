@@ -175,19 +175,29 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i in
 	if !prefixed[O, K]() {
 		code = numericKey[O](key)
 	}
-	if t.wordCodes() {
-		done, full := t.appendTail(key, code, value)
-		if full != nil {
-			t.ownerSplit(full, nodeSize, key, code, value)
-		}
-		if done || full != nil {
-			return nil, 0, false
-		}
-	}
 	var fits bool
-	if prefixed[O, K]() {
+	switch {
+	case prefixed[O, K]():
 		n, i, found, fits = t.ownerSeekText(key, code)
-	} else {
+	case t.wordCodes():
+		// ownerSeek, with a key the hints don't place, as one past the
+		// table's domain, tried past the tail before a descent.
+		h, j, f, ok := hintedCode(plainPointer(&t.hints), &t.leaves, code, true)
+		if ok {
+			n, i, found = asLeaf[K, V](h), j, f
+			break
+		}
+		if t.pastTail(code) {
+			done, full := t.appendTail(key, code, value)
+			if full != nil {
+				t.ownerSplit(full, nodeSize, key, code, value)
+			}
+			if done || full != nil {
+				return nil, 0, false
+			}
+		}
+		n, i, found, fits = t.ownerDescend(code, true)
+	default:
 		n, i, found, fits = t.ownerSeek(key, code, true)
 	}
 	if !found && prefixed[O, K]() {

@@ -290,6 +290,21 @@ func (t *genericTree[K, V, O]) getMany8(keys *[batchLanes]K, dst *[batchLanes]Re
 // place, in a Map by a compare-and-swap at the latch word its reads
 // followed, as hinted writes take theirs: done. Without, full is the leaf,
 // for the caller to split at its end, unsearched. Neither where it can't.
+//
+// pastTail tells the keys for it: code past the last of the tail, read
+// racing, for appendTail to settle. Inserts check it only where the hints
+// place no leaf, as for an append past the table's domain, which they
+// fail at once: on a large tree, a replace that checked the tail first,
+// or called appendTail, took longer.
+func (t *genericTree[K, V, O]) pastTail(code uint64) bool {
+	h := plainPointer(&t.tail)
+	if h == nil {
+		return false
+	}
+	count := int(*(*int32)(unsafe.Pointer(&h.count)))
+	return count > 0 && (*leafRoute)(unsafe.Pointer(h)).codes[(count-1)&(nodeSize-1)] < code
+}
+
 func (t *genericTree[K, V, O]) appendTail(key K, code uint64, value V) (done bool, full *gleaf[K, V]) {
 	h := plainPointer(&t.tail)
 	if h == nil {

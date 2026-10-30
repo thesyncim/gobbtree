@@ -120,19 +120,26 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 		}
 	}
 	if seqlockPlainStores && t.wordCodes() && policy != insertMerge {
-		if done, full := t.appendTail(key, numericKey[O](key), value); done || full != nil {
-			if full != nil {
-				return t.insertSplitting(key, t.code(key), value, policy, merge)
-			}
-			var zero V
-			return zero, false
-		}
-		old, found, done, full := t.insertHinted(key, numericKey[O](key), value, policy)
+		// The code once: in shared code each is a check of the key's type.
+		code := numericKey[O](key)
+		old, found, done, full := t.insertHinted(key, code, value, policy)
 		if done {
 			return old, found
 		}
 		if full {
-			return t.insertSplitting(key, t.code(key), value, policy, merge)
+			return t.insertSplitting(key, code, value, policy, merge)
+		}
+		// A key the hints don't place, as one past the table's domain, may
+		// go past the tail (pastTail).
+		if t.pastTail(code) {
+			done, tail := t.appendTail(key, code, value)
+			if tail != nil {
+				return t.insertSplitting(key, code, value, policy, merge)
+			}
+			if done {
+				var zero V
+				return zero, false
+			}
 		}
 	}
 	code := t.code(key)
