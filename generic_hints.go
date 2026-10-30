@@ -234,6 +234,36 @@ func (r *codeHints) leafFor(d *leafDir, code uint64) *gheader {
 	return d.leaf(id)
 }
 
+// hintedLeaf is leafFor with hintID and leaf written out, as hintedCode
+// writes them, for a hinted write: their calls, before its compare-and-swap
+// and store, cost it more than a lookup, which keeps leafFor's.
+func (r *codeHints) hintedLeaf(d *leafDir, code uint64) *gheader {
+	c := r.cell(code)
+	if c == nil {
+		return nil
+	}
+	head, tail := c.head, c.tail
+	if head <= hintDescend {
+		return nil
+	}
+	q := r.fraction(code)
+	id := head & hintIDMask
+	if q >= head>>48&1023 {
+		id = head >> 24 & hintIDMask
+	}
+	if q >= head>>58|(tail>>48&15)<<6 {
+		id = tail & hintIDMask
+	}
+	if q >= tail>>52&1023 {
+		id = tail >> 24 & hintIDMask
+	}
+	blocks := plainPointer(&d.blocks)
+	if blocks == nil || id/leafBlock >= uint64(len(*blocks)) {
+		return nil
+	}
+	return (*gheader)(unsafe.Add((*blocks)[id/leafBlock], uintptr(id%leafBlock)*d.stride))
+}
+
 // hintedCodeBy is hintedCode by calls to its parts.
 func hintedCodeBy(r *codeHints, d *leafDir, code uint64, place bool) (h *gheader, i int, found, settled bool) {
 	if r == nil {

@@ -349,7 +349,7 @@ func (t *genericTree[K, V, O]) seekHinted(code uint64) (n *gleaf[K, V], word uin
 	if r == nil {
 		return nil, 0, 0, 0, false, false
 	}
-	h := r.leafFor(&t.leaves, code)
+	h := r.hintedLeaf(&t.leaves, code)
 	if h == nil {
 		return nil, 0, 0, 0, false, false
 	}
@@ -425,7 +425,7 @@ func (t *genericTree[K, V, O]) hintedLatched(code uint64, mode int) (*gleaf[K, V
 	if r == nil {
 		return nil, 0, false
 	}
-	h := r.leafFor(&t.leaves, code)
+	h := r.hintedLeaf(&t.leaves, code)
 	if h == nil {
 		return nil, 0, false
 	}
