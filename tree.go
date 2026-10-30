@@ -54,11 +54,17 @@ func (t *treeCore[K, V, O]) Insert(key K, value V) (V, bool) {
 	if t.generic == nil {
 		t.generic = &genericTree[K, V, O]{owner: true}
 	}
-	old, found := t.generic.ownerInsert(key, value, insertReplace, nil)
+	n, i, found := t.generic.ownerInsert(key, value)
 	if !found {
 		t.length++
+		var zero V
+		return zero, false
 	}
-	return old, found
+	// Replaced here, last (ownerInsert).
+	i &= nodeSize - 1
+	old := n.values[i]
+	n.values[i] = value
+	return old, true
 }
 
 // Delete removes an entry, returning its previous value and presence.

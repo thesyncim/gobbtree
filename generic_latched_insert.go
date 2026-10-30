@@ -85,7 +85,20 @@ func (s *latchSet) unlock() {
 // has room; otherwise the leaf splits.
 func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, V, V) V) (V, bool) {
 	if t.owner {
-		return t.ownerInsert(key, value, policy, merge)
+		n, i, found := t.ownerInsert(key, value)
+		if !found {
+			var zero V
+			return zero, false
+		}
+		i &= nodeSize - 1
+		old := n.values[i]
+		switch policy {
+		case insertReplace:
+			n.values[i] = value
+		case insertMerge:
+			n.values[i] = merge(t.key(n, i), old, value)
+		}
+		return old, true
 	}
 	if t.root.Load() == nil {
 		t.start()

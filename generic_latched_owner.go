@@ -122,11 +122,13 @@ func (t *genericTree[K, V, O]) ownerGet(key K) (value V, found bool) {
 	if plainPointer(&t.root) == nil {
 		return value, false
 	}
-	code := uint64(0)
-	if !prefixed[O, K]() {
-		code = numericKey[O](key)
+	if prefixed[O, K]() {
+		if n, i, ok, _ := t.ownerSeekText(key, 0); ok {
+			return n.values[i&(nodeSize-1)], true
+		}
+		return value, false
 	}
-	if n, i, ok, _ := t.ownerSeek(key, code, false); ok {
+	if n, i, ok, _ := t.ownerSeek(key, numericKey[O](key), false); ok {
 		return n.values[i&(nodeSize-1)], true
 	}
 	return value, false
@@ -159,9 +161,13 @@ func (t *genericTree[K, V, O]) ownerUpdate(key K, change func(K, V) V) (V, bool)
 	return value, true
 }
 
-// ownerInsert is insert into an owner's tree: into key's leaf if it holds
-// key or has room, else by the latched split.
-func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge func(K, V, V) V) (V, bool) {
+// ownerInsert inserts key with value into an owner's tree where it is
+// absent: into its leaf if it has room, else by the latched split. Where
+// key is there, it changes nothing and returns its leaf and slot, for the
+// caller to apply its policy to the value: a store there is then the
+// caller's last act, and the loads after it, which the core may hold until
+// it knows the store's address, are the caller's caller's alone.
+func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i int, found bool) {
 	if plainPointer(&t.root) == nil {
 		t.start()
 	}
@@ -175,11 +181,15 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 			t.ownerSplit(full, nodeSize, key, code, value)
 		}
 		if done || full != nil {
-			var zero V
-			return zero, false
+			return nil, 0, false
 		}
 	}
-	n, i, found, fits := t.ownerSeek(key, code, true)
+	var fits bool
+	if prefixed[O, K]() {
+		n, i, found, fits = t.ownerSeekText(key, code)
+	} else {
+		n, i, found, fits = t.ownerSeek(key, code, true)
+	}
 	if !found && prefixed[O, K]() {
 		// A key with the prefix of a leaf whose keys share the shared
 		// prefix has it too; any other is checked.
@@ -196,23 +206,14 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 		}
 	}
 	if found {
-		i &= nodeSize - 1
-		old := n.values[i]
-		switch policy {
-		case insertReplace:
-			n.values[i] = value
-		case insertMerge:
-			n.values[i] = merge(t.key(n, i), old, value)
-		}
-		return old, true
+		return n, i & (nodeSize - 1), true
 	}
 	if owned(&n.count) < nodeSize {
 		t.insertEntry(n, i, key, value)
 	} else {
 		t.ownerSplit(n, i, key, code, value)
 	}
-	var zero V
-	return zero, false
+	return nil, 0, false
 }
 
 // ownerPath records key's path to leaf n, by a plain descent.
