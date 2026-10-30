@@ -238,12 +238,15 @@ func descendTextOrdered(root **gheader, s string) (h *gheader, word uint64, lo, 
 		if i > 0 && below >= sum || i+1 < count && next <= sum {
 			return nil, 0, 0, 0, 0, false
 		}
-		a := uint64(i) ^ uint64(count) ^ uint64(p)<<8 ^ uint64(below)<<16 ^ uint64(next)<<32
-		child := *after((**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)])), a)
+		// The child is read once the route is known: the reads that only
+		// bracket it join the closing check's dependency, which keeps every
+		// read of the node before the check, but not the child's load.
+		child := *(**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)]))
 		if child == nil {
 			return nil, 0, 0, 0, 0, false
 		}
 		childWord := child.latch.Load()
+		a := uint64(i) ^ uint64(count) ^ uint64(p)<<8 ^ uint64(below)<<16 ^ uint64(next)<<32
 		if *after((*uint64)(unsafe.Pointer(&h.latch)), a^childWord^uint64(uintptr(unsafe.Pointer(child))))&^latchSharedMask != word&^latchSharedMask {
 			return nil, 0, 0, 0, 0, false
 		}

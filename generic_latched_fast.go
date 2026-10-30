@@ -3,11 +3,12 @@ package gobbtree
 import "unsafe"
 
 // The generic tree's fast lookups, a tight loop of the general descent's
-// checks: a node's latch word is loaded plainly and feeds the address of
-// every load of the node after it, which the core then issues in order
-// without holding later lookups' loads, as an acquire would; every word a
-// route or a leaf's answer depends on feeds the address of the node's
-// closing check, which therefore loads after them. Anything
+// checks: an integer node's latch word is loaded plainly and feeds the
+// address of every load of the node after it, which the core then issues
+// in order without holding later lookups' loads, as an acquire would; a
+// text node's is an acquire. Every word a route or a leaf's answer depends
+// on feeds the address of the node's closing check, which therefore loads
+// after them; a child's load waits only for the route. Anything
 // unusual, a summary or code tie, a long leaf prefix, a held latch, a
 // version that moved, sends the lookup the general way. Only plain-store
 // builds take them.
@@ -49,12 +50,14 @@ func (t *genericTree[K, V, O]) textLeafOrdered(key K) (*gleaf[K, V], uint64, boo
 		if i > 0 && below >= sum || i+1 < count && next <= sum {
 			return nil, 0, false
 		}
-		acc := uint64(i) ^ uint64(count) ^ uint64(p)<<8 ^ uint64(below)<<16 ^ uint64(next)<<32
-		child := *after((**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)])), acc)
+		// The child is read once the route is known: the reads that only
+		// bracket it join the closing check's dependency, not the child's.
+		child := *(**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)]))
 		if child == nil {
 			return nil, 0, false
 		}
 		childWord := child.latch.Load()
+		acc := uint64(i) ^ uint64(count) ^ uint64(p)<<8 ^ uint64(below)<<16 ^ uint64(next)<<32
 		closing := *after((*uint64)(unsafe.Pointer(&h.latch)), acc^childWord^uint64(uintptr(unsafe.Pointer(child))))
 		if closing&^latchSharedMask != word&^latchSharedMask {
 			return nil, 0, false
