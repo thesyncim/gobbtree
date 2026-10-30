@@ -48,6 +48,11 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	leaves leafDir
 	hints  atomic.Pointer[codeHints]
 	making atomic.Bool
+	// reshaped is the lowest first code of a leaf a move of entries
+	// changed since its hint table was filled, past every key where none:
+	// a new table keeps the old one's cells below it (refreshCodeHints).
+	// Racing writers may lose one, which costs only stale cells.
+	reshaped atomic.Uint64
 	// tail is the rightmost leaf such a tree made last, for appends: a key
 	// past its last goes in where it still has no high fence and room
 	// (appendTail). Only the rightmost leaf has none, so a stale tail, one
@@ -1261,7 +1266,7 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 		}
 		var f hintFrame
 		if h, word, ok := codeLeafOrdered((**gheader)(unsafe.Pointer(&t.root)), code, &f); ok {
-			currentHints(&t.hints, &t.making, plainPointer(&t.root)).fillFrom(&f, code)
+			currentHints(&t.hints, &t.making, &t.reshaped, plainPointer(&t.root)).fillFrom(&f, code)
 			if value, found, ok := t.readCodeLeaf(asLeaf[K, V](h), word, code); ok {
 				return value, found
 			}

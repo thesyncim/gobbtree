@@ -62,7 +62,7 @@ func (t *genericTree[K, V, O]) ownerDescend(code uint64, place bool) (n *gleaf[K
 	{
 		root := plainPointer(&t.root)
 		if !root.leaf {
-			h, i, ok := descendCodeFilling(root, code, currentHints(&t.hints, &t.making, root), place)
+			h, i, ok := descendCodeFilling(root, code, currentHints(&t.hints, &t.making, &t.reshaped, root), place)
 			return asLeaf[K, V](h), i, ok, false
 		}
 		h, i, ok := descendCode(root, code, place)
@@ -189,14 +189,25 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i in
 			break
 		}
 		if t.pastTail(code) {
-			done, full := t.appendTail(key, code, value)
-			if full != nil {
-				t.ownerSplit(full, nodeSize, key, code, value)
-				// A tree grown by appends descends none: its hints
-				// follow its growth here, as a descent's would.
-				currentHints(&t.hints, &t.making, plainPointer(&t.root))
-			}
-			if done || full != nil {
+			// appendTail, for an owner, written out: past the last key of
+			// the rightmost leaf, which nothing holds, the key goes last.
+			h := plainPointer(&t.tail)
+			n := asLeaf[K, V](h)
+			if _, high := bounds(h); high == 0 {
+				count := owned(&n.count)
+				switch {
+				case count == nodeSize:
+					t.ownerSplit(n, nodeSize, key, code, value)
+					// A tree grown by appends descends none: its hints
+					// follow its growth here, as a descent's would.
+					currentHints(&t.hints, &t.making, &t.reshaped, plainPointer(&t.root))
+				case t.wholeCodes():
+					// Last: nothing shifts.
+					n.codes[count&(nodeSize-1)], n.tags[count&(nodeSize-1)], n.values[count&(nodeSize-1)] = code, uint8(code), value
+					n.count.Store(int32(count + 1))
+				default:
+					t.insertEntry(n, count, key, value)
+				}
 				return nil, 0, false
 			}
 		}
@@ -261,20 +272,51 @@ func (t *genericTree[K, V, O]) ownerPath(path *gpath[K], n *gleaf[K, V], key K, 
 	}
 }
 
+// rightPath records the path to leaf n, the rightmost, down the last child
+// of every node, by a plain descent.
+func (t *genericTree[K, V, O]) rightPath(path *gpath[K], n *gleaf[K, V]) {
+	h := plainPointer(&t.root)
+	for !h.leaf {
+		inner := asInner[K](h)
+		count := owned(&inner.count)
+		path.levels[path.depth] = gpathLevel[K]{n: inner, edge: count - 1, count: count}
+		path.depth++
+		h = plainPointer(&inner.children[(count-1)&(nodeSize-1)])
+	}
+	if h != &n.gheader {
+		panic("gobbtree: an owner's right border lost its leaf")
+	}
+}
+
 // ownerSplit splits leaf n, full, as split does, and inserts key and value
 // at i, where they go: by a plain descent that records key's path, and
 // with no latches taken, which no other goroutine of an owner's tree
 // contends; the nodes it makes start latched, and it lets them go.
 func (t *genericTree[K, V, O]) ownerSplit(n *gleaf[K, V], i int, key K, code uint64, value V) {
 	var path gpath[K]
-	t.ownerPath(&path, n, key, code)
-	var held latchSet
-	if !t.redistribute(&path, n, i, key, value, &held) {
-		var fresh latchSet
-		t.splitHeld(&path, path.room(), n, i, key, value, &fresh)
-		fresh.unlock()
+	if _, high := bounds(&n.gheader); t.wordCodes() && i == nodeSize && high == 0 {
+		// An append past the rightmost leaf, which the right border
+		// leads to, without a route.
+		t.rightPath(&path, n)
+	} else {
+		t.ownerPath(&path, n, key, code)
 	}
+	if i > 0 && i < nodeSize && t.ownerRedistribute(&path, n, i, key, value) {
+		return
+	}
+	var fresh splitSet
+	t.splitHeld(&path, path.room(), n, i, key, value, &fresh)
+	fresh.unlock()
+}
+
+// ownerRedistribute is redistribute in an owner's tree, for a key inside
+// leaf n, full, at i: its own frame keeps the set of nodes it takes off
+// the splits that never redistribute, an append's among them.
+func (t *genericTree[K, V, O]) ownerRedistribute(path *gpath[K], n *gleaf[K, V], i int, key K, value V) bool {
+	var held splitSet
+	ok := t.redistribute(path, n, i, key, value, &held)
 	held.unlock()
+	return ok
 }
 
 // ownerRemove is remove from an owner's tree: from its leaf where the leaf

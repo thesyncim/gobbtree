@@ -121,14 +121,14 @@ func (d *leafDir) leaf(id uint32) *gheader {
 // none or doubled its children since: one goroutine makes it while others
 // go on with the old, and a tree whose root is a leaf keeps the old one,
 // whose hints are checked where used.
-func currentHints(slot *atomic.Pointer[codeHints], making *atomic.Bool, root *gheader) *codeHints {
+func currentHints(slot *atomic.Pointer[codeHints], making *atomic.Bool, reshaped *atomic.Uint64, root *gheader) *codeHints {
 	r := plainPointer(slot)
 	if root == nil || root.leaf {
 		return r
 	}
 	if r == nil || r.top != root || 2*r.topCount <= racingCount(root) {
 		if making.CompareAndSwap(false, true) {
-			r = refreshCodeHints(slot, root)
+			r = refreshCodeHints(slot, reshaped, root)
 			making.Store(false)
 		}
 	}
@@ -151,6 +151,8 @@ type codeHints struct {
 	hintTable
 	top      *gheader
 	topCount int
+	// filled is the last key the tree held as the table was filled.
+	filled uint64
 }
 
 // hintFrame is where a descent met a leaf's parent: the internal nodes it
@@ -372,7 +374,7 @@ func (s *hintSpan) addCodes(p *innerRoute, low, high, from, to uint64) {
 // there is none for it or root has doubled its children since; nil where
 // root is a leaf. Its reads race writers; a heuristic needs no check, and
 // a hint is checked where used.
-func refreshCodeHints(slot *atomic.Pointer[codeHints], root *gheader) *codeHints {
+func refreshCodeHints(slot *atomic.Pointer[codeHints], reshaped *atomic.Uint64, root *gheader) *codeHints {
 	if root == nil || root.leaf {
 		return nil
 	}
@@ -396,8 +398,25 @@ func refreshCodeHints(slot *atomic.Pointer[codeHints], root *gheader) *codeHints
 		leaves, lo, hi := codeShape(n)
 		codes := routeCodes(n)
 		r.hintTable = *newHintTable(min(codes[1], lo), max(codes[(count-1)&(nodeSize-1)], hi), span, leaves)
+		r.filled = hi
+		// A table over the old one's regions, as appends grow a tree to,
+		// takes its cells below the leaves moves changed since and below
+		// the old one's last key, and fills the rest: an append-built
+		// tree's leaves are each filled about once, not once a doubling.
+		// The cells kept are as good as they were: a hint is checked
+		// where used.
+		from := uint64(0)
+		low := reshaped.Swap(^uint64(0))
+		if old := slot.Load(); old != nil && old.filled != 0 && !old.hashed && !r.hashed && old.base == r.base && old.shift == r.shift && len(old.cells) <= len(r.cells) {
+			if from = min(old.filled, low); from > r.base {
+				copy(r.cells, old.cells)
+				from, _ = r.regionOf(from)
+			} else {
+				from = 0
+			}
+		}
 		var f hintFrame
-		r.fillAll(n, 0, 0, &f)
+		r.fillAll(n, 0, 0, &f, from)
 	}
 	slot.Store(r)
 	return r
@@ -472,10 +491,10 @@ func sampleCodeSpan(root *innerRoute, count int) uint64 {
 	return gaps[len(gaps)/2]
 }
 
-// fillAll fills every cell the leaves under internal node n hold, n having
-// fences low and high and been reached by f's path: about two fills a
-// leaf, once per table.
-func (r *codeHints) fillAll(n *innerRoute, low, high uint64, f *hintFrame) {
+// fillAll fills every cell the leaves under internal node n hold from key
+// from on, n having fences low and high and been reached by f's path:
+// about two fills a leaf, once per table.
+func (r *codeHints) fillAll(n *innerRoute, low, high uint64, f *hintFrame, from uint64) {
 	count := racingCount(&n.gheader)
 	if count == 0 || f.depth >= maxDepth-1 {
 		return
@@ -498,8 +517,11 @@ func (r *codeHints) fillAll(n *innerRoute, low, high uint64, f *hintFrame) {
 			if i+1 < count {
 				childHigh = codes[(i+1)&(nodeSize-1)]
 			}
+			if childHigh != 0 && childHigh <= from {
+				continue
+			}
 			f.push(n, i, low, high)
-			r.fillAll(child, childLow, childHigh, f)
+			r.fillAll(child, childLow, childHigh, f, from)
 			f.depth--
 		}
 		return
@@ -514,13 +536,13 @@ func (r *codeHints) fillAll(n *innerRoute, low, high uint64, f *hintFrame) {
 		}
 		last = (*leafRoute)(unsafe.Pointer(leaf)).codes[(racingCount(leaf)-1)&(nodeSize-1)]
 	}
-	if last < low {
+	if last < max(low, from) {
 		return
 	}
 	f.push(n, 0, low, high)
 	defer func() { f.depth-- }()
 	step := uint64(1) << r.shift
-	start := r.base + ((max(low, r.base)-r.base)>>r.shift)<<r.shift
+	start := r.base + ((max(low, r.base, from)-r.base)>>r.shift)<<r.shift
 	for key, regions := start, 0; key <= last && regions <= 4*nodeSize; key, regions = key+step, regions+1 {
 		if c := r.cell(max(key, low)); c != nil {
 			r.fill(c, max(key, low), f, true)

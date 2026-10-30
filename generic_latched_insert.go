@@ -79,6 +79,63 @@ func (s *latchSet) unlock() {
 	s.len = 0
 }
 
+// splitSet is a latchSet for a split, which takes fewer nodes than a
+// removal: the path from the lowest node with room down, the holder of its
+// high fence and a sibling it fills; or the nodes it makes, which start
+// latched until it lets them go: a leaf, a node a level, and a root. A
+// split's every frame zeroes one, so it holds no more.
+type splitSet struct {
+	nodes    [maxDepth + 4]*gheader
+	versions [maxDepth + 4]uint64
+	len      int
+}
+
+func (s *splitSet) holds(h *gheader) bool {
+	for i := 0; i < s.len; i++ {
+		if s.nodes[i] == h {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *splitSet) push(h *gheader, version uint64) {
+	s.nodes[s.len], s.versions[s.len] = h, version
+	s.len++
+}
+
+// takeAt is latchSet.takeAt.
+func (s *splitSet) takeAt(h *gheader, version uint64) bool {
+	if s.holds(h) {
+		return true
+	}
+	if !h.latch.tryLockAt(version) {
+		return false
+	}
+	s.push(h, version)
+	return true
+}
+
+// takeLeaf is latchSet.takeLeaf.
+func (s *splitSet) takeLeaf(h *gheader) bool {
+	if s.holds(h) {
+		return true
+	}
+	version, ok := h.latch.tryLockExclusive()
+	if !ok {
+		return false
+	}
+	s.push(h, version)
+	return true
+}
+
+func (s *splitSet) unlock() {
+	for i := 0; i < s.len; i++ {
+		s.nodes[i].latch.unlockExclusive(s.versions[i])
+	}
+	s.len = 0
+}
+
 // insert inserts key and value, or, where the tree holds key, does what
 // policy says; it returns the stored value and whether key was there. As
 // upstream's insert: the key's leaf, latched exclusively, takes it if it
@@ -134,10 +191,10 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 		if t.pastTail(code) {
 			done, tail := t.appendTail(key, code, value)
 			if tail != nil {
-				old, found := t.insertSplitting(key, code, value, policy, merge)
+				old, found := t.appendSplitting(key, code, value, policy, merge)
 				// A tree grown by appends descends none: its hints
 				// follow its growth here, as a descent's would.
-				currentHints(&t.hints, &t.making, plainPointer(&t.root))
+				currentHints(&t.hints, &t.making, &t.reshaped, plainPointer(&t.root))
 				return old, found
 			}
 			if done {
@@ -322,6 +379,29 @@ func (t *genericTree[K, V, O]) insertSplitting(key K, code uint64, value V, poli
 	}
 }
 
+// appendSplitting is insertSplitting for a key past the last of the tree's
+// rightmost leaf, which appendTail found full: the descent follows the
+// right border, without a route, and the key goes past the leaf's end,
+// without a search. A key the leaf no longer ends below, or that has room
+// again, takes the general way.
+func (t *genericTree[K, V, O]) appendSplitting(key K, code uint64, value V, policy int, merge func(K, V, V) V) (V, bool) {
+	for {
+		var path gpath[K]
+		n, version := t.descend(key, code, seekLast, false, exclusive, &path)
+		count := int(n.count.Load())
+		if _, high := bounds(&n.gheader); high != 0 || count != nodeSize || n.codes[(count-1)&(nodeSize-1)] >= code {
+			n.latch.unlockExclusive(version)
+			return t.insertSplitting(key, code, value, policy, merge)
+		}
+		if t.splitAt(&path, n, version, nodeSize, key, value) {
+			var zero V
+			return zero, false
+		}
+		n.latch.unlockExclusive(version)
+		spinWait()
+	}
+}
+
 // split splits leaf, full and held, and inserts key and value, as
 // upstream's split: the lowest node on the path with room takes the
 // separator, every node below it splits, and without one the root splits.
@@ -329,8 +409,14 @@ func (t *genericTree[K, V, O]) insertSplitting(key K, code uint64, value V, poli
 // nothing changed, if one changed or is held. Otherwise it lets go of
 // everything, leaf included.
 func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVersion uint64, key K, code uint64, value V) bool {
+	index, _ := t.find(leaf, key, code)
+	return t.splitAt(path, leaf, leafVersion, index, key, value)
+}
+
+// splitAt is split, key's index in leaf known.
+func (t *genericTree[K, V, O]) splitAt(path *gpath[K], leaf *gleaf[K, V], leafVersion uint64, index int, key K, value V) bool {
 	top := path.room()
-	var held latchSet
+	var held splitSet
 	for level := top; level < path.depth; level++ {
 		if !held.takeAt(&path.levels[level].n.gheader, path.levels[level].version) {
 			held.unlock()
@@ -338,13 +424,12 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 		}
 	}
 	// The halves refit to their fences, the highest held at or above top.
-	if !path.takeHighHolder(top, &held) {
+	if h := path.highHolder(top); h >= 0 && !held.takeAt(&path.levels[h].n.gheader, path.levels[h].version) {
 		held.unlock()
 		return false
 	}
-	index, _ := t.find(leaf, key, code)
 	if !t.redistribute(path, leaf, index, key, value, &held) {
-		var fresh latchSet
+		var fresh splitSet
 		t.splitHeld(path, top, leaf, index, key, value, &fresh)
 		fresh.unlock()
 	}
@@ -367,7 +452,7 @@ const redistributionSlack = 8
 // nodes from the parent down are held, and the fence holder above them; the
 // sibling is taken without waiting, added to held. false, with nothing
 // changed, where no sibling has the room or can be taken.
-func (t *genericTree[K, V, O]) redistribute(path *gpath[K], leaf *gleaf[K, V], index int, key K, value V, held *latchSet) bool {
+func (t *genericTree[K, V, O]) redistribute(path *gpath[K], leaf *gleaf[K, V], index int, key K, value V, held *splitSet) bool {
 	// Text leaves split: moving their keys copies the keys' bytes and
 	// refits both leaves' windows, which costs a build more than the fill
 	// saves.
@@ -449,7 +534,7 @@ func (p *gpath[K]) room() int {
 // splits and takes key and value at index, and the separator rises to the
 // path's level top, splitting the full nodes below it, or the root. The
 // nodes it makes are latched in fresh.
-func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K, V], index int, key K, value V, fresh *latchSet) {
+func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K, V], index int, key K, value V, fresh *splitSet) {
 	right, version := t.newLeaf()
 	fresh.push(&right.gheader, version)
 	// A key past the leaf's last leaves it nearly full, as an ascending
@@ -797,24 +882,25 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 	}
 	clear(src.values[srcCount-count : srcCount])
 	if t.wordCodes() {
-		retag(dst, dstCount+count)
-		retag(src, srcCount-count)
+		// The leaves' cells from the first's first key on go stale.
+		low := src.codes[0]
+		if dstCount > 0 {
+			low = min(low, dst.codes[0])
+		}
+		if low < t.reshaped.Load() {
+			t.reshaped.Store(low)
+		}
+		// The tags move as their codes do, and those freed are cleared:
+		// a key may have the padding's code.
+		copy(dst.tags[at+count:dstCount+count], dst.tags[at:dstCount])
+		copy(dst.tags[at:at+count], src.tags[from:from+count])
+		copy(src.tags[from:srcCount-count], src.tags[from+count:srcCount])
+		clear(src.tags[srcCount-count : srcCount])
 		t.setFirst(dst, dstCount+count)
 		t.setFirst(src, srcCount-count)
 	}
 	dst.count.Store(int32(dstCount + count))
 	src.count.Store(int32(srcCount - count))
-}
-
-// retag sets leaf n's tags from its first count codes, the rest to 0: a
-// key may have the padding's code.
-func retag[K any, V any](n *gleaf[K, V], count int) {
-	for j := range n.tags {
-		n.tags[j] = 0
-		if j < count {
-			n.tags[j] = uint8(n.codes[j])
-		}
-	}
 }
 
 // splitLeafEntries is moveLeafEntries into dst, empty, for text leaves: the

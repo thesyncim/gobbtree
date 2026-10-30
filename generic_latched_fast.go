@@ -617,7 +617,7 @@ func (t *genericTree[K, V, O]) leafLatched(key K, code uint64, seek int, mode in
 		}
 		var f hintFrame
 		if h, word, ok := codeLeafOrdered((**gheader)(unsafe.Pointer(&t.root)), code, &f); ok {
-			currentHints(&t.hints, &t.making, plainPointer(&t.root)).fillFrom(&f, code)
+			currentHints(&t.hints, &t.making, &t.reshaped, plainPointer(&t.root)).fillFrom(&f, code)
 			n := asLeaf[K, V](h)
 			switch {
 			case mode == exclusive && word&(latchExclusive|latchSharedMask) == 0 && n.latch.tryLockAt(word):
