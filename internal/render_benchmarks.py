@@ -195,7 +195,7 @@ def main():
     text += ["</details>", ""]
     if texts:
         text += string_key_section(texts)
-    text += ["Small gaps are inconclusive: a macOS system service used one or two cores throughout the run. "
+    text += ["Small gaps are inconclusive: desktop apps used about one core throughout the run. "
              f"The [raw report]({report_link}) holds every run, with Go's built-in `map` and `sync.Map` at 4K to 5M mixed keys; "
              "amd64 results are [CI artifacts](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml).", ""]
     readme = ROOT / "README.md"
