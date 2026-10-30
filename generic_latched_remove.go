@@ -23,6 +23,11 @@ func (t *genericTree[K, V, O]) remove(seek int, key K, condition func(K, V) bool
 				return k, v, true
 			}
 		}
+		if seqlockPlainStores && prefixed[O, K]() && condition == nil {
+			if k, v, done := t.removeText(key); done {
+				return k, v, true
+			}
+		}
 	}
 	if k, v, removed, done := t.removeLatched(seek, key, code, condition); done {
 		return k, v, removed

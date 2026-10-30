@@ -3,10 +3,11 @@ package gobbtree
 import "unsafe"
 
 // The generic tree's fast lookups, a tight loop of the general descent's
-// checks: a node's latch word is an acquire load, which
-// orders its plain loads after it while letting the core issue them at
-// once; every word a route or a leaf's answer depends on feeds the address
-// of the node's closing check, which therefore loads after them. Anything
+// checks: a node's latch word is loaded plainly and feeds the address of
+// every load of the node after it, which the core then issues in order
+// without holding later lookups' loads, as an acquire would; every word a
+// route or a leaf's answer depends on feeds the address of the node's
+// closing check, which therefore loads after them. Anything
 // unusual, a summary or code tie, a long leaf prefix, a held latch, a
 // version that moved, sends the lookup the general way. Only plain-store
 // builds take them.
@@ -73,14 +74,15 @@ func (t *genericTree[K, V, O]) readTextLeaf(n *gleaf[K, V], word uint64, key K) 
 	if word&latchExclusive != 0 {
 		return value, false, false
 	}
-	count := int(*(*int32)(unsafe.Pointer(&n.count)))
-	p := int(*(*int32)(unsafe.Pointer(&n.prefix)))
+	m := n
+	count := int(*(*int32)(unsafe.Pointer(&m.count)))
+	p := int(*(*int32)(unsafe.Pointer(&m.prefix)))
 	if count < 0 || count > nodeSize || p > 16 {
 		return value, false, false
 	}
 	s := textView(&key)
-	h0 := *(*uint64)(unsafe.Pointer(&n.head[0]))
-	h1 := *(*uint64)(unsafe.Pointer(&n.head[1]))
+	h0 := *(*uint64)(unsafe.Pointer(&m.head[0]))
+	h1 := *(*uint64)(unsafe.Pointer(&m.head[1]))
 	acc := uint64(count) ^ uint64(p)<<8 ^ h0 ^ h1<<1
 	// Key has the leaf's prefix where its first p bytes are the head's.
 	shares := len(s) >= p && headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) == 0
@@ -94,9 +96,9 @@ func (t *genericTree[K, V, O]) readTextLeaf(n *gleaf[K, V], word uint64, key K) 
 			// Too long to settle by windows.
 			return value, false, false
 		}
-		lo := lowerCode(&n.codes, count, code) & (nodeSize - 1)
-		c := n.codes[lo]
-		text := n.text()
+		lo := lowerCode(&m.codes, count, code) & (nodeSize - 1)
+		c := m.codes[lo]
+		text := m.text()
 		slotTail, slotRef := text.slots[lo].tail, text.slots[lo].ref
 		acc ^= uint64(lo)<<40 ^ c ^ slotTail<<3 ^ slotRef<<5
 		// A slot past the count holds the padding, a code a key may share.
@@ -106,7 +108,7 @@ func (t *genericTree[K, V, O]) readTextLeaf(n *gleaf[K, V], word uint64, key K) 
 				return value, false, false
 			}
 			found = true
-			value = n.values[lo]
+			value = m.values[lo]
 			if unsafe.Sizeof(value) == 8 {
 				acc ^= *(*uint64)(unsafe.Pointer(&value))
 			} else {
@@ -137,7 +139,7 @@ func codeLeafOrdered(root **gheader, code uint64, f *hintFrame) (*gheader, uint6
 	if h == nil {
 		return nil, 0, false
 	}
-	word := h.latch.Load()
+	word := *(*uint64)(unsafe.Pointer(&h.latch))
 	if *after(root, word) != h {
 		return nil, 0, false
 	}
@@ -149,7 +151,7 @@ func codeLeafOrdered(root **gheader, code uint64, f *hintFrame) (*gheader, uint6
 		if h.leaf {
 			return h, word, true
 		}
-		n := (*innerRoute)(unsafe.Pointer(h))
+		n := (*innerRoute)(unsafe.Pointer(after(h, word)))
 		count := int(*(*int32)(unsafe.Pointer(&n.count)))
 		if count < 1 || count > nodeSize {
 			return nil, 0, false
@@ -170,7 +172,7 @@ func codeLeafOrdered(root **gheader, code uint64, f *hintFrame) (*gheader, uint6
 		if child == nil {
 			return nil, 0, false
 		}
-		childWord := child.latch.Load()
+		childWord := *(*uint64)(unsafe.Pointer(&child.latch))
 		closing := *after((*uint64)(unsafe.Pointer(&h.latch)), acc^childWord^uint64(uintptr(unsafe.Pointer(child))))
 		if closing&^latchSharedMask != word&^latchSharedMask {
 			return nil, 0, false
@@ -203,8 +205,12 @@ func (t *genericTree[K, V, O]) readHintedAt(n *gleaf[K, V], word, code uint64) (
 	// Code's slot by its tag; where none is its, or another code has it,
 	// code is absent only between the leaf's first key and its last.
 	lo := firstTag(&m.tags, count, code)
-	c := m.codes[lo&(nodeSize-1)]
-	acc := uint64(count) ^ uint64(lo)<<8 ^ c
+	acc := uint64(count) ^ uint64(lo)<<8
+	var c uint64
+	if lo < count {
+		c = m.codes[lo&(nodeSize-1)]
+		acc ^= c
+	}
 	if lo == count || c != code {
 		first, high := bounds(&m.gheader)
 		if !owns(count, first, high, code) {
@@ -217,10 +223,9 @@ func (t *genericTree[K, V, O]) readHintedAt(n *gleaf[K, V], word, code uint64) (
 			acc ^= uint64(lo)<<16 ^ c<<3
 		}
 	}
-	lo &= nodeSize - 1
 	if lo < count && c == code {
 		found = true
-		value = m.values[lo]
+		value = m.values[lo&(nodeSize-1)]
 		if unsafe.Sizeof(value) == 8 {
 			acc ^= *(*uint64)(unsafe.Pointer(&value))
 		} else {
@@ -332,11 +337,18 @@ func (t *genericTree[K, V, O]) seekHinted(code uint64) (n *gleaf[K, V], word uin
 // insertHinted is insert through key's hint, for a policy that runs no
 // user code: the leaf is searched, then taken at the word the search read,
 // and changed where the search found key, or room for it. done is false
-// where it can't settle.
-func (t *genericTree[K, V, O]) insertHinted(key K, code uint64, value V, policy int) (old V, found, done bool) {
+// where it can't settle; full, where the leaf it settled in is full, for
+// the caller to split it.
+func (t *genericTree[K, V, O]) insertHinted(key K, code uint64, value V, policy int) (old V, found, done, full bool) {
 	n, word, count, i, found, ok := t.seekHinted(code)
-	if !ok || !found && count == nodeSize || !n.latch.tryLockAt(word) {
-		return old, false, false
+	if !ok {
+		return old, false, false, false
+	}
+	if !found && count == nodeSize {
+		return old, false, false, true
+	}
+	if !n.latch.tryLockAt(word) {
+		return old, false, false, false
 	}
 	i &= nodeSize - 1
 	if found {
@@ -348,7 +360,7 @@ func (t *genericTree[K, V, O]) insertHinted(key K, code uint64, value V, policy 
 		t.insertEntry(n, i, key, value)
 	}
 	n.latch.unlockExclusive(word)
-	return old, found, true
+	return old, found, true, false
 }
 
 // removeHinted is remove of key through its hint: the leaf is searched,
@@ -401,24 +413,29 @@ func (t *genericTree[K, V, O]) readCodeLeaf(n *gleaf[K, V], word, code uint64) (
 	if word&latchExclusive != 0 {
 		return value, false, false
 	}
-	count := int(*(*int32)(unsafe.Pointer(&n.count)))
+	m := after(n, word)
+	count := int(*(*int32)(unsafe.Pointer(&m.count)))
 	if count < 0 || count > nodeSize {
 		return value, false, false
 	}
 	// Code's slot by its tag, all of which feed the check: where none is
 	// its, code is absent; where another code has it, the codes settle it.
-	lo := firstTag(&n.tags, count, code)
-	c := n.codes[lo&(nodeSize-1)]
-	acc := uint64(count) ^ uint64(lo)<<8 ^ c
-	if lo < count && c != code {
-		lo = lowerCode(&n.codes, count, code)
-		c = n.codes[lo&(nodeSize-1)]
-		acc ^= uint64(lo)<<16 ^ c<<3
+	lo := firstTag(&m.tags, count, code)
+	acc := uint64(count) ^ uint64(lo)<<8
+	var c uint64
+	if lo < count {
+		// A miss whose tag no slot has reads no code.
+		c = m.codes[lo&(nodeSize-1)]
+		acc ^= c
+		if c != code {
+			lo = lowerCode(&m.codes, count, code)
+			c = m.codes[lo&(nodeSize-1)]
+			acc ^= uint64(lo)<<16 ^ c<<3
+		}
 	}
-	lo &= nodeSize - 1
 	if lo < count && c == code {
 		found = true
-		value = n.values[lo]
+		value = m.values[lo&(nodeSize-1)]
 		if unsafe.Sizeof(value) == 8 {
 			acc ^= *(*uint64)(unsafe.Pointer(&value))
 		} else {
@@ -434,6 +451,90 @@ func (t *genericTree[K, V, O]) readCodeLeaf(n *gleaf[K, V], word, code uint64) (
 		return zero, false, true
 	}
 	return value, true, true
+}
+
+// seekText finds text key's slot in leaf n, whose latch word the caller
+// loaded, with plain loads after it, by windows alone: the slot and whether
+// key is there, false where the windows don't settle it, the leaf is
+// empty, or key lacks its prefix. No key's bytes are read: a compare-and-
+// swap at the word, which holds only where nothing changed the leaf since,
+// makes the search hold, as seekHinted's does.
+func (t *genericTree[K, V, O]) seekText(n *gleaf[K, V], word uint64, key K) (i int, found, ok bool) {
+	n = after(n, word)
+	count := int(*(*int32)(unsafe.Pointer(&n.count)))
+	p := int(*(*int32)(unsafe.Pointer(&n.prefix)))
+	if count <= 0 || count > nodeSize || p > 16 {
+		return 0, false, false
+	}
+	s := textView(&key)
+	h0 := *(*uint64)(unsafe.Pointer(&n.head[0]))
+	h1 := *(*uint64)(unsafe.Pointer(&n.head[1]))
+	if len(s) < p || headDiff(stringCode(s, 0), headWindow(s), p, h0, h1) != 0 {
+		return 0, false, false
+	}
+	k := probeText(s, p)
+	if !k.settles {
+		return 0, false, false
+	}
+	lo, hi := tieRange(&n.codes, count, k.code)
+	for i = lo; i < hi; i++ {
+		// A probe that fits its windows settles every slot's order.
+		if order, _ := slotOrder(n, i, &k, p); order >= 0 {
+			return i, order == 0, true
+		}
+	}
+	return hi, false, true
+}
+
+// insertText is insert of text key through the ordered descent, for a
+// policy that runs no user code: its leaf is searched by windows, then
+// taken at the word the descent read, and changed where the search found
+// key, or room for it. done is false where it can't settle; full, where
+// the leaf it settled in is full, for the caller to split it.
+func (t *genericTree[K, V, O]) insertText(key K, value V, policy int) (old V, found, done, full bool) {
+	n, word, ok := t.textLeafOrdered(key)
+	if !ok || word&(latchExclusive|latchSharedMask) != 0 {
+		return old, false, false, false
+	}
+	i, found, ok := t.seekText(n, word, key)
+	if !ok {
+		return old, false, false, false
+	}
+	if !found && int(*(*int32)(unsafe.Pointer(&after(n, word).count))) == nodeSize {
+		return old, false, false, true
+	}
+	if !n.latch.tryLockAt(word) {
+		return old, false, false, false
+	}
+	i &= nodeSize - 1
+	if found {
+		old = n.values[i]
+		if policy == insertReplace {
+			n.values[i] = value
+		}
+	} else {
+		t.insertEntry(n, i, key, value)
+	}
+	n.latch.unlockExclusive(word)
+	return old, found, true, false
+}
+
+// removeText is remove of text key through the ordered descent: the leaf is
+// searched by windows, then taken at the word the descent read, where it
+// holds key, not its first, which may be a separator, and isn't left
+// underfull.
+func (t *genericTree[K, V, O]) removeText(key K) (k K, v V, done bool) {
+	n, word, ok := t.textLeafOrdered(key)
+	if !ok || word&(latchExclusive|latchSharedMask) != 0 {
+		return k, v, false
+	}
+	i, found, ok := t.seekText(n, word, key)
+	if !ok || !found || i == 0 || int(*(*int32)(unsafe.Pointer(&n.count))) <= leafMinLen || !n.latch.tryLockAt(word) {
+		return k, v, false
+	}
+	k, v = t.removeEntry(n, i&(nodeSize-1), true)
+	n.latch.unlockExclusive(word)
+	return k, v, true
 }
 
 // leafLatched is key's leaf latched in mode, shared or exclusive, and the
