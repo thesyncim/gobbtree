@@ -73,21 +73,18 @@ func (d *leafDir) alloc() (h *gheader, fresh bool) {
 		if blocks != nil {
 			grown = *blocks
 		}
-		// Each slot is a leaf of its ID from the block's making, before
-		// any reader can reach it: a reader on a merged-away leaf reads
-		// these racing as its slot is taken again, so they never change.
-		block := d.newBlock()
-		for j := uintptr(0); j < leafBlock; j++ {
-			if slot := uint32(len(grown)*leafBlock) + uint32(j); slot != 0 {
-				h := (*gheader)(unsafe.Add(block, j*d.stride))
-				h.leaf, h.id = true, slot
-			}
-		}
-		grown = append(grown, block)
+		grown = append(grown, d.newBlock())
 		d.blocks.Store(&grown)
 		blocks = &grown
 	}
 	h = (*gheader)(unsafe.Add((*blocks)[id/leafBlock], uintptr(id%leafBlock)*d.stride))
+	if fresh {
+		// A slot is a leaf of its ID from its first taking, before any
+		// reader can reach it: a reader on a merged-away leaf reads these
+		// racing as its slot is taken again, so they never change. A
+		// block's slots not yet taken are untouched memory.
+		h.leaf, h.id = true, id
+	}
 	d.mu.Unlock()
 	return h, fresh
 }
