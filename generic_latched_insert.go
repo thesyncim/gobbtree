@@ -105,7 +105,10 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 		}
 	}
 	if seqlockPlainStores && t.wordCodes() && policy != insertMerge {
-		if t.appendTail(key, numericKey[O](key), value) {
+		if done, full := t.appendTail(key, numericKey[O](key), value); done || full != nil {
+			if full != nil {
+				return t.insertSplitting(key, t.code(key), value, policy, merge)
+			}
 			var zero V
 			return zero, false
 		}
@@ -516,8 +519,10 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 		}
 		p = int(n.prefix.Load())
 	}
-	copy(n.codes[i+1:count+1], n.codes[i:count])
-	copy(n.values[i+1:count+1], n.values[i:count])
+	if i < count {
+		copy(n.codes[i+1:count+1], n.codes[i:count])
+		copy(n.values[i+1:count+1], n.values[i:count])
+	}
 	if prefixed[O, K]() {
 		// The key's bytes go in first: making room repacks the refs, which
 		// must be the leaf's count, unshifted.
@@ -528,7 +533,9 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 		c.slots[i] = textSlot{stringCode(s, p+8), ref}
 	} else if t.wholeCodes() {
 		n.codes[i] = numericKey[O](key)
-		copy(n.tags[i+1:count+1], n.tags[i:count])
+		if i < count {
+			copy(n.tags[i+1:count+1], n.tags[i:count])
+		}
 		n.tags[i] = uint8(n.codes[i])
 	} else {
 		keys := n.keyed()
