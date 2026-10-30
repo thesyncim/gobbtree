@@ -340,7 +340,10 @@ const redistributionSlack = 8
 // sibling is taken without waiting, added to held. false, with nothing
 // changed, where no sibling has the room or can be taken.
 func (t *genericTree[K, V, O]) redistribute(path *gpath[K], leaf *gleaf[K, V], index int, key K, value V, held *latchSet) bool {
-	if path.depth == 0 || index == 0 || index == nodeSize {
+	// Text leaves split: moving their keys copies the keys' bytes and
+	// refits both leaves' windows, which costs a build more than the fill
+	// saves.
+	if path.depth == 0 || index == 0 || index == nodeSize || prefixed[O, K]() {
 		return false
 	}
 	level := path.depth - 1
