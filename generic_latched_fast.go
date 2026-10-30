@@ -380,9 +380,33 @@ func (t *genericTree[K, V, O]) seekHinted(code uint64) (n *gleaf[K, V], word uin
 // where it can't settle; full, where the leaf it settled in is full, for
 // the caller to split it.
 func (t *genericTree[K, V, O]) insertHinted(key K, code uint64, value V, policy int) (old V, found, done, full bool) {
-	n, word, count, i, found, ok := t.seekHinted(code)
-	if !ok {
+	// seekHinted, written out: a write's calls before its store cost it.
+	r := plainPointer(&t.hints)
+	if r == nil {
 		return old, false, false, false
+	}
+	h := r.hintedLeaf(&t.leaves, code)
+	if h == nil {
+		return old, false, false, false
+	}
+	n := asLeaf[K, V](h)
+	word := *(*uint64)(unsafe.Pointer(&n.latch))
+	if word&(latchExclusive|latchSharedMask) != 0 {
+		return old, false, false, false
+	}
+	m := after(n, word)
+	count := int(*(*int32)(unsafe.Pointer(&m.count)))
+	if count <= 0 || count > nodeSize {
+		return old, false, false, false
+	}
+	i := firstTag(&m.tags, count, code)
+	found = i < count && m.codes[i&(nodeSize-1)] == code
+	if !found {
+		if first, high := bounds(&m.gheader); !owns(count, first, high, code) {
+			return old, false, false, false
+		}
+		i = lowerCode(&m.codes, count, code)
+		found = i < count && m.codes[i&(nodeSize-1)] == code
 	}
 	if !found && count == nodeSize {
 		return old, false, false, true
