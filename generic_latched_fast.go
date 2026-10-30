@@ -291,12 +291,11 @@ func (n *gleaf[K, V]) pushCode(count int, code uint64, value V) {
 	n.count.Store(int32(count + 1))
 }
 
-// appendTail is insert of key, past every key the tree holds, into its
-// rightmost leaf, as appends make the next key: the leaf t.tail names,
+// appendTail is a Map's insert of key, past every key the tree holds, into
+// its rightmost leaf, as appends make the next key: the leaf t.tail names,
 // where it still has no high fence, and so is the rightmost, and holds a
-// last key below code. With room, key goes in last, in an owner's tree in
-// place, in a Map by a compare-and-swap at the latch word its reads
-// followed, as hinted writes take theirs: done. Without, full is the leaf,
+// last key below code. With room, key goes in last, by a compare-and-swap
+// at the latch word its reads followed: done. Without, full is the leaf,
 // for the caller to split at its end, unsearched. Neither where it can't.
 //
 // pastTail tells the keys for it: code past the last of the tail, read
@@ -319,9 +318,11 @@ func (t *genericTree[K, V, O]) appendTail(key K, code uint64, value V) (done boo
 		return false, nil
 	}
 	word := *(*uint64)(unsafe.Pointer(&h.latch))
-	if !t.owner && word&(latchExclusive|latchSharedMask) != 0 {
+	if word&(latchExclusive|latchSharedMask) != 0 {
 		return false, nil
 	}
+	// The tail is in cache, as the last append left it: its reads follow
+	// the latch word, which costs them nothing.
 	m := after(h, word)
 	count := int(*(*int32)(unsafe.Pointer(&m.count)))
 	if _, high := bounds(m); high != 0 || count <= 0 || count > nodeSize || (*leafRoute)(unsafe.Pointer(m)).codes[(count-1)&(nodeSize-1)] >= code {
@@ -331,7 +332,7 @@ func (t *genericTree[K, V, O]) appendTail(key K, code uint64, value V) (done boo
 	if count == nodeSize {
 		return false, n
 	}
-	if !t.owner && !h.latch.tryLockAt(word) {
+	if !h.latch.tryLockAt(word) {
 		return false, nil
 	}
 	if t.wholeCodes() {
@@ -339,22 +340,20 @@ func (t *genericTree[K, V, O]) appendTail(key K, code uint64, value V) (done boo
 	} else {
 		t.insertEntry(n, count, key, value)
 	}
-	if !t.owner {
-		h.latch.unlockExclusive(word)
-	}
+	h.latch.unlockExclusive(word)
 	return true, nil
 }
 
 // hintedWrite is a write through code's hint, for a policy that runs no
-// user code: the leaf the hint names is searched, with plain loads after
-// its latch word, then taken at that word by a compare-and-swap, which
-// succeeds only where nothing changed the leaf since, and changed. An
-// insert puts key and value in by policy where the search found key, or
-// room for it; a removal, hintedRemove, takes key out where the leaf holds
-// it and is left its minimum, with its first key too: exact codes separate
-// leaves without it. done is false where it can't settle; full, where an
-// insert's leaf is full, for the caller to split it. Insert and removal
-// share it, as the seek's calls cost them.
+// user code: the leaf the hint names is searched with plain loads, then
+// taken at the latch word read by a compare-and-swap, which succeeds only
+// where nothing changed the leaf since, and changed where it still holds
+// what the search found. An insert puts key and value in by policy where
+// the search found key, or room for it; a removal, hintedRemove, takes key
+// out where the leaf holds it and is left its minimum, with its first key
+// too: exact codes separate leaves without it. done is false where it
+// can't settle; full, where an insert's leaf is full, for the caller to
+// split it. Insert and removal share it, as the seek's calls cost them.
 func (t *genericTree[K, V, O]) hintedWrite(key K, code uint64, value V, policy int) (k K, old V, found, done, full bool) {
 	r := plainPointer(&t.hints)
 	if r == nil {
@@ -369,19 +368,21 @@ func (t *genericTree[K, V, O]) hintedWrite(key K, code uint64, value V, policy i
 	if word&(latchExclusive|latchSharedMask) != 0 {
 		return k, old, false, false, false
 	}
-	m := after(n, word)
-	count := int(*(*int32)(unsafe.Pointer(&m.count)))
+	// The search reads the leaf racing, in no order with the latch word,
+	// so as not to wait for it: what the write relies on is read again
+	// once the leaf is taken (holdsAt).
+	count := owned(&n.count)
 	if count <= 0 || count > nodeSize {
 		return k, old, false, false, false
 	}
-	i := firstTag(&m.tags, count, code)
-	found = i < count && m.codes[i&(nodeSize-1)] == code
+	i := firstTag(&n.tags, count, code)
+	found = i < count && n.codes[i&(nodeSize-1)] == code
 	if !found {
-		if first, high := bounds(&m.gheader); !owns(count, first, high, code) {
+		if first, high := bounds(&n.gheader); !owns(count, first, high, code) {
 			return k, old, false, false, false
 		}
-		i = lowerCode(&m.codes, count, code)
-		found = i < count && m.codes[i&(nodeSize-1)] == code
+		i = lowerCode(&n.codes, count, code)
+		found = i < count && n.codes[i&(nodeSize-1)] == code
 	}
 	switch {
 	case policy == hintedRemove:
@@ -392,6 +393,10 @@ func (t *genericTree[K, V, O]) hintedWrite(key K, code uint64, value V, policy i
 		return k, old, false, false, true
 	}
 	if !n.latch.tryLockAt(word) {
+		return k, old, false, false, false
+	}
+	if !n.holdsAt(count, i, code, found) {
+		n.latch.unlockExclusive(word)
 		return k, old, false, false, false
 	}
 	i &= nodeSize - 1
@@ -408,6 +413,23 @@ func (t *genericTree[K, V, O]) hintedWrite(key K, code uint64, value V, policy i
 	}
 	n.latch.unlockExclusive(word)
 	return k, old, found, true, false
+}
+
+// holdsAt reports whether leaf n, held exclusively, holds what a write
+// found by a racing search: count entries and, at slot i, code, or where
+// it isn't, room for it between its neighbors and within the leaf's
+// bounds. Read under the latch, these are what the leaf holds.
+func (n *gleaf[K, V]) holdsAt(count, i int, code uint64, found bool) bool {
+	if owned(&n.count) != count {
+		return false
+	}
+	if found {
+		return n.codes[i&(nodeSize-1)] == code
+	}
+	first, high := bounds(&n.gheader)
+	return owns(count, first, high, code) &&
+		(i == 0 || n.codes[(i-1)&(nodeSize-1)] < code) &&
+		(i == count || n.codes[i&(nodeSize-1)] > code)
 }
 
 // hintedLatched is code's leaf latched in mode through its hint, and the
