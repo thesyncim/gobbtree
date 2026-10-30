@@ -105,6 +105,10 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 		}
 	}
 	if seqlockPlainStores && t.wordCodes() && policy != insertMerge {
+		if t.appendTail(key, numericKey[O](key), value) {
+			var zero V
+			return zero, false
+		}
 		old, found, done, full := t.insertHinted(key, numericKey[O](key), value, policy)
 		if done {
 			return old, found
@@ -436,6 +440,9 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 		_, high := bounds(&leaf.gheader)
 		setHigh(&right.gheader, high)
 		setHigh(&leaf.gheader, right.codes[0])
+		if high == 0 {
+			t.tail.Store(&right.gheader)
+		}
 	}
 	if prefixed[O, K]() {
 		var high *K

@@ -299,6 +299,37 @@ func (t *genericTree[K, V, O]) getMany8(keys *[batchLanes]K, dst *[batchLanes]Re
 	}
 }
 
+// appendTail is insert of key, past every key the tree holds, into its
+// rightmost leaf, as appends make the next key: the leaf t.tail names,
+// where it still has no high fence, and so is the rightmost, holds a last
+// key below code, and has room. In an owner's tree the leaf is changed in
+// place; in a Map it is searched after its latch word and taken by a
+// compare-and-swap at that word, as hinted writes are. false where it
+// can't.
+func (t *genericTree[K, V, O]) appendTail(key K, code uint64, value V) bool {
+	h := plainPointer(&t.tail)
+	if h == nil {
+		return false
+	}
+	word := *(*uint64)(unsafe.Pointer(&h.latch))
+	if !t.owner && word&(latchExclusive|latchSharedMask) != 0 {
+		return false
+	}
+	m := after(h, word)
+	count := int(*(*int32)(unsafe.Pointer(&m.count)))
+	if _, high := bounds(m); high != 0 || count <= 0 || count >= nodeSize || (*leafRoute)(unsafe.Pointer(m)).codes[(count-1)&(nodeSize-1)] >= code {
+		return false
+	}
+	if !t.owner && !h.latch.tryLockAt(word) {
+		return false
+	}
+	t.insertEntry(asLeaf[K, V](h), count, key, value)
+	if !t.owner {
+		h.latch.unlockExclusive(word)
+	}
+	return true
+}
+
 // seekHinted searches the leaf code's hint names, with plain loads after
 // its latch word, which it returns, unheld: code's slot and whether it is there, false where
 // the leaf is held, or code lies outside it or at either of its ends

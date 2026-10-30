@@ -48,6 +48,12 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	leaves leafDir
 	hints  atomic.Pointer[codeHints]
 	making atomic.Bool
+	// tail is the rightmost leaf such a tree made last, for appends: a key
+	// past its last goes in where it still has no high fence and room
+	// (appendTail). Only the rightmost leaf has none, so a stale tail, one
+	// merged away or a slot another leaf took, sends the key the general
+	// way.
+	tail atomic.Pointer[gheader]
 	// An owner's text leaves reuse their buffers' bytes, a removed key's for
 	// the next to go in and a full buffer's for its live keys, while no key
 	// read over them is out: epoch is the generation of buffers the writer
@@ -1095,6 +1101,7 @@ func (t *genericTree[K, V, O]) start() {
 		}
 		n, version := t.newLeaf()
 		n.latch.unlockExclusive(version)
+		t.tail.Store(&n.gheader)
 		t.root.Store(&n.gheader)
 	}
 }
@@ -1343,6 +1350,7 @@ func (t *genericTree[K, V, O]) isEmpty() bool {
 
 // clear drops every entry. As upstream's, it is the owner's.
 func (t *genericTree[K, V, O]) clear() {
+	t.tail.Store(nil)
 	t.root.Store(nil)
 	t.shared.Store(nil)
 	t.hints.Store(nil)

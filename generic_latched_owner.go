@@ -169,6 +169,10 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V, policy int, merge fun
 	if !prefixed[O, K]() {
 		code = numericKey[O](key)
 	}
+	if t.wordCodes() && t.appendTail(key, code, value) {
+		var zero V
+		return zero, false
+	}
 	n, i, found, fits := t.ownerSeek(key, code, true)
 	if !found && prefixed[O, K]() {
 		// A key with the prefix of a leaf whose keys share the shared

@@ -295,6 +295,9 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 			if t.wordCodes() {
 				_, high := bounds(r)
 				setHigh(l, high)
+				if high == 0 {
+					t.tail.Store(l)
+				}
 			}
 			t.moveLeafEntries(asLeaf[K, V](l), int(l.count.Load()), asLeaf[K, V](r), 0, int(r.count.Load()))
 			t.removeChild(parent, right)
