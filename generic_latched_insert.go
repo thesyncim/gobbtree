@@ -181,15 +181,23 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 	if seqlockPlainStores && t.wordCodes() && policy != insertMerge {
 		// The code once: in shared code each is a check of the key's type.
 		code := numericKey[O](key)
-		_, old, found, done, full := t.hintedWrite(key, code, value, policy)
-		if done {
-			return old, found
+		// Upstream's last-leaf shortcut (D45), which its latched map takes
+		// before every insert: while the tree is appending, a key past the
+		// tail is tried there before the hints, and one that isn't stops
+		// it, so inserts of other orders pay only the flag's test, read
+		// and written racing, as a hint. Otherwise a key the hints don't
+		// place, as one past the table's domain, is tried past the tail,
+		// and an append there starts it again.
+		appending := t.appending
+		if !appending {
+			_, old, found, done, full := t.hintedWrite(key, code, value, policy)
+			if done {
+				return old, found
+			}
+			if full {
+				return t.insertSplitting(key, code, value, policy, merge)
+			}
 		}
-		if full {
-			return t.insertSplitting(key, code, value, policy, merge)
-		}
-		// A key the hints don't place, as one past the table's domain, may
-		// go past the tail (pastTail).
 		if t.pastTail(code) {
 			done, tail := t.appendTail(key, code, value)
 			if tail != nil {
@@ -197,11 +205,27 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 				// A tree grown by appends descends none: its hints
 				// follow its growth here, as a descent's would.
 				currentHints(&t.hints, &t.making, &t.reshaped, plainPointer(&t.root))
+				if !appending {
+					t.appending = true
+				}
 				return old, found
 			}
 			if done {
+				if !appending {
+					t.appending = true
+				}
 				var zero V
 				return zero, false
+			}
+		}
+		if appending {
+			t.appending = false
+			_, old, found, done, full := t.hintedWrite(key, code, value, policy)
+			if done {
+				return old, found
+			}
+			if full {
+				return t.insertSplitting(key, code, value, policy, merge)
 			}
 		}
 	}
