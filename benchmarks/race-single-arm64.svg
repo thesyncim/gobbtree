@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="700" height="216" viewBox="0 0 700 216" role="img" aria-label="Get on 5M mixed uint64 keys, one thread, Apple M4 Max, in million operations per second: gobbtree Tree 24, bbtree (Rust) 11.7; Go map, unordered, 40.3.">
-  <!-- benchmarks/arm64-2026-10-29.json: mixed, 5M entries, tree_hit and builtin_hit, medians of 3 runs.
+<svg xmlns="http://www.w3.org/2000/svg" width="700" height="216" viewBox="0 0 700 216" role="img" aria-label="Get on 5M mixed uint64 keys, one thread, Apple M4 Max, in million operations per second: gobbtree Tree 25.7, bbtree (Rust) 12.3; Go map, unordered, 41.6.">
+  <!-- benchmarks/arm64-2026-10-30.json: mixed, 5M entries, tree_hit and builtin_hit, medians of 3 runs.
        A ball's one-way trip takes 0.6 s × (gobbtree's throughput / its throughput). -->
   <style>
     text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 18px; font-weight: 600; fill: #18181b; }
@@ -20,21 +20,21 @@
   <text class="muted" x="28" y="66">5M uint64 keys · Apple M4 Max · M ops/s</text>
 
   <rect class="highlight" x="22" y="86" width="153" height="26" rx="4"/>
-  <rect class="highlight" x="642" y="86" width="38" height="26" rx="4"/>
+  <rect class="highlight" x="621" y="86" width="59" height="26" rx="4"/>
   <text class="ours" x="28" y="106">gobbtree Tree</text>
   <line class="track" x1="258" y1="98" x2="590" y2="98"/>
   <circle class="ball" cx="269" cy="98" r="11" fill="#ffd60a" stroke="#18181b" stroke-width="2.5" style="animation-duration: 0.60s"/>
-  <text class="ours value" x="672" y="106">24</text>
+  <text class="ours value" x="672" y="106">25.7</text>
 
   <text x="28" y="146">bbtree (Rust)</text>
   <line class="track" x1="258" y1="138" x2="590" y2="138"/>
-  <circle class="ball" cx="269" cy="138" r="11" fill="#3f3f46" style="animation-duration: 1.23s"/>
-  <text class="value" x="672" y="146">11.7</text>
+  <circle class="ball" cx="269" cy="138" r="11" fill="#3f3f46" style="animation-duration: 1.25s"/>
+  <text class="value" x="672" y="146">12.3</text>
 
   <line class="track dashed" x1="28" y1="162" x2="672" y2="162" stroke-width="1.5"/>
 
   <text class="faint" x="28" y="194">Go map (unordered)</text>
   <line class="track dashed" x1="258" y1="186" x2="590" y2="186"/>
-  <circle class="ball" cx="269" cy="186" r="11" fill="none" stroke="#71717a" stroke-width="2.5" style="animation-duration: 0.36s"/>
-  <text class="faint value" x="672" y="194">40.3</text>
+  <circle class="ball" cx="269" cy="186" r="11" fill="none" stroke="#71717a" stroke-width="2.5" style="animation-duration: 0.37s"/>
+  <text class="faint value" x="672" y="194">41.6</text>
 </svg>

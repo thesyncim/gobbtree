@@ -13,7 +13,7 @@ from pathlib import Path
 from statistics import median
 
 ROOT = Path(__file__).resolve().parent.parent
-REPORT = ROOT / "benchmarks/arm64-2026-10-29.json"
+REPORT = ROOT / "benchmarks/arm64-2026-10-30.json"
 SIZES = [4096, 262144, 5000000, 50000000]
 LABELS = ["4K", "262K", "5M", "50M"]
 CASES = [
