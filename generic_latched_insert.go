@@ -554,10 +554,11 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 	n.count.Store(int32(count + 1))
 }
 
-// reserveKeys makes room in text leaf n's buffer for extra more bytes.
-func (t *genericTree[K, V, O]) reserveKeys(n *gleaf[K, V], extra int) {
+// reserveKeys makes room in text leaf n's buffer for extra more bytes, of
+// keys more keys.
+func (t *genericTree[K, V, O]) reserveKeys(n *gleaf[K, V], extra, keys int) {
 	if c := n.text(); extra > int(c.size-c.used) {
-		t.growKeys(n, extra)
+		t.growKeys(n, extra, keys)
 	}
 }
 
@@ -565,7 +566,7 @@ func (t *genericTree[K, V, O]) reserveKeys(n *gleaf[K, V], extra int) {
 // as much room again: a reusable buffer that then fits them packs its live
 // keys in place; otherwise n takes a new buffer, of its live keys in slot
 // order, and the old keeps its bytes for the keys handed out over them.
-func (t *genericTree[K, V, O]) growKeys(n *gleaf[K, V], extra int) {
+func (t *genericTree[K, V, O]) growKeys(n *gleaf[K, V], extra, keys int) {
 	c := n.text()
 	count, live := int(n.count.Load()), extra
 	for i := 0; i < count; i++ {
@@ -576,7 +577,7 @@ func (t *genericTree[K, V, O]) growKeys(n *gleaf[K, V], extra int) {
 		t.packKeys(n)
 		return
 	}
-	size := max(2*live, 64)
+	size := bufferFor(live, count+keys)
 	if uint64(size) > math.MaxUint32 {
 		panic("gobbtree: a leaf's keys passed 4 GiB")
 	}
@@ -625,6 +626,14 @@ func (t *genericTree[K, V, O]) packKeys(n *gleaf[K, V]) {
 	c.used = uint32(used)
 }
 
+// bufferFor is the size of a buffer for keys of live bytes, count of
+// them, in a leaf that may fill: room for a full leaf of keys their length
+// on average, an eighth more, so that a leaf filling takes one buffer, not
+// one a doubling, each copying every key.
+func bufferFor(live, count int) int {
+	return max(live*nodeSize/max(count, 1)*9/8, live+live/8, 64)
+}
+
 // keyBuffer is a buffer of at least size bytes for a leaf's keys, its
 // whole capacity, which holds no pointers.
 func keyBuffer(size int) []byte {
@@ -645,7 +654,7 @@ func (t *genericTree[K, V, O]) placeKey(n *gleaf[K, V], s string) uint64 {
 		copy(unsafe.Slice((*byte)(unsafe.Add(c.buf, hole>>32)), len(s)), s)
 		return keyRef(int(hole>>32), len(s))
 	}
-	t.reserveKeys(n, len(s))
+	t.reserveKeys(n, len(s), 1)
 	return t.appendKey(n, s)
 }
 
@@ -724,7 +733,7 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 		for j := from; j < from+count; j++ {
 			moved += int(uint32(sc.slots[j].ref))
 		}
-		t.reserveKeys(dst, moved)
+		t.reserveKeys(dst, moved, count)
 		copy(dc.slots[at+count:dstCount+count], dc.slots[at:dstCount])
 		for j := 0; j < count; j++ {
 			dc.slots[at+j].ref = t.appendKey(dst, keyAt(sc.buf, sc.slots[from+j].ref))
@@ -779,7 +788,7 @@ func (t *genericTree[K, V, O]) splitLeafEntries(dst, src *gleaf[K, V], from, cou
 	for j := from; j < from+count; j++ {
 		moved += int(uint32(sc.slots[j].ref))
 	}
-	t.reserveKeys(dst, moved)
+	t.reserveKeys(dst, moved, count)
 	for j := 0; j < count; j++ {
 		dc.slots[j] = textSlot{sc.slots[from+j].tail, t.appendKey(dst, keyAt(sc.buf, sc.slots[from+j].ref))}
 	}

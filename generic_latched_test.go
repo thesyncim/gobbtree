@@ -832,7 +832,7 @@ func TestGrowLeaf(t *testing.T) {
 			for _, k := range keys {
 				total += len(k)
 			}
-			tr.reserveKeys(n, total)
+			tr.reserveKeys(n, total, len(keys))
 			for i, k := range keys {
 				n.text().slots[i] = textSlot{stringCode(k, q+8), tr.appendKey(n, k)}
 				n.codes[i] = stringCode(k, q)
