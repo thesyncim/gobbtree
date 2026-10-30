@@ -191,6 +191,9 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i in
 			done, full := t.appendTail(key, code, value)
 			if full != nil {
 				t.ownerSplit(full, nodeSize, key, code, value)
+				// A tree grown by appends descends none: its hints
+				// follow its growth here, as a descent's would.
+				currentHints(&t.hints, &t.making, plainPointer(&t.root))
 			}
 			if done || full != nil {
 				return nil, 0, false

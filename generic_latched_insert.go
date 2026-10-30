@@ -134,7 +134,11 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 		if t.pastTail(code) {
 			done, tail := t.appendTail(key, code, value)
 			if tail != nil {
-				return t.insertSplitting(key, code, value, policy, merge)
+				old, found := t.insertSplitting(key, code, value, policy, merge)
+				// A tree grown by appends descends none: its hints
+				// follow its growth here, as a descent's would.
+				currentHints(&t.hints, &t.making, plainPointer(&t.root))
+				return old, found
 			}
 			if done {
 				var zero V
