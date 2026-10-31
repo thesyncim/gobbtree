@@ -2,6 +2,7 @@ package gobbtree
 
 import (
 	"cmp"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,6 +71,10 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	// it and every buffer before it to grow by appending.
 	epoch  uint32
 	handed atomic.Uint32
+	// An annexed tree's leaves keep an annex after them (annex.go): their
+	// type, and the annex's offset in it.
+	annexLeaf reflect.Type
+	annexAt   uintptr
 }
 
 // Leaves and internal nodes below the root are underfull below these sizes,
@@ -459,6 +464,8 @@ func (t *genericTree[K, V, O]) newLeaf() (*gleaf[K, V], uint64) {
 	}
 	var n *gleaf[K, V]
 	switch {
+	case annexed[O, K]():
+		n = t.newAnnexedLeaf()
 	case prefixed[O, K]():
 		n = &new(textLeaf[K, V]).gleaf
 	case codeKeys[O, K]():
@@ -1130,6 +1137,9 @@ func (t *genericTree[K, V, O]) start() {
 		if t.exact {
 			t.setupLeaves()
 		}
+		if annexed[O, K]() {
+			t.setupAnnexes()
+		}
 		n, version := t.newLeaf()
 		n.latch.unlockExclusive(version)
 		t.tail.Store(&n.gheader)
@@ -1379,6 +1389,9 @@ func (t *genericTree[K, V, O]) isEmpty() bool {
 
 // clear drops every entry. As upstream's, it is the owner's.
 func (t *genericTree[K, V, O]) clear() {
+	if annexed[O, K]() {
+		t.releaseAnnexes(t.root.Load())
+	}
 	t.tail.Store(nil)
 	t.root.Store(nil)
 	t.shared.Store(nil)

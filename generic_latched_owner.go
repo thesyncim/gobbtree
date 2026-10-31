@@ -403,7 +403,7 @@ func (t *genericTree[K, V, O]) ownerRemove(seek int, key K, condition func(K, V)
 		return k, v, true
 	}
 	for {
-		if k, v, removed, done := t.removeRebalancing(seek, key, code, condition, handOut); done {
+		if k, v, removed, done := t.removeRebalancing(seek, key, code, condition, handOut, nil); done {
 			return k, v, removed
 		}
 	}

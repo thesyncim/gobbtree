@@ -443,18 +443,34 @@ func (t *genericTree[K, V, O]) split(path *gpath[K], leaf *gleaf[K, V], leafVers
 
 // splitAt is split, key's index in leaf known.
 func (t *genericTree[K, V, O]) splitAt(path *gpath[K], leaf *gleaf[K, V], leafVersion uint64, index int, key K, value V) bool {
+	taken, _ := t.splitAtWith(path, leaf, leafVersion, index, key, value, nil)
+	return taken
+}
+
+// splitAtWith is splitAt that, once it holds the nodes the split changes,
+// runs vacant, when not nil, on the full leaf before it changes anything,
+// as upstream's split runs a vacant entry's policy: one that refuses, or
+// panics, lets go of everything with nothing changed. taken is splitAt's
+// result, and accepted whether the entry went in.
+func (t *genericTree[K, V, O]) splitAtWith(path *gpath[K], leaf *gleaf[K, V], leafVersion uint64, index int, key K, value V, vacant func(*gleaf[K, V], K) bool) (taken, accepted bool) {
 	top := path.room()
 	var held splitSet
 	for level := top; level < path.depth; level++ {
 		if !held.takeAt(&path.levels[level].n.gheader, path.levels[level].version) {
 			held.unlock()
-			return false
+			return false, false
 		}
 	}
 	// The halves refit to their fences, the highest held at or above top.
 	if h := path.highHolder(top); h >= 0 && !held.takeAt(&path.levels[h].n.gheader, path.levels[h].version) {
 		held.unlock()
-		return false
+		return false, false
+	}
+	if vacant != nil && !runVacant(vacant, leaf, key, func() {
+		held.unlock()
+		leaf.latch.unlockExclusive(leafVersion)
+	}) {
+		return true, false
 	}
 	if !t.redistribute(path, leaf, index, key, value, &held) {
 		var fresh splitSet
@@ -463,7 +479,7 @@ func (t *genericTree[K, V, O]) splitAt(path *gpath[K], leaf *gleaf[K, V], leafVe
 	}
 	held.unlock()
 	leaf.latch.unlockExclusive(leafVersion)
-	return true
+	return true, true
 }
 
 // redistributionSlack is the room a full leaf's sibling must have to take
@@ -573,6 +589,9 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 	}
 	cut, left := ofSplit(nodeSize, index, minimum)
 	t.moveLeafEntries(right, 0, leaf, cut, nodeSize-cut)
+	if annexed[O, K]() {
+		t.splitAnnex(leaf, right)
+	}
 	// The separator is the right half's first key, before the new one goes
 	// in, which ofSplit leaves to the left where they would tie, and the
 	// right half's head; the halves take what it shares with the leaf's
@@ -1105,4 +1124,88 @@ func ofSplit(capacity, index, minimum int) (cut int, left bool) {
 		cut = capacity / 2
 	}
 	return cut, index <= cut
+}
+
+// runVacant runs vacant on leaf for key, and release where it refuses or
+// panics: what it was to hold the leaf for goes, with nothing changed.
+func runVacant[K, V any](vacant func(*gleaf[K, V], K) bool, leaf *gleaf[K, V], key K, release func()) bool {
+	accepted := false
+	defer func() {
+		if !accepted {
+			release()
+		}
+	}()
+	accepted = vacant(leaf, key)
+	return accepted
+}
+
+// insertWithLeaf is upstream's update_or_insert_with_leaf: occupied runs on
+// the entry whose key equals key, or vacant on the leaf key goes in, each
+// holding the leaf, and either may refuse, leaving the tree unchanged; found
+// tells which ran, ok whether it accepted. A full leaf runs vacant once the
+// split holds what it changes, before it changes it (splitAtWith).
+func (t *genericTree[K, V, O]) insertWithLeaf(key K, value V, occupied func(*gleaf[K, V], int) bool, vacant func(*gleaf[K, V], K) bool) (found, ok bool) {
+	if t.root.Load() == nil {
+		t.start()
+	}
+	if prefixed[O, K]() {
+		t.admit(key)
+	}
+	code := t.code(key)
+	var b backoff
+	for {
+		var path gpath[K]
+		n, version := t.descend(key, code, seekKey, false, exclusive, &path)
+		done, found, ok := t.insertIntoWithLeaf(n, version, key, value, code, occupied, vacant)
+		if done {
+			return found, ok
+		}
+		index, _ := t.find(n, key, code)
+		if taken, accepted := t.splitAtWith(&path, n, version, index, key, value, vacant); taken {
+			return false, accepted
+		}
+		n.latch.unlockExclusive(version)
+		b.spin()
+	}
+}
+
+// insertIntoWithLeaf is insertInto for insertWithLeaf, on leaf n, held at
+// version: done unless the leaf is full and key isn't in it, in which case
+// n stays held. Otherwise it lets go of n, also where a callback panics.
+func (t *genericTree[K, V, O]) insertIntoWithLeaf(n *gleaf[K, V], version uint64, key K, value V, code uint64, occupied func(*gleaf[K, V], int) bool, vacant func(*gleaf[K, V], K) bool) (done, found, ok bool) {
+	i, hit := t.find(n, key, code)
+	if !hit && int(n.count.Load()) == nodeSize {
+		return false, false, false
+	}
+	defer n.latch.unlockExclusive(version)
+	if hit {
+		return true, true, occupied(n, i)
+	}
+	if !vacant(n, key) {
+		return true, false, false
+	}
+	t.insertEntry(n, i, key, value)
+	return true, false, true
+}
+
+// removeWithLeaf is upstream's remove_with_leaf: it removes the entry whose
+// key equals key, running onRemove on it once, holding its leaf, right
+// before it comes out.
+func (t *genericTree[K, V, O]) removeWithLeaf(key K, onRemove func(*gleaf[K, V], int)) (K, V, bool) {
+	var k K
+	var v V
+	if t.root.Load() == nil {
+		return k, v, false
+	}
+	code := t.code(key)
+	if k, v, removed, done := t.removeLatched(seekKey, key, code, nil, onRemove); done {
+		return k, v, removed
+	}
+	var b backoff
+	for {
+		if k, v, removed, done := t.removeRebalancing(seekKey, key, code, nil, true, onRemove); done {
+			return k, v, removed
+		}
+		b.spin()
+	}
 }
