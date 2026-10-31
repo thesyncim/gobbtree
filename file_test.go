@@ -811,3 +811,38 @@ func FuzzFileBytes(f *testing.F) {
 		}
 	})
 }
+
+// A mapped file truncated under its map faults the reads that reach past
+// its end: they panic, as a recovering program can catch, instead of
+// ending the program.
+func TestMappedFileTruncatedPanics(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "truncated.bbt")
+	if err := CreateFile(path, fileEntries(200000)); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Mmap[uint64, uint64](path).Open()
+	if errors.Is(err, ErrMmapUnavailable) {
+		t.Skip(err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	panicked := func(read func()) (p bool) {
+		defer func() { p = recover() != nil }()
+		read()
+		return false
+	}
+	if !panicked(func() { m.Get(3 * 199999) }) {
+		t.Fatal("a read past the truncated file's end did not panic")
+	}
+	if !panicked(func() {
+		for range m.All() {
+		}
+	}) {
+		t.Fatal("an iteration past the truncated file's end did not panic")
+	}
+}

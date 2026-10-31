@@ -5,12 +5,16 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"iter"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 )
 
 type diskFragment struct {
@@ -290,39 +294,75 @@ type FileRange struct{ Offset, Length int64 }
 
 // WriteAt writes the snapshot into file at offset rounded up to its
 // alignment, after zeros, in place of what lay there, and ends the file
-// after it, as upstream's write_at does.
+// after it, as upstream's write_at does: it truncates the file at offset,
+// seeks there and writes, so a file opened to append takes it too. As
+// upstream's, it doesn't sync the file: Sync it for the snapshot to be
+// durable. On an error the range is zero, and the file may end anywhere
+// past offset.
 func (w *FileWriter[K, V]) WriteAt(file *os.File, offset int64) (FileRange, error) {
 	align := int64(w.Alignment())
 	if offset < 0 || offset > int64(^uint64(0)>>1)-align-int64(w.byteLen) {
 		return FileRange{}, ErrFileFormat
 	}
 	start := (offset + align - 1) & -align
-	r := FileRange{start, int64(w.byteLen)}
 	if err := file.Truncate(offset); err != nil {
-		return r, err
+		return FileRange{}, err
 	}
-	out := bufio.NewWriterSize(io.NewOffsetWriter(file, offset), 1<<20)
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return FileRange{}, err
+	}
+	out := bufio.NewWriterSize(file, 1<<20)
 	if _, err := out.Write(make([]byte, start-offset)); err != nil {
-		return r, err
+		return FileRange{}, err
 	}
 	if _, err := w.WriteTo(out); err != nil {
-		return r, err
+		return FileRange{}, err
 	}
-	return r, out.Flush()
+	if err := out.Flush(); err != nil {
+		return FileRange{}, err
+	}
+	return FileRange{start, int64(w.byteLen)}, nil
 }
 
-// WriteFile publishes a complete snapshot atomically in the destination
-// directory, syncing the file and then the directory. An existing mapped
-// snapshot remains valid across replacement.
+// WriteFile publishes a complete snapshot atomically: it writes a new file
+// in the destination's directory, syncs it, renames it over the destination
+// and syncs the directory, so that a crash leaves the old file or the new
+// one. A destination that is a symbolic link has its target replaced, and a
+// file it replaces keeps its permissions; a new one takes the umask's, as
+// os.Create does. An existing mapped snapshot remains valid across
+// replacement. An error from syncing the directory comes after the rename:
+// the new file is in place, though perhaps not yet durably.
 func (w *FileWriter[K, V]) WriteFile(path string) (err error) {
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		path = target
+	}
+	perm, keep := os.FileMode(0o666), false
+	if info, err := os.Stat(path); err == nil {
+		perm, keep = info.Mode().Perm(), true
+	}
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".bbtree-*")
+	f, err := createTempIn(dir, perm)
 	if err != nil {
 		return err
 	}
-	name := f.Name()
-	defer func() { _ = f.Close(); _ = os.Remove(name) }()
-	if _, err = w.WriteTo(f); err != nil {
+	name, renamed := f.Name(), false
+	defer func() {
+		if !renamed {
+			_ = f.Close()
+			_ = os.Remove(name)
+		}
+	}()
+	if keep {
+		// The umask doesn't apply to an explicit mode.
+		if err = f.Chmod(perm); err != nil {
+			return err
+		}
+	}
+	out := bufio.NewWriterSize(f, 1<<20)
+	if _, err = w.WriteTo(out); err != nil {
+		return err
+	}
+	if err = out.Flush(); err != nil {
 		return err
 	}
 	if err = f.Sync(); err != nil {
@@ -334,7 +374,21 @@ func (w *FileWriter[K, V]) WriteFile(path string) (err error) {
 	if err = os.Rename(name, path); err != nil {
 		return err
 	}
+	renamed = true
 	return syncDir(dir)
+}
+
+// createTempIn creates a new file in dir for WriteFile, with mode perm less
+// the umask, as os.CreateTemp does with 0600.
+func createTempIn(dir string, perm os.FileMode) (*os.File, error) {
+	for range 10000 {
+		name := filepath.Join(dir, ".bbtree-"+strconv.FormatUint(rand.Uint64(), 36))
+		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+		if !errors.Is(err, fs.ErrExist) {
+			return f, err
+		}
+	}
+	return nil, &fs.PathError{Op: "createtemp", Path: filepath.Join(dir, ".bbtree-*"), Err: fs.ErrExist}
 }
 
 func CreateFile[K cmp.Ordered, V any](path string, entries iter.Seq2[K, V]) error {
