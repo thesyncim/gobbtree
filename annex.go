@@ -36,6 +36,13 @@ type LeafAnnex[A any] interface {
 // (LeafAnnex), upstream's BBTreeMap with WithLeafAnnex. Its
 // UpdateOrInsertWithLeaf and DeleteWithLeaf hand their callbacks the leaf
 // they hold. The zero value is ready to use.
+//
+// Its keys' Compare and Window may read what changes only while their leaf
+// is held exclusively, as a store's keys read the records they point to,
+// which a callback moves: the map compares a key only holding its leaf, or
+// a copy of it the callback left equal (ReplaceKey). So its iterations, as
+// upstream's scan, run their loop bodies holding each leaf shared, which
+// must not change the map.
 type AnnexedMapOf[K Key[K], V any, A any, PA LeafAnnex[A]] struct {
 	mapCore[K, V, annexOrder[K, A, PA]]
 }
@@ -247,4 +254,141 @@ func (t *genericTree[K, V, O]) compareSeparatorHeld(n *ginner[K], i int, key K) 
 		return 0, false
 	}
 	return t.compare(t.key(leaf, 0), key), true
+}
+
+// walkHeld is walk for an annexed tree, as upstream's latched scan: visit
+// runs on each entry in b, in key order or in reverse, holding its leaf
+// shared, where walk copies a leaf's entries and resumes from a key it
+// compares unheld. The walk goes on to the held leaf's neighbor through the
+// internal nodes its descent kept, and latches it before it lets go of the
+// held one; where one of those nodes changed, it searches again from the
+// held leaf's last key, which the leaf keeps where it is. An entry present
+// throughout is visited once.
+func (t *genericTree[K, V, O]) walkHeld(b *Bounds[K], reverse bool, visit func(K, V) bool) {
+	if t.root.Load() == nil {
+		return
+	}
+	var path gpath[K]
+	seek, from, strict := seekFirst, b.lower, false
+	if reverse {
+		seek, from, strict = seekLast, b.upper, b.upperKind == excluded
+	}
+	var code uint64
+	if !reverse && b.lowerKind != unbounded || reverse && b.upperKind != unbounded {
+		seek, code = seekKey, t.code(from)
+	}
+	n, _ := t.descend(from, code, seek, strict, shared, &path)
+	defer func() {
+		if n != nil {
+			n.latch.unlockShared()
+		}
+	}()
+	for {
+		count := int(n.count.Load())
+		if !reverse {
+			for i := 0; i < count; i++ {
+				k := t.key(n, i)
+				if !aboveLower[K, O](b, k) {
+					continue
+				}
+				if !belowUpper[K, O](b, k) || !visit(k, n.values[i]) {
+					return
+				}
+			}
+		} else {
+			for i := count - 1; i >= 0; i-- {
+				k := t.key(n, i)
+				if !belowUpper[K, O](b, k) {
+					continue
+				}
+				if !aboveLower[K, O](b, k) || !visit(k, n.values[i]) {
+					return
+				}
+			}
+		}
+		next, end := t.neighborHeld(&path, reverse)
+		for next == nil && !end {
+			if count == 0 {
+				// Only the root leaf is ever empty, and it has no
+				// neighbor while held.
+				return
+			}
+			last := count - 1
+			if reverse {
+				last = 0
+			}
+			k := t.key(n, last)
+			t.descend(k, t.code(k), seekKey, false, optimistic, &path)
+			next, end = t.neighborHeld(&path, reverse)
+		}
+		n.latch.unlockShared()
+		n = next
+		if end {
+			return
+		}
+	}
+}
+
+// neighborHeld latches shared the neighbor of the leaf path leads to, on
+// the right, or the left in reverse: from the nearest node of the path with
+// an edge on that side, down the edges nearest the leaf, each node read at
+// a version, which the path then keeps. The latched leaf is the neighbor if
+// every node from there down is still at that version. end where the leaf
+// has no neighbor, and none and false where a node changed.
+func (t *genericTree[K, V, O]) neighborHeld(path *gpath[K], reverse bool) (next *gleaf[K, V], end bool) {
+	for level := path.depth - 1; level >= 0; level-- {
+		at := path.levels[level]
+		edge := at.edge + 1
+		if reverse {
+			edge = at.edge - 1
+		}
+		if edge < 0 || edge >= at.count {
+			continue
+		}
+		h := at.n.children[edge&(nodeSize-1)].Load()
+		if h == nil || !at.n.latch.isUnchanged(at.version) {
+			return nil, false
+		}
+		depth := level + 1
+		for !h.leaf {
+			if depth == maxDepth {
+				return nil, false
+			}
+			c := asInner[K](h)
+			v := c.latch.readVersion()
+			count := int(c.count.Load())
+			if count == 0 || count > nodeSize {
+				return nil, false
+			}
+			e := 0
+			if reverse {
+				e = count - 1
+			}
+			h = c.children[e&(nodeSize-1)].Load()
+			if h == nil || !c.latch.isUnchanged(v) {
+				return nil, false
+			}
+			path.levels[depth] = gpathLevel[K]{n: c, version: v, edge: e, count: count}
+			depth++
+		}
+		h.latch.lockShared()
+		path.levels[level].edge, path.depth = edge, depth
+		if !path.unchanged(level) {
+			h.latch.unlockShared()
+			return nil, false
+		}
+		return asLeaf[K, V](h), false
+	}
+	return nil, path.depth == 0 || path.unchanged(0)
+}
+
+// UpdateRange and UpdateAll would change the map from inside an iteration,
+// which holds each leaf an AnnexedMapOf visits: they panic. Upstream's
+// shared map has neither.
+func (m *AnnexedMapOf[K, V, A, PA]) UpdateRange(Bounds[K], func(K, V) V) {
+	panic("gobbtree: UpdateRange on an AnnexedMapOf, whose iterations hold their leaves")
+}
+
+func (m *AnnexedMapOf[K, V, A, PA]) UpdateAll(func(K, V) V) {
+	panic("gobbtree: UpdateAll on an AnnexedMapOf, whose iterations hold their leaves")
 }

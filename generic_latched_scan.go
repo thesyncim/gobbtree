@@ -8,6 +8,10 @@ package gobbtree
 // the path, or, where a racing writer changed the node it reads it through,
 // from the leaf's last key.
 func (t *genericTree[K, V, O]) walk(b *Bounds[K], reverse bool, visit func(K, V) bool) {
+	if annexed[O, K]() {
+		t.walkHeld(b, reverse, visit)
+		return
+	}
 	if t.root.Load() == nil {
 		return
 	}

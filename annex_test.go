@@ -417,3 +417,135 @@ func TestAnnexesNameTheirLeaves(t *testing.T) {
 		t.Fatalf("%d ids outlived Clear", len(testLeafIDs.live))
 	}
 }
+
+// An annexed map's iterations, which hold each leaf, visit what a model
+// holds, in order and in reverse, within any bounds.
+func TestAnnexedScansHoldTheirLeaves(t *testing.T) {
+	m := NewAnnexedMapOf[annexKey, uint64, noAnnex]()
+	rng := rand.New(rand.NewPCG(12, 12))
+	model := map[annexKey]uint64{}
+	for i := range 6000 {
+		k := annexKey(rng.Uint64N(20000))
+		if rng.IntN(4) == 0 {
+			m.Delete(k)
+			delete(model, k)
+		} else {
+			m.Insert(k, uint64(i))
+			model[k] = uint64(i)
+		}
+	}
+	keys := make([]annexKey, 0, len(model))
+	for k := range model {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for trial := range 200 {
+		lo, hi := annexKey(rng.Uint64N(21000)), annexKey(rng.Uint64N(21000))
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		var b Bounds[annexKey]
+		switch trial % 4 {
+		case 0:
+			b = Between(lo, hi)
+		case 1:
+			b = AtLeast(lo).AtMost(hi)
+		case 2:
+			b = Above(lo)
+		case 3:
+			b = Below(hi)
+		}
+		var want []annexKey
+		for _, k := range keys {
+			if aboveLower[annexKey, custom[annexKey]](&b, k) && belowUpper[annexKey, custom[annexKey]](&b, k) {
+				want = append(want, k)
+			}
+		}
+		var got []annexKey
+		for k, v := range m.Scan(b) {
+			if v != model[k] {
+				t.Fatalf("Scan gave %d for %d, want %d", v, k, model[k])
+			}
+			got = append(got, k)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("Scan(%v) gave %d keys, want %d", b, len(got), len(want))
+		}
+		got = got[:0]
+		for k := range m.ScanReverse(b) {
+			got = append(got, k)
+		}
+		slices.Reverse(got)
+		if !slices.Equal(got, want) {
+			t.Fatalf("ScanReverse(%v) gave %d keys, want %d", b, len(got), len(want))
+		}
+	}
+	if k, _, ok := m.First(); !ok || k != keys[0] {
+		t.Fatalf("First is %d, want %d", k, keys[0])
+	}
+	if k, _, ok := m.Last(); !ok || k != keys[len(keys)-1] {
+		t.Fatalf("Last is %d, want %d", k, keys[len(keys)-1])
+	}
+}
+
+// Scans in both directions, while writers insert and delete other keys and
+// split and merge leaves under them, visit each key present throughout
+// exactly once, in order.
+func TestAnnexedScansVisitOnceUnderWriters(t *testing.T) {
+	m := NewAnnexedMapOf[annexKey, uint64, noAnnex]()
+	const stable = 3000
+	// Stable keys are multiples of 4; writers churn the rest.
+	for k := range annexKey(stable) {
+		m.Insert(k*4, 1)
+	}
+	stop := make(chan struct{})
+	var writers sync.WaitGroup
+	for w := range 3 {
+		writers.Go(func() {
+			rng := rand.New(rand.NewPCG(uint64(w), 13))
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				k := annexKey(rng.Uint64N(stable)*4 + 1 + rng.Uint64N(3))
+				if rng.IntN(2) == 0 {
+					m.Insert(k, 2)
+				} else {
+					m.Delete(k)
+				}
+			}
+		})
+	}
+	var scanners sync.WaitGroup
+	for s := range 4 {
+		scanners.Go(func() {
+			for range 40 {
+				seen, prev, first := 0, annexKey(0), true
+				all := m.All()
+				if s%2 == 1 {
+					all = m.Reverse()
+				}
+				for k := range all {
+					if !first && (s%2 == 0 && k <= prev || s%2 == 1 && k >= prev) {
+						t.Errorf("scan %d visited %d after %d", s, k, prev)
+						return
+					}
+					first, prev = false, k
+					if k%4 == 0 {
+						seen++
+					}
+				}
+				if seen != stable {
+					t.Errorf("scan %d visited %d stable keys, want %d", s, seen, stable)
+					return
+				}
+			}
+		})
+	}
+	scanners.Wait()
+	close(stop)
+	writers.Wait()
+	checkGenericTree(t, &m.generic)
+}
