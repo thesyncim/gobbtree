@@ -1112,23 +1112,23 @@ func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K, code uint64) (int, bo
 		}
 		return lo, lo < count && order == 0
 	}
-	lo := lowerCode(&n.codes, count, code)
 	if exactCodes[O, K]() {
+		lo := lowerCode(&n.codes, count, code)
 		return lo, lo < count && n.codes[lo&(nodeSize-1)] == code
 	}
-	hi := count
-	if code != ^uint64(0) {
-		hi = lowerCode(&n.codes, count, code+1)
-	}
+	// Only the keys whose codes are key's can be it, and they are rare
+	// past the first: they follow the first code at least key's.
+	lo, hi := tieRange(&n.codes, count, code)
+	order := 1
 	for lo < hi {
 		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
-		if t.compare(t.key(n, mid), key) < 0 {
+		if o := t.compare(t.key(n, mid), key); o < 0 {
 			lo = mid + 1
 		} else {
-			hi = mid
+			hi, order = mid, o
 		}
 	}
-	return lo, lo < count && t.compare(t.key(n, lo), key) == 0
+	return lo, order == 0
 }
 
 // start makes the tree's root leaf, once.
