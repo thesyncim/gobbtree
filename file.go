@@ -557,15 +557,10 @@ func (m *FileMap[K, V]) Get(key K) (value V, ok bool) {
 	if img == nil {
 		return
 	}
-	// A mapping goes once nothing holds its image: Get holds it to its end.
-	value, ok = m.getHeld(img, key)
-	runtime.KeepAlive(img)
-	return
-}
-
-// getHeld is Get on img, by findWordFast's or findTextFast's descent where
-// the image's layout fits one, and get's otherwise.
-func (m *FileMap[K, V]) getHeld(img *fileImage, key K) (value V, ok bool) {
+	// By findWordFast's or findTextFast's descent where the image's layout
+	// fits one, and get's otherwise. A mapping goes once nothing holds its
+	// image: img stays live across each descent, as the reads after it
+	// use it.
 	if unsafe.Sizeof(key) == 8 && img.fastGet {
 		_, slot, state := m.findWordFast(img, *(*uint64)(unsafe.Pointer(&key))^m.layout.flip)
 		switch state {
