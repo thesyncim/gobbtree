@@ -188,7 +188,7 @@ Not carried over, because Go has no counterpart:
 
 - **Rust-only traits:** no operator overloading for `Index` (use `Get`), and no `Hash`.
 - **Allocators and `InsertError`:** Go's allocation failure is fatal, so `Insert` has no error path.
-- **`NodeConfig` page sizes:** nodes hold a fixed 32 entries. Go generics can index an array type parameter but can't slice it or point into it, which shifting entries and the SIMD searches need, so another size would mean another copy of the node code.
+- **`NodeConfig` page sizes, not yet:** nodes hold a fixed 32 entries. Go generics can't slice an array type parameter, but one copy of the node code can still serve several sizes, its columns at offsets each size's instantiation folds to constants; that port is planned.
 - **The rest of `InlineKey`** (`WIDTH`, `hash_tag`, `cmp_prefix`, and `cmp_from` on custom keys): these tune upstream's node layout, and a generic Go container can't call an optional key method without boxing the key.
 - **The `inspect` and `check_invariants` debugging helpers.**
 
