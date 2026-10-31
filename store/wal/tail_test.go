@@ -46,20 +46,16 @@ func holds(t tail, b []byte, records []storedRecord) bool {
 	return bytes.Equal(b, append(slices.Clone(headerBytes(t)), concatBytes(records)...))
 }
 
-// addressAt is upstream's WalTail::address_at.
-func addressAt(t tail, records []storedRecord, i int) Address {
-	return Address{
-		file:   t.file,
-		offset: t.fileLen + uint64(len(headerBytes(t))+len(concatBytes(records[:i]))),
-		length: uint64(len(specBytes(records[i]))),
-	}
-}
-
-// addresses is upstream's WalTail::addresses.
+// addresses is upstream's WalTail::addresses, each record's address_at: t's
+// file, the offset past t, the header and the records before it, and the
+// record's length.
 func addresses(t tail, records []storedRecord) []Address {
 	var a []Address
-	for i := range records {
-		a = append(a, addressAt(t, records, i))
+	offset := t.fileLen + uint64(len(headerBytes(t)))
+	for _, r := range records {
+		length := uint64(len(specBytes(r)))
+		a = append(a, Address{file: t.file, offset: offset, length: length})
+		offset += length
 	}
 	return a
 }
@@ -315,9 +311,8 @@ func TestScanReadsExactlyWholeAppends(t *testing.T) {
 		}
 		// Bytes cut at each record's end: whole appends only where an append
 		// ends.
-		for _, r := range slices.Concat(f.records...) {
-			end := int(addressAt(position, slices.Concat(f.records...), int(r.lsn-position.nextLSN)).offset-position.fileLen) + r.encodedLen()
-			checkScan(t, position, f.bytes[:end])
+		for _, a := range addresses(position, slices.Concat(f.records...)) {
+			checkScan(t, position, f.bytes[:a.offset-position.fileLen+a.length])
 		}
 		checkScan(t, position, randomBytes(rng, rng.IntN(64)))
 	}
@@ -378,6 +373,8 @@ func FuzzScan(f *testing.F) {
 	f.Add([]byte("\x05abc\x26de\x7fxy\x87"), uint64(5<<24|4), uint64(3<<8|2))
 	f.Add([]byte("\x00\x01\x02\x83\xe4keyvaluevaluevaluevaluevaluevaluevaluevalue"), uint64(1<<24|7), uint64(17<<8|4))
 	f.Fuzz(func(t *testing.T, recipe []byte, seed, m uint64) {
+		// Scanning in two at each append's end is quadratic in the appends.
+		recipe = recipe[:min(len(recipe), 512)]
 		position := tailOf(seed)
 		checkWALFile(t, position, encodeAppends(t, position, appendsOf(recipe)), m)
 		checkScan(t, position, recipe)

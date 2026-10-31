@@ -55,3 +55,4 @@ jobs:
       - run: GOBBTREE_ORACLE="$PWD/internal/oracle/target/release/gobbtree-oracle" GOBBTREE_FILE_ORACLE="$PWD/internal/oracle/target/release/file-oracle" go test -run 'TestUpstream.*Oracle' -v
         env:
           GOEXPERIMENT: simd
+      - run: GOBBTREE_WAL_ORACLE="$PWD/internal/oracle/target/release/wal-oracle" go test ./store/wal -run 'TestUpstreamWALOracle' -v

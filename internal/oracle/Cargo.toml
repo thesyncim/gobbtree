@@ -10,6 +10,9 @@ system-allocator = []
 [dependencies]
 bbtree = { git = "https://github.com/XiangpengHao/bbtree", rev = "8ef597b5b8d957531d88871bdb566f391206f860", features = ["file"] }
 bbtree-mmap = { git = "https://github.com/XiangpengHao/bbtree", rev = "8ef597b5b8d957531d88871bdb566f391206f860" }
+bbtree-store = { git = "https://github.com/XiangpengHao/bbtree", rev = "8ef597b5b8d957531d88871bdb566f391206f860" }
+# The executor bbtree-store's own WAL tests block on.
+pollster = "=0.4.0"
 
 mimalloc = "=0.1.52"
 
