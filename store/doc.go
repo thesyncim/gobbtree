@@ -62,6 +62,16 @@
 //     of first pages, not by their 8-byte address; an id is used again once
 //     its record dies, as overflow pages are only read holding their record's
 //     leaf. The table is Go memory, 8 bytes a long value, outside the budget.
+//   - The tree's leaves hold 32 keys whatever their size, where upstream's
+//     1 KiB leaves hold about 50 store keys: a store has about twice as many
+//     leaves, each chaining fewer pages, so more of its records are strays,
+//     whose holes their own leaf can't take back, and more of its room lies
+//     in leaves' heads. At 1M entries of 20-byte keys and 32-byte values its
+//     heap holds 90.8 bytes an entry to upstream's 80.4, and under churn
+//     1.81 bytes a live record byte to upstream's 1.52; a spent budget takes
+//     fewer holes back in place, 41% of the removed keys at upstream's
+//     test's seed to upstream's 62% (store_test.go). The thresholds are
+//     upstream's; the leaves are the tree's.
 //   - A record's lengths are little-endian, upstream's native-endian: the
 //     same bytes on the machines both run on.
 //   - The tree's Release takes no allocator, so each leaf's annex keeps its

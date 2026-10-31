@@ -16,8 +16,14 @@ func stressKey(n int) []byte {
 	return binary.BigEndian.AppendUint32([]byte("0123456789abcdef"), uint32(n))
 }
 
-// stableValue is stable key i's value, which no writer changes.
-func stableValue(i int) []byte { return value(i, 3, 24+i%40) }
+// stableValue is stable key i's value, which no writer changes: every 16th
+// one takes overflow pages, which records carry their link to as they move.
+func stableValue(i int) []byte {
+	if i%16 == 0 {
+		return value(i, 3, 2*page+i%(3*page))
+	}
+	return value(i, 3, 24+i%40)
+}
 
 // Readers look stable keys up, and scan runs of them across leaf
 // boundaries, while writers insert and remove the keys between them with
