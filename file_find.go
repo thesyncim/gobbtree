@@ -6,12 +6,11 @@ import (
 	"reflect"
 )
 
-// findWordBy is find for keys of 8 bytes with inline windows, int64 and
+// findWord is find for keys of 8 bytes with inline windows, int64 and
 // uint64, by word, the big-endian word their encoding is: one loop down the
 // levels, whose windows it takes from word, and whose separators and keys
-// it compares as words. findWord is it, with the counts inlined where the
-// target has vectors.
-func (m *FileMap[K, V]) findWordBy(data []byte, root int, word uint64) (keySlot, valueSlot int, ok bool) {
+// it compares as words.
+func (m *FileMap[K, V]) findWord(data []byte, root int, word uint64) (keySlot, valueSlot int, ok bool) {
 	in, lf := &m.layout.internal, &m.layout.leaf
 	// The shared prefix: every key begins with its bytes.
 	start := (root &^ 1) + m.layout.area
