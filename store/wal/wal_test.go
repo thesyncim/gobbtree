@@ -352,6 +352,31 @@ func TestOpenReadsTheRestOfAFileFilledDuringIt(t *testing.T) {
 	}
 }
 
+// The rest of the file such an open reads is replayed, in LSN order before
+// the next file's records, at the addresses a fresh open gives: here an
+// insert, where in upstream's reproducer it is a claim alone.
+func TestOpenReplaysTheRestOfAFileFilledDuringIt(t *testing.T) {
+	// Writer A creates the WAL: file 0 holds its claim, 1 of 3 appends.
+	storage := newMemoryStorage(3)
+	mustOpen(t, storage)
+
+	// Between B's read of file 0 and its Len(1), writer C claims, inserts,
+	// filling file 0, and removes, starting file 1.
+	b := &rivalStorage{memoryStorage: storage, before: 2, rival: func() {
+		c := mustOpen(t, storage)
+		unwrap(c.insert("x", "1"))(t)
+		unwrap(c.remove("b"))(t)
+	}}
+	opened := mustOpen(t, b)
+	want := []replayed{inserted("x", "1"), removed("b")}
+	if !slices.Equal(opened.replayed, want) {
+		t.Fatalf("replayed %v, want %v", opened.replayed, want)
+	}
+	if fresh := mustOpen(t, storage); !slices.Equal(fresh.addresses, opened.addresses) {
+		t.Fatalf("a fresh open replays at %v, the open during C's appends at %v", fresh.addresses, opened.addresses)
+	}
+}
+
 // Lookups read values back by their addresses while the writer appends, on
 // one storage.
 func TestLookupsReadWhileTheWriterAppends(t *testing.T) {
@@ -381,6 +406,10 @@ func TestLookupsReadWhileTheWriterAppends(t *testing.T) {
 				}
 				mu.Unlock()
 				if n == 0 {
+					// The writer failed before its first append.
+					if done.Load() {
+						return
+					}
 					runtime.Gosched()
 					continue
 				}
