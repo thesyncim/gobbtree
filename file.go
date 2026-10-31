@@ -38,7 +38,7 @@ type fileImage struct {
 	shared      uint64
 	sharedShift uint8
 	// fastGet tells an image whose Get takes findWordFast: integer keys
-	// of 8 bytes in its pages, plain values, a root, and in memory.
+	// of 8 bytes in its pages, plain values, and a root.
 	fastGet bool
 	// For string keys, the shared prefix, copied (findTextFast), and
 	// fastText, fastGet's counterpart for them.
@@ -82,12 +82,12 @@ func openFileMap[K cmp.Ordered, V any](data []byte, checked bool, unmap func() e
 		start := (root &^ 1) + l.area
 		img.shared = binary.BigEndian.Uint64(data[start+1 : start+9])
 		img.sharedShift = uint8(64 - 8*min(int(data[start]), 8))
-		img.fastGet = l.wordFast && !l.value.variable && unmap == nil
+		img.fastGet = l.wordFast && !l.value.variable
 	}
 	if l.textFast && root != 0 {
 		start := (root &^ 1) + l.area
 		img.sharedText = string(data[start+1 : start+1+int(data[start])])
-		img.fastText = !l.value.variable && unmap == nil
+		img.fastText = !l.value.variable
 	}
 	if unmap != nil {
 		// The cleanup holds the mapping's release, never the image.
@@ -563,7 +563,15 @@ func (m *FileMap[K, V]) Get(key K) (value V, ok bool) {
 	if img == nil {
 		return
 	}
-	// get, written out for integer keys: a frame less.
+	if img.mapped {
+		return m.getMapped(img, key)
+	}
+	return m.getHeld(img, key)
+}
+
+// getHeld is Get on img, by findWordFast's or findTextFast's descent where
+// the image's layout fits one, and get's otherwise.
+func (m *FileMap[K, V]) getHeld(img *fileImage, key K) (value V, ok bool) {
 	if unsafe.Sizeof(key) == 8 && img.fastGet {
 		_, slot, state := m.findWordFast(img, *(*uint64)(unsafe.Pointer(&key))^m.layout.flip)
 		switch state {
@@ -583,9 +591,6 @@ func (m *FileMap[K, V]) Get(key K) (value V, ok bool) {
 		case wordAbsent:
 			return
 		}
-	}
-	if img.mapped {
-		return m.getMapped(img, key)
 	}
 	return m.get(img, key)
 }
@@ -614,7 +619,7 @@ func (m *FileMap[K, V]) readVariable(data []byte, slot int) V {
 // getMapped is get on a mapping, with faults made panics, held to the end.
 func (m *FileMap[K, V]) getMapped(img *fileImage, key K) (value V, ok bool) {
 	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
-	value, ok = m.get(img, key)
+	value, ok = m.getHeld(img, key)
 	runtime.KeepAlive(img)
 	return
 }
