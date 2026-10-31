@@ -10,244 +10,248 @@ import (
 	"io"
 	"io/fs"
 	"iter"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"unsafe"
 )
-
-type diskFragment struct {
-	offset int
-	data   []byte
-}
 
 // FileWriter owns a compact snapshot built from strictly ascending entries.
 // It can be written repeatedly; subsequent changes to the input do not affect it.
 type FileWriter[K cmp.Ordered, V any] struct {
 	layout          diskLayout
+	tree            *diskTree
 	length, byteLen int
 	header          [fileHeaderSize]byte
-	pages           []diskFragment
-}
-
-type diskBuildNode[K cmp.Ordered] struct {
-	data          []byte
-	first         K
-	children      []*diskBuildNode[K]
-	count, offset int
-}
-
-func diskEncoding[K cmp.Ordered](key K) []byte {
-	v := reflect.ValueOf(key)
-	if v.Kind() == reflect.String {
-		return []byte(v.String())
-	}
-	var b [8]byte
-	var word uint64
-	if v.Kind() == reflect.Int64 {
-		word = uint64(v.Int()) ^ (1 << 63)
-	} else {
-		word = v.Uint()
-	}
-	binary.BigEndian.PutUint64(b[:], word)
-	return b[:]
-}
-
-func diskCommon(a, b []byte, limit int) int {
-	n := min(len(a), len(b), limit)
-	i := 0
-	for i < n && a[i] == b[i] {
-		i++
-	}
-	return i
-}
-
-func diskInline[K cmp.Ordered](data []byte, slot, width, prefix int, key K) {
-	encoded := diskEncoding(key)
-	var word uint64
-	for i := 0; i < width; i++ {
-		word <<= 8
-		if prefix+i < len(encoded) {
-			word |= uint64(encoded[prefix+i])
-		}
-	}
-	switch width {
-	case 2:
-		binary.NativeEndian.PutUint16(data[slot:], uint16(word))
-	case 4:
-		binary.NativeEndian.PutUint32(data[slot:], uint32(word))
-	case 8:
-		binary.NativeEndian.PutUint64(data[slot:], word)
-	}
+	// Where the root page is, where each height's first page is, and with
+	// heap pages, where each leaf is.
+	rootOffset  int
+	levelOffset []int
+	leafOffset  []int
 }
 
 // NewFileWriter copies entries once, rejecting duplicates and descending keys
 // before any destination file is touched. Integer/string keys and plain numeric,
 // array, string, byte-slice or empty-struct values use the upstream disk layouts.
+//
+// It builds the tree upstream's FileWriter builds for the same entries
+// (file_build.go), so that the file map's bytes are upstream's: full nodes,
+// the right border topped up past the minimum, the same prefixes, inline
+// keys, hash tags and heap pages.
 func NewFileWriter[K cmp.Ordered, V any](entries iter.Seq2[K, V]) (*FileWriter[K, V], error) {
 	l, err := newDiskLayout[K, V]()
 	if err != nil {
 		return nil, err
 	}
-	w := &FileWriter[K, V]{layout: l, byteLen: 64}
-	var leaves []*diskBuildNode[K]
-	var current *diskBuildNode[K]
+	w := &FileWriter[K, V]{layout: l, byteLen: fileHeaderSize}
+	t := newDiskTree(&w.layout)
+	w.tree = t
+	ks := l.key.size
+	stringValue := l.value.kind == reflect.String
 	var previous K
+	var valueRef uint64
 	for key, value := range entries {
-		if w.length > 0 && cmp.Compare(previous, key) >= 0 {
-			return nil, &NotAscendingError{index: w.length}
+		if t.length > 0 && cmp.Compare(previous, key) >= 0 {
+			return nil, &NotAscendingError{index: t.length}
 		}
 		previous = key
-		if current == nil || current.count == l.leaf.capacity+int(current.data[2]) {
-			current = &diskBuildNode[K]{data: make([]byte, l.leaf.size), first: key}
-			if len(leaves) > 0 {
-				current.data[2] = 1
-			}
-			leaves = append(leaves, current)
-		}
-		index := current.count - int(current.data[2])
-		ks := l.leaf.keys + index*l.leaf.keyStride
-		if index < 0 {
-			ks = l.leaf.headKey
-		}
-		if ks >= 0 {
-			if err = diskPut(&current.data, ks, key, l.key); err != nil {
+		// What the key's and value's slots hold while the tree is built:
+		// their own bytes, or a byte string's arena reference, where
+		// upstream's writer holds an ArenaBytes.
+		var k diskKey
+		if t.varKey {
+			// The only ordered keys of a string's size are strings.
+			s := *(*string)(unsafe.Pointer(&key))
+			ref, err := t.arena.push(unsafe.Slice(unsafe.StringData(s), len(s)))
+			if err != nil {
 				return nil, err
 			}
+			binary.NativeEndian.PutUint64(k[:], ref)
+		} else if ks == 8 {
+			binary.NativeEndian.PutUint64(k[:], binary.NativeEndian.Uint64(unsafe.Slice((*byte)(unsafe.Pointer(&key)), 8)))
+		} else {
+			copy(k[:ks], unsafe.Slice((*byte)(unsafe.Pointer(&key)), ks))
 		}
-		if err = diskPut(&current.data, l.leaf.trailing+(index+1)*l.leaf.stride, value, l.value); err != nil {
-			return nil, err
+		v := unsafe.Pointer(&value)
+		if t.varValue {
+			b := *(*[]byte)(v)
+			if stringValue {
+				s := *(*string)(v)
+				b = unsafe.Slice(unsafe.StringData(s), len(s))
+			}
+			if valueRef, err = t.arena.push(b); err != nil {
+				return nil, err
+			}
+			v = unsafe.Pointer(&valueRef)
 		}
-		current.count++
-		w.length++
-		binary.NativeEndian.PutUint16(current.data, uint16(current.count-int(current.data[2])))
+		t.push(&k, v)
 	}
+	if err = t.finish(); err != nil {
+		return nil, err
+	}
+	w.length = t.length
+	return w, w.layOut()
+}
+
+// layOut places the tree's pages as upstream's FilePages::of does, in
+// level order: the root page, then each height's pages below it, left to
+// right, each at a multiple of its alignment, every leaf followed by its
+// heap pages. It then writes each edge as its child's offset from its
+// node, tagged with the child's kind (D52), and the header.
+func (w *FileWriter[K, V]) layOut() error {
+	t, l := w.tree, &w.layout
 	copy(w.header[:8], "bbtreeIM")
 	binary.LittleEndian.PutUint32(w.header[8:], 1)
 	binary.LittleEndian.PutUint64(w.header[16:], l.fingerprint)
 	binary.LittleEndian.PutUint64(w.header[24:], uint64(w.length))
-	if len(leaves) == 0 {
-		binary.LittleEndian.PutUint64(w.header[40:], 64)
-		return w, nil
+	if t.root == nil {
+		binary.LittleEndian.PutUint64(w.header[40:], fileHeaderSize)
+		return nil
 	}
-	levels := [][]*diskBuildNode[K]{leaves}
-	for len(levels[len(levels)-1]) > 1 {
-		children := levels[len(levels)-1]
-		var parents []*diskBuildNode[K]
-		for start := 0; start < len(children); start += l.internal.capacity + 1 {
-			group := children[start:min(start+l.internal.capacity+1, len(children))]
-			n := &diskBuildNode[K]{data: make([]byte, l.internal.size), first: group[0].first, children: group, count: len(group) - 1}
-			binary.NativeEndian.PutUint16(n.data, uint16(n.count))
-			parents = append(parents, n)
+	// The root area, which upstream keeps in the root page all along.
+	copy(t.root[l.area:], t.shared[:])
+	tooLarge := fmt.Errorf("%w: file map exceeds the address space", ErrFileFormat)
+	heap := func(p []byte) (int, error) {
+		n := t.heapPages(p, nil, nil)
+		if uint64(len(p))+uint64(n) > math.MaxUint32 {
+			return 0, fmt.Errorf("%w: byte span exceeds uint32", ErrFileFormat)
 		}
-		levels = append(levels, parents)
+		return n, nil
 	}
-	if len(levels) > fileMaxDepth+1 {
-		return nil, fmt.Errorf("%w: tree depth", ErrFileFormat)
-	}
-	root := levels[len(levels)-1][0]
-	oldSize := l.internal.size
-	if len(levels) == 1 {
-		oldSize = l.leaf.size
-	}
-	extra := l.rootSize - oldSize
-	rootData := make([]byte, len(root.data)+extra)
-	copy(rootData, root.data[:oldSize])
-	copy(rootData[l.rootSize:], root.data[oldSize:])
-	root.data = rootData
-	if len(levels) == 1 {
-		for i := 1; i <= root.count; i++ {
-			for _, slot := range []struct {
-				pos int
-				typ diskType
-			}{{l.leaf.keys + (i-1)*l.leaf.keyStride, l.key}, {l.leaf.trailing + i*l.leaf.stride, l.value}} {
-				if slot.typ.variable {
-					off := binary.NativeEndian.Uint32(root.data[slot.pos+4:])
-					if uint64(off)+uint64(extra) > 1<<32-1 {
-						return nil, ErrFileFormat
-					}
-					binary.NativeEndian.PutUint32(root.data[slot.pos+4:], off+uint32(extra))
-				}
-			}
+	w.rootOffset = diskAlign(fileHeaderSize, l.rootAlign)
+	position := w.rootOffset + l.rootSize
+	if t.height == 0 && (t.varKey || t.varValue) {
+		n, err := heap(t.root)
+		if err != nil {
+			return err
 		}
+		position += n
 	}
-	var shared []byte
-	if l.leaf.width > 0 {
-		first, last := diskEncoding(leaves[0].first), diskEncoding(previous)
-		shared = first[:diskCommon(first, last, 64)]
-		root.data[l.area] = byte(len(shared))
-		copy(root.data[l.area+1:], shared)
+	w.levelOffset = make([]int, t.height)
+	for h := t.height - 1; h >= 0; h-- {
+		nl, _ := t.layoutAt(h)
+		pages := &t.levels[h]
+		if h == 0 && (t.varKey || t.varValue) {
+			w.leafOffset = make([]int, pages.count)
+			for i := range pages.count {
+				n, err := heap(pages.page(i))
+				if err != nil {
+					return err
+				}
+				if position > math.MaxInt-nl.align-nl.size-n {
+					return tooLarge
+				}
+				w.leafOffset[i] = diskAlign(position, nl.align)
+				position = w.leafOffset[i] + nl.size + n
+			}
+			continue
+		}
+		if position > math.MaxInt-nl.align-pages.count*nl.size {
+			return tooLarge
+		}
+		w.levelOffset[h] = diskAlign(position, nl.align)
+		position = w.levelOffset[h] + pages.count*nl.size
 	}
-	// Lay out all pages before encoding edges: offsets are relative to parents.
-	position := 64
-	for depth := len(levels) - 1; depth >= 0; depth-- {
-		for i, n := range levels[depth] {
-			nl := l.internal
-			if depth == 0 {
-				nl = l.leaf
-			}
-			align := nl.align
-			if n == root {
-				align = l.rootAlign
-			}
-			if position > int(^uint(0)>>1)-align-len(n.data) {
-				return nil, ErrFileFormat
-			}
-			position = diskAlign(position, align)
-			n.offset = position
-			w.pages = append(w.pages, diskFragment{position, n.data})
-			position += len(n.data)
-			prefix := len(shared)
-			if nl.width > 0 {
-				if i > 0 && i+1 < len(levels[depth]) {
-					prefix = diskCommon(diskEncoding(n.first), diskEncoding(levels[depth][i+1].first), 65535)
+	in := &l.internal
+	for h := t.height; h > 0; h-- {
+		count := 1
+		if h < t.height {
+			count = t.levels[h].count
+		}
+		tag := 0
+		if h == 1 {
+			tag = 1
+		}
+		for i := range count {
+			p, offset := t.page(h, i), w.offset(h, i)
+			n := nodeLen(p)
+			// offset_edges: every edge slot, zeros past the last edge.
+			for e := 0; e <= in.capacity; e++ {
+				edge := 0
+				if e <= n {
+					edge = (w.offset(h-1, t.child(h, i, e)) - offset) | tag
 				}
-				binary.NativeEndian.PutUint16(n.data[4:], uint16(prefix))
-				for j := nl.inline; j < nl.inline+nl.capacity*nl.width; j++ {
-					n.data[j] = 255
-				}
-			}
-			length := int(binary.NativeEndian.Uint16(n.data))
-			for j := 0; j < length; j++ {
-				var key K
-				if depth == 0 {
-					key = diskRead[K](n.data, nl.keys+j*nl.keyStride, l.key)
-				} else {
-					key = n.children[j+1].first
-				}
-				if nl.width > 0 {
-					diskInline(n.data, nl.inline+j*nl.width, nl.width, prefix, key)
-				} else if depth != 0 {
-					if err = diskPut(&n.data, nl.keys+j*nl.keyStride, key, l.key); err != nil {
-						return nil, err
-					}
-				}
-				if nl.tags >= 0 {
-					n.data[nl.tags+j] = byte(min(len(diskEncoding(key)), 255))
-				}
+				binary.NativeEndian.PutUint64(p[in.trailing+e*8:], uint64(edge))
 			}
 		}
 	}
-	for depth := 1; depth < len(levels); depth++ {
-		for _, n := range levels[depth] {
-			for i, child := range n.children {
-				edge := child.offset - n.offset
-				if depth == 1 {
-					edge |= 1
-				}
-				binary.NativeEndian.PutUint64(n.data[l.internal.trailing+i*l.internal.stride:], uint64(edge))
-			}
-		}
-	}
-	tagged := root.offset
-	if len(levels) == 1 {
-		tagged |= 1
+	root := w.rootOffset
+	if t.height == 0 {
+		root |= 1
 	}
 	w.byteLen = position
-	binary.LittleEndian.PutUint64(w.header[32:], uint64(tagged))
+	binary.LittleEndian.PutUint64(w.header[32:], uint64(root))
 	binary.LittleEndian.PutUint64(w.header[40:], uint64(position))
-	return w, nil
+	return nil
+}
+
+// offset is where page i at height h lies in the file map.
+func (w *FileWriter[K, V]) offset(h, i int) int {
+	t := w.tree
+	if h == t.height {
+		return w.rootOffset
+	}
+	if h == 0 && w.leafOffset != nil {
+		return w.leafOffset[i]
+	}
+	return w.levelOffset[h] + i*t.levels[h].size
+}
+
+// heapPages lays out the records of the leaf src's entries in its heap
+// pages, as upstream's HeapPages::lay_out: each entry's key's bytes, then
+// its value's, whichever a span keeps, in key order, the head's first. A
+// record stays in one page, starting the next if it doesn't fit in what is
+// left of one; one larger than a page starts on a page and runs on. With
+// dst, a copy of src as the file map keeps it, its slots zeroed, it writes
+// each span there, its offset from its own slot, and the bytes into heap.
+// Returns the pages' length, a multiple of their size.
+func (t *diskTree) heapPages(src, dst, heap []byte) int {
+	nl := &t.l.leaf
+	top := 0
+	n := nodeLen(src)
+	for j := -1; j < n; j++ {
+		keySlot, valueSlot := nl.keys+j*nl.keyStride, nl.trailing+(j+1)*nl.stride
+		if j < 0 {
+			if src[2] == 0 {
+				continue
+			}
+			// A head keeps its key only with inline keys (D49).
+			keySlot = nl.headKey
+		}
+		var key, value []byte
+		if t.varKey {
+			key = t.arena.bytes(binary.NativeEndian.Uint64(src[keySlot:]))
+		}
+		if t.varValue {
+			value = t.arena.bytes(binary.NativeEndian.Uint64(src[valueSlot:]))
+		}
+		size := len(key) + len(value)
+		if size > diskHeapPage-top%diskHeapPage {
+			top = diskAlign(top, diskHeapPage)
+		}
+		if dst != nil {
+			if t.varKey {
+				putSpan(dst, keySlot, top, key, heap)
+			}
+			if t.varValue {
+				putSpan(dst, valueSlot, top+len(key), value, heap)
+			}
+		}
+		top += size
+	}
+	return diskAlign(top, diskHeapPage)
+}
+
+// putSpan writes record into heap at at, and into page's slot its span,
+// {len, offset}, native-endian, the offset from the slot, as upstream's
+// VarBytes::encode.
+func putSpan(page []byte, slot, at int, record, heap []byte) {
+	binary.NativeEndian.PutUint32(page[slot:], uint32(len(record)))
+	binary.NativeEndian.PutUint32(page[slot+4:], uint32(len(page)+at-slot))
+	copy(heap[at:], record)
 }
 
 func (w *FileWriter[K, V]) Len() int       { return w.length }
@@ -255,6 +259,9 @@ func (w *FileWriter[K, V]) IsEmpty() bool  { return w.length == 0 }
 func (w *FileWriter[K, V]) ByteLen() int   { return w.byteLen }
 func (w *FileWriter[K, V]) Alignment() int { return w.layout.rootAlign }
 
+// WriteTo hands the file map to dst as upstream's FilePages::write does: the
+// header, then each page in level order after the zeros that align it, each
+// leaf followed by its heap pages.
 func (w *FileWriter[K, V]) WriteTo(dst io.Writer) (written int64, err error) {
 	put := func(data []byte) bool {
 		var n int
@@ -265,18 +272,65 @@ func (w *FileWriter[K, V]) WriteTo(dst io.Writer) (written int64, err error) {
 		}
 		return err == nil
 	}
+	var zero [4096]byte
+	pad := func(to int) bool {
+		for written < int64(to) {
+			if !put(zero[:min(int64(len(zero)), int64(to)-written)]) {
+				return false
+			}
+		}
+		return true
+	}
 	if !put(w.header[:]) {
 		return
 	}
-	var zero [4096]byte
-	for _, page := range w.pages {
-		for written < int64(page.offset) {
-			if !put(zero[:min(int64(len(zero)), int64(page.offset)-written)]) {
+	t := w.tree
+	if t.root == nil {
+		return
+	}
+	heaped := t.varKey || t.varValue
+	// Leaves of keys or values with bytes are written from a copy: their
+	// slots hold arena references, which become spans to their heap pages.
+	var page, heap []byte
+	leafBytes := func(src []byte) bool {
+		page = append(page[:0], src...)
+		t.zeroVarSlots(page)
+		n := t.heapPages(src, nil, nil)
+		if cap(heap) < n {
+			heap = make([]byte, n)
+		}
+		heap = heap[:n]
+		clear(heap)
+		t.heapPages(src, page, heap)
+		return put(page) && put(heap)
+	}
+	if !pad(w.rootOffset) {
+		return
+	}
+	if t.height == 0 && heaped {
+		if !leafBytes(t.root) {
+			return
+		}
+	} else if !put(t.root) {
+		return
+	}
+	for h := t.height - 1; h >= 0; h-- {
+		pages := &t.levels[h]
+		if h == 0 && heaped {
+			for i := range pages.count {
+				if !pad(w.leafOffset[i]) || !leafBytes(pages.page(i)) {
+					return
+				}
+			}
+			continue
+		}
+		if !pad(w.levelOffset[h]) {
+			return
+		}
+		for c := range pages.chunks {
+			if !put(pages.chunk(c)) {
 				return
 			}
-		}
-		if !put(page.data) {
-			return
 		}
 	}
 	return

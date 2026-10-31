@@ -104,3 +104,45 @@ func BenchmarkFileMap(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkFileWriter builds a writer of 1Mi ascending uint64 entries, and
+// one of 64Ki 24-byte string keys with uint64 values.
+func BenchmarkFileWriter(b *testing.B) {
+	b.Run("uint64/1Mi", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			w, err := NewFileWriter(func(yield func(uint64, uint64) bool) {
+				for i := range uint64(1 << 20) {
+					if !yield(i*7, i) {
+						return
+					}
+				}
+			})
+			if err != nil {
+				b.Fatal(err)
+			}
+			benchmarkSink = uint64(w.ByteLen())
+		}
+	})
+	keys := make([]string, 1<<16)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("%024x", uint64(i)*0x9e3779b97f4a7c15)
+	}
+	slices.Sort(keys)
+	b.Run("string24/64Ki", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			w, err := NewFileWriter(func(yield func(string, uint64) bool) {
+				for i, k := range keys {
+					if !yield(k, uint64(i)) {
+						return
+					}
+				}
+			})
+			if err != nil {
+				b.Fatal(err)
+			}
+			benchmarkSink = uint64(w.ByteLen())
+		}
+	})
+}

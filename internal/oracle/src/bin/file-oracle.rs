@@ -1,4 +1,5 @@
-use bbtree_mmap::BBTreeMapFile;
+use bbtree::file::InWriter;
+use bbtree_mmap::{BBTreeMapFile, DiskInput, DiskType};
 use std::io::{self, BufRead};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -7,6 +8,112 @@ struct ThreeWords([u64; 3]);
 // Exactly three plain integers, with no padding, pointers or invalid bit patterns.
 unsafe impl bbtree::file::PlainBytes for ThreeWords {}
 bbtree_mmap::plain_disk_type!(ThreeWords);
+
+// Go's int and uint (and uintptr), as Rust's isize and usize: plain keys
+// without inline keys under Auto, which recognizes only u64, i64, u128 and
+// i128. The orphan rule keeps plain_disk_type! off the std types, so they
+// are wrapped; the layout and fingerprint are the std types'.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+struct USize(usize);
+// A plain integer.
+unsafe impl bbtree::file::PlainBytes for USize {}
+bbtree_mmap::plain_disk_type!(USize);
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+struct ISize(isize);
+// A plain integer.
+unsafe impl bbtree::file::PlainBytes for ISize {}
+bbtree_mmap::plain_disk_type!(ISize);
+
+/// A key or value as the Go side encodes it in an entries file: a plain
+/// type as its native-endian bytes, bytes as a native-endian u32 length and
+/// then the bytes.
+trait Decode: Sized {
+    fn decode(input: &mut &[u8]) -> Self;
+}
+
+fn take<'a>(input: &mut &'a [u8], n: usize) -> &'a [u8] {
+    let (head, rest) = input.split_at(n);
+    *input = rest;
+    head
+}
+
+macro_rules! decode_plain {
+    ($($plain:ty),*) => {
+        $(impl Decode for $plain {
+            fn decode(input: &mut &[u8]) -> Self {
+                <$plain>::from_ne_bytes(take(input, size_of::<$plain>()).try_into().unwrap())
+            }
+        })*
+    };
+}
+
+decode_plain!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+
+impl<const N: usize> Decode for [u8; N] {
+    fn decode(input: &mut &[u8]) -> Self {
+        take(input, N).try_into().unwrap()
+    }
+}
+
+impl Decode for Vec<u8> {
+    fn decode(input: &mut &[u8]) -> Self {
+        let len = u32::decode(input) as usize;
+        take(input, len).to_vec()
+    }
+}
+
+impl Decode for ThreeWords {
+    fn decode(input: &mut &[u8]) -> Self {
+        ThreeWords([u64::decode(input), u64::decode(input), u64::decode(input)])
+    }
+}
+
+impl Decode for USize {
+    fn decode(input: &mut &[u8]) -> Self {
+        USize(u64::decode(input) as usize)
+    }
+}
+
+impl Decode for ISize {
+    fn decode(input: &mut &[u8]) -> Self {
+        ISize(i64::decode(input) as isize)
+    }
+}
+
+/// Writes the map of the entries in `input`, a count and then each key and
+/// value, to `path`, as BBTreeMapFile::create does.
+fn write_entries<K, V>(mut input: &[u8], path: &str) -> Result<(), Box<dyn std::error::Error>>
+where
+    K: DiskType<Stored: Ord> + Decode + DiskInput<K::Stored>,
+    V: DiskType + Decode + DiskInput<V::Stored>,
+    InWriter<K::Stored>: Ord,
+{
+    let count = u64::decode(&mut input) as usize;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        let key = K::decode(&mut input);
+        let value = V::decode(&mut input);
+        entries.push((key, value));
+    }
+    if !input.is_empty() {
+        return Err("trailing bytes after the entries".into());
+    }
+    BBTreeMapFile::<K, V>::create(path, entries)?;
+    Ok(())
+}
+
+/// `write_entries` for the key and value types the Go test names.
+macro_rules! dispatch_entries {
+    ($key:expr, $value:expr, $input:expr, $path:expr; $(($k:literal, $kt:ty, $v:literal, $vt:ty)),* $(,)?) => {
+        match ($key, $value) {
+            $(($k, $v) => write_entries::<$kt, $vt>($input, $path),)*
+            _ => Err(format!("unsupported key and value types {} {}", $key, $value).into()),
+        }
+    };
+}
 
 fn mix(mut x: u64) -> u64 {
     x ^= x >> 30;
@@ -19,6 +126,35 @@ fn mix(mut x: u64) -> u64 {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let command = args.get(1).map(String::as_str).unwrap_or("");
+    if command == "write-entries" {
+        // write-entries KEY VALUE ENTRIES OUT: the Go test's byte-identity
+        // gate, which compares OUT with what Go writes for the same entries.
+        let (key, value) = (args.get(2).ok_or("missing key type")?, args.get(3).ok_or("missing value type")?);
+        let input = std::fs::read(args.get(4).ok_or("missing entries file")?)?;
+        let out = args.get(5).ok_or("missing output path")?;
+        return dispatch_entries!(key.as_str(), value.as_str(), &input, out;
+            ("u64", u64, "u64", u64),
+            ("i64", i64, "i64", i64),
+            ("u32", u32, "u32", u32),
+            ("i32", i32, "b13", [u8; 13]),
+            ("u16", u16, "u8", u8),
+            ("i16", i16, "f32", f32),
+            ("u8", u8, "i8", i8),
+            ("i8", i8, "u64", u64),
+            ("usize", USize, "u64", u64),
+            ("isize", ISize, "i64", i64),
+            ("bytes", Vec<u8>, "u64", u64),
+            ("u64", u64, "bytes", Vec<u8>),
+            ("bytes", Vec<u8>, "bytes", Vec<u8>),
+            ("u64", u64, "b0", [u8; 0]),
+            ("bytes", Vec<u8>, "b0", [u8; 0]),
+            ("bytes", Vec<u8>, "w3", ThreeWords),
+            ("u64", u64, "f64", f64),
+            ("i64", i64, "b16", [u8; 16]),
+            ("u32", u32, "bytes", Vec<u8>),
+            ("isize", ISize, "bytes", Vec<u8>),
+        );
+    }
     let path = args.get(2).ok_or("missing file path")?;
     if command == "write-tagged" {
         let size: u64 = args.get(3).ok_or("missing size")?.parse()?;

@@ -35,7 +35,7 @@ func (m *FileMap[K, V]) keyWord(key K) uint64 {
 }
 
 // window is key's inline key: width bytes of its encoding from prefix on,
-// zero past its end, as the writer's diskInline puts them.
+// zero past its end, as the writer's inlineKeyAt takes them.
 func (m *FileMap[K, V]) window(key K, prefix, width int) uint64 {
 	if unsafe.Sizeof(key) == unsafe.Sizeof("") {
 		s := *(*string)(unsafe.Pointer(&key))

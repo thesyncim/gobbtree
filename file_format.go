@@ -101,27 +101,6 @@ func diskReadVariable[T any](data []byte, slot int, d diskType) (out T) {
 	return
 }
 
-func diskPut[T any](data *[]byte, slot int, value T, d diskType) error {
-	if !d.variable {
-		if d.size != 0 {
-			copy((*data)[slot:slot+d.size], unsafe.Slice((*byte)(unsafe.Pointer(&value)), d.size))
-		}
-		return nil
-	}
-	v := reflect.ValueOf(value)
-	if uint64(v.Len()) >= uint64(1)<<32-1 || uint64(len(*data)-slot) > uint64(1)<<32-1 {
-		return fmt.Errorf("%w: byte span exceeds uint32", ErrFileFormat)
-	}
-	binary.NativeEndian.PutUint32((*data)[slot:], uint32(v.Len()))
-	binary.NativeEndian.PutUint32((*data)[slot+4:], uint32(len(*data)-slot))
-	if d.kind == reflect.String {
-		*data = append(*data, v.String()...)
-	} else {
-		*data = append(*data, v.Bytes()...)
-	}
-	return nil
-}
-
 type diskNodeLayout struct {
 	size, align, capacity           int
 	width, inline, keys, keyStride  int
