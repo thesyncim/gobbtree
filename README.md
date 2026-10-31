@@ -205,7 +205,7 @@ Not carried over, because Go has no counterpart:
 
 - **Rust-only traits:** no operator overloading for `Index` (use `Get`), and no `Hash`.
 - **Allocators and `InsertError`:** Go's allocation failure is fatal, so `Insert` has no error path.
-- **`NodeConfig` page sizes, not yet:** nodes hold a fixed 32 entries. Go generics can't slice an array type parameter, but one copy of the node code can still serve several sizes, its columns at offsets each size's instantiation folds to constants; that port is planned.
+- **`NodeConfig` page sizes, not ported for now:** nodes hold a fixed 32 entries. One copy of the node code could serve several sizes, but measured with 64-entry nodes, every `Tree` and `Map` cell was slower (4–26% at 262K entries, churn up to 38%): the searches compare 8-byte codes, so a wider node costs a level's work twice over and shifts twice the entries. A store ran its lookups no faster and its inserts 5–20% slower, in 15% less memory.
 - **The rest of `InlineKey`** (`WIDTH`, `hash_tag`, `cmp_prefix`, and `cmp_from` on custom keys): these tune upstream's node layout, and a generic Go container can't call an optional key method without boxing the key.
 - **The `inspect` and `check_invariants` debugging helpers.**
 
