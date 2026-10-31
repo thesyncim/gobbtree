@@ -450,9 +450,10 @@ func (t *genericTree[K, V, O]) splitAt(path *gpath[K], leaf *gleaf[K, V], leafVe
 // splitAtWith is splitAt that, once it holds the nodes the split changes,
 // runs vacant, when not nil, on the full leaf before it changes anything,
 // as upstream's split runs a vacant entry's policy: one that refuses, or
-// panics, lets go of everything with nothing changed. taken is splitAt's
-// result, and accepted whether the entry went in.
-func (t *genericTree[K, V, O]) splitAtWith(path *gpath[K], leaf *gleaf[K, V], leafVersion uint64, index int, key K, value V, vacant func(*gleaf[K, V], K) bool) (taken, accepted bool) {
+// panics, lets go of everything with nothing changed, and one that accepts
+// gives the key that goes in, equal to key. taken is splitAt's result, and
+// accepted whether the entry went in.
+func (t *genericTree[K, V, O]) splitAtWith(path *gpath[K], leaf *gleaf[K, V], leafVersion uint64, index int, key K, value V, vacant func(*gleaf[K, V], K) (K, bool)) (taken, accepted bool) {
 	top := path.room()
 	var held splitSet
 	for level := top; level < path.depth; level++ {
@@ -466,11 +467,14 @@ func (t *genericTree[K, V, O]) splitAtWith(path *gpath[K], leaf *gleaf[K, V], le
 		held.unlock()
 		return false, false
 	}
-	if vacant != nil && !runVacant(vacant, leaf, key, func() {
-		held.unlock()
-		leaf.latch.unlockExclusive(leafVersion)
-	}) {
-		return true, false
+	if vacant != nil {
+		var ok bool
+		if key, ok = runVacant(vacant, leaf, key, func() {
+			held.unlock()
+			leaf.latch.unlockExclusive(leafVersion)
+		}); !ok {
+			return true, false
+		}
 	}
 	if !t.redistribute(path, leaf, index, key, value, &held) {
 		var fresh splitSet
@@ -1144,24 +1148,27 @@ func ofSplit(capacity, index, minimum int) (cut int, left bool) {
 }
 
 // runVacant runs vacant on leaf for key, and release where it refuses or
-// panics: what it was to hold the leaf for goes, with nothing changed.
-func runVacant[K, V any](vacant func(*gleaf[K, V], K) bool, leaf *gleaf[K, V], key K, release func()) bool {
+// panics: what it was to hold the leaf for goes, with nothing changed. It
+// returns the key vacant gives, which goes in.
+func runVacant[K, V any](vacant func(*gleaf[K, V], K) (K, bool), leaf *gleaf[K, V], key K, release func()) (K, bool) {
 	accepted := false
 	defer func() {
 		if !accepted {
 			release()
 		}
 	}()
-	accepted = vacant(leaf, key)
-	return accepted
+	key, accepted = vacant(leaf, key)
+	return key, accepted
 }
 
 // insertWithLeaf is upstream's update_or_insert_with_leaf: occupied runs on
 // the entry whose key equals key, or vacant on the leaf key goes in, each
 // holding the leaf, and either may refuse, leaving the tree unchanged; found
-// tells which ran, ok whether it accepted. A full leaf runs vacant once the
-// split holds what it changes, before it changes it (splitAtWith).
-func (t *genericTree[K, V, O]) insertWithLeaf(key K, value V, occupied func(*gleaf[K, V], int) bool, vacant func(*gleaf[K, V], K) bool) (found, ok bool) {
+// tells which ran, ok whether it accepted. vacant gives the key that goes
+// in, equal to key, so the code and the index found for key hold for it. A
+// full leaf runs vacant once the split holds what it changes, before it
+// changes it (splitAtWith).
+func (t *genericTree[K, V, O]) insertWithLeaf(key K, value V, occupied func(*gleaf[K, V], int) bool, vacant func(*gleaf[K, V], K) (K, bool)) (found, ok bool) {
 	if t.root.Load() == nil {
 		t.start()
 	}
@@ -1189,7 +1196,7 @@ func (t *genericTree[K, V, O]) insertWithLeaf(key K, value V, occupied func(*gle
 // insertIntoWithLeaf is insertInto for insertWithLeaf, on leaf n, held at
 // version: done unless the leaf is full and key isn't in it, in which case
 // n stays held. Otherwise it lets go of n, also where a callback panics.
-func (t *genericTree[K, V, O]) insertIntoWithLeaf(n *gleaf[K, V], version uint64, key K, value V, code uint64, occupied func(*gleaf[K, V], int) bool, vacant func(*gleaf[K, V], K) bool) (done, found, ok bool) {
+func (t *genericTree[K, V, O]) insertIntoWithLeaf(n *gleaf[K, V], version uint64, key K, value V, code uint64, occupied func(*gleaf[K, V], int) bool, vacant func(*gleaf[K, V], K) (K, bool)) (done, found, ok bool) {
 	i, hit := t.find(n, key, code)
 	if !hit && int(n.count.Load()) == nodeSize {
 		return false, false, false
@@ -1198,7 +1205,7 @@ func (t *genericTree[K, V, O]) insertIntoWithLeaf(n *gleaf[K, V], version uint64
 	if hit {
 		return true, true, occupied(n, i)
 	}
-	if !vacant(n, key) {
+	if key, ok = vacant(n, key); !ok {
 		return true, false, false
 	}
 	t.insertEntry(n, i, key, value)

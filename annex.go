@@ -79,11 +79,18 @@ func (l AnnexedLeaf[K, A]) ReplaceKey(i int, key K) { l.view.replaceKey(l.leaf, 
 // of what it would hold, by returning false: the map is then unchanged, and
 // ok is false. vacant runs before a leaf that is full splits, on that leaf.
 // Callbacks must not use the map.
-func (m *AnnexedMapOf[K, V, A, PA]) UpdateOrInsertWithLeaf(key K, value V, occupied func(leaf AnnexedLeaf[K, A], key K, value *V) bool, vacant func(leaf AnnexedLeaf[K, A], key K, value V) bool) (found, ok bool) {
+//
+// vacant returns the key that goes in: key, or one equal to it that refers
+// to what vacant wrote for it, as upstream's vacant repoints the new key
+// through its &K (bbtree-store's new.replace(record)): a store's key points
+// to its record, which only vacant, holding the leaf, can write. It returns
+// the key rather than taking a *K, which would put every new key on the
+// heap.
+func (m *AnnexedMapOf[K, V, A, PA]) UpdateOrInsertWithLeaf(key K, value V, occupied func(leaf AnnexedLeaf[K, A], key K, value *V) bool, vacant func(leaf AnnexedLeaf[K, A], key K, value V) (K, bool)) (found, ok bool) {
 	t := &m.generic
 	return t.insertWithLeaf(key, value,
 		func(n *gleaf[K, V], i int) bool { return occupied(annexedLeafOf[A](t, n), t.key(n, i), &n.values[i]) },
-		func(n *gleaf[K, V], key K) bool { return vacant(annexedLeafOf[A](t, n), key, value) })
+		func(n *gleaf[K, V], key K) (K, bool) { return vacant(annexedLeafOf[A](t, n), key, value) })
 }
 
 // DeleteWithLeaf removes the entry whose key equals key and returns it, the

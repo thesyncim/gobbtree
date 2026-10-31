@@ -77,12 +77,12 @@ func pagedInsert(t *testing.T, m *pagedMap, pages *testPages, key annexKey, valu
 			*v = value
 			return true
 		},
-		func(leaf AnnexedLeaf[annexKey, pagePerEntry], fresh annexKey, _ uint64) bool {
+		func(leaf AnnexedLeaf[annexKey, pagePerEntry], fresh annexKey, _ uint64) (annexKey, bool) {
 			if check && (!sortedKeys(leaf.Keys()) || holdsKey(leaf.Keys(), fresh)) {
 				t.Errorf("a vacant leaf's keys %v hold %d", leaf.Keys(), fresh)
 			}
 			leaf.Annex().pages = append(leaf.Annex().pages, pages.allocate())
-			return true
+			return fresh, true
 		})
 	if !ok {
 		t.Fatal("the test's pages have no budget")
@@ -195,7 +195,7 @@ func TestAnnexedRefusedInsertChangesNothing(t *testing.T) {
 	for key := annexKey(0); key < 2*count+100; key += 3 {
 		found, ok := m.UpdateOrInsertWithLeaf(key, 0,
 			func(AnnexedLeaf[annexKey, pagePerEntry], annexKey, *uint64) bool { return false },
-			func(AnnexedLeaf[annexKey, pagePerEntry], annexKey, uint64) bool { return false })
+			func(_ AnnexedLeaf[annexKey, pagePerEntry], k annexKey, _ uint64) (annexKey, bool) { return k, false })
 		if _, had := model[key]; ok || found != had {
 			t.Fatalf("refused insert of %d: found %v ok %v, model had it %v", key, found, ok, had)
 		}
@@ -256,7 +256,7 @@ func TestAnnexedVacantPanicReleases(t *testing.T) {
 			defer func() { _ = recover() }()
 			m.UpdateOrInsertWithLeaf(k*2+1, 0,
 				func(AnnexedLeaf[annexKey, pagePerEntry], annexKey, *uint64) bool { panic("occupied") },
-				func(AnnexedLeaf[annexKey, pagePerEntry], annexKey, uint64) bool { panic("vacant") })
+				func(AnnexedLeaf[annexKey, pagePerEntry], annexKey, uint64) (annexKey, bool) { panic("vacant") })
 		}()
 	}
 	if n := checkGenericTree(t, &m.generic); n != nodeSize*4 {
@@ -290,7 +290,7 @@ func (*noAnnex) Release()       {}
 func TestAnnexedReplaceKeyMovesTheHead(t *testing.T) {
 	m := NewAnnexedMapOf[cellKey, uint64, noAnnex]()
 	key := func(v uint64) cellKey { return cellKey{&v} }
-	accept := func(AnnexedLeaf[cellKey, noAnnex], cellKey, uint64) bool { return true }
+	accept := func(_ AnnexedLeaf[cellKey, noAnnex], k cellKey, _ uint64) (cellKey, bool) { return k, true }
 	const n = nodeSize * 8
 	for v := range uint64(n) {
 		m.UpdateOrInsertWithLeaf(key(v*2), v, nil, accept)
@@ -320,6 +320,68 @@ func TestAnnexedReplaceKeyMovesTheHead(t *testing.T) {
 		if _, ok := m.Get(key(v*2 + 1)); ok {
 			t.Fatalf("Get(%d) found a key never inserted", v*2+1)
 		}
+	}
+}
+
+// The key vacant returns is the one that goes in, as upstream's vacant
+// repoints its new key at the record it wrote: each insert's key moves to a
+// new cell, in leaves with room and in full leaves that split, and once the
+// cells the inserts passed are spoiled, every key is still found, through
+// its new cell, and the tree's keys still order.
+func TestAnnexedVacantGivesTheKeyThatGoesIn(t *testing.T) {
+	m := NewAnnexedMapOf[cellKey, uint64, noAnnex]()
+	key := func(v uint64) cellKey { return cellKey{&v} }
+	rng := rand.New(rand.NewPCG(14, 14))
+	const n = nodeSize * 16
+	var passed []*uint64
+	stored := map[uint64]*uint64{}
+	sawRoom, sawFull := false, false
+	for _, v := range rng.Perm(n) {
+		k := key(uint64(v) * 2)
+		passed = append(passed, k.cell)
+		found, ok := m.UpdateOrInsertWithLeaf(k, uint64(v), nil,
+			func(leaf AnnexedLeaf[cellKey, noAnnex], fresh cellKey, _ uint64) (cellKey, bool) {
+				if len(leaf.Keys()) == nodeSize {
+					sawFull = true
+				} else {
+					sawRoom = true
+				}
+				moved := key(*fresh.cell)
+				stored[*fresh.cell] = moved.cell
+				return moved, true
+			})
+		if found || !ok {
+			t.Fatalf("insert of %d: found %v ok %v", v*2, found, ok)
+		}
+	}
+	if !sawRoom || !sawFull {
+		t.Fatalf("vacant ran on a leaf with room %v, on a full leaf %v", sawRoom, sawFull)
+	}
+	for _, cell := range passed {
+		*cell = 1 << 62
+	}
+	if got := checkGenericTree(t, &m.generic); got != n {
+		t.Fatalf("tree holds %d entries, want %d", got, n)
+	}
+	for v := range uint64(n) {
+		read := m.Read(key(v*2), func(k cellKey, value uint64) {
+			if k.cell != stored[v*2] || value != v {
+				t.Errorf("key %d is stored in another cell, or with %d", v*2, value)
+			}
+		})
+		if !read {
+			t.Fatalf("Get(%d) missed once the passed key's cell was spoiled", v*2)
+		}
+		if _, ok := m.Get(key(v*2 + 1)); ok {
+			t.Fatalf("Get(%d) found a key never inserted", v*2+1)
+		}
+	}
+	prev := -1
+	for k := range m.All() {
+		if int(*k.cell) <= prev {
+			t.Fatalf("scan visited %d after %d", *k.cell, prev)
+		}
+		prev = int(*k.cell)
 	}
 }
 
@@ -365,7 +427,7 @@ func (a *leafID) Release() {
 func TestAnnexesNameTheirLeaves(t *testing.T) {
 	testLeafIDs = &leafIDs{live: map[uint64]bool{0: true}}
 	m := NewAnnexedMapOf[annexKey, uint64, leafID]()
-	accept := func(AnnexedLeaf[annexKey, leafID], annexKey, uint64) bool { return true }
+	accept := func(_ AnnexedLeaf[annexKey, leafID], k annexKey, _ uint64) (annexKey, bool) { return k, true }
 	update := func(AnnexedLeaf[annexKey, leafID], annexKey, *uint64) bool { return true }
 	var wg sync.WaitGroup
 	for w := range 4 {
