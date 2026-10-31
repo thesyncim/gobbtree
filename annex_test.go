@@ -155,9 +155,7 @@ func TestAnnexesFollowTheirLeaves(t *testing.T) {
 	if n := checkGenericTree(t, &m.generic); n != len(model) {
 		t.Fatalf("tree holds %d entries, model %d", n, len(model))
 	}
-	if annexPages(m) != len(model) || pages.count() != len(model) {
-		t.Fatalf("annexes hold %d pages, %d live, for %d entries", annexPages(m), pages.count(), len(model))
-	}
+	checkPages(t, m, pages, len(model))
 	for k, v := range model {
 		if got, ok := m.Get(k); !ok || got != v {
 			t.Fatalf("Get(%d) = %d %v, want %d", k, got, ok, v)
@@ -166,6 +164,17 @@ func TestAnnexesFollowTheirLeaves(t *testing.T) {
 	m.Clear()
 	if pages.count() != 0 {
 		t.Fatalf("%d pages outlived Clear", pages.count())
+	}
+}
+
+// checkPages checks that every live page is in an annex, and that each of
+// the entries put one there. Entries move between leaves without their
+// pages, as removals and inserts rebalance them, so a removal from a leaf
+// whose annex holds none frees none: pages outnumber entries by those.
+func checkPages(t *testing.T, m *pagedMap, pages *testPages, entries int) {
+	t.Helper()
+	if held := annexPages(m); held != pages.count() || held < entries {
+		t.Fatalf("annexes hold %d pages, %d live, for %d entries", held, pages.count(), entries)
 	}
 }
 
@@ -199,9 +208,7 @@ func TestAnnexedRefusedInsertChangesNothing(t *testing.T) {
 			t.Fatalf("Get(%d) = %d %v, want %d", k, got, ok, v)
 		}
 	}
-	if annexPages(m) != len(model) || pages.count() != len(model) {
-		t.Fatalf("annexes hold %d pages, %d live, for %d entries", annexPages(m), pages.count(), len(model))
-	}
+	checkPages(t, m, pages, len(model))
 	m.Clear()
 	if pages.count() != 0 {
 		t.Fatalf("%d pages outlived Clear", pages.count())
@@ -229,9 +236,10 @@ func TestAnnexesUnderConcurrentWrites(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	n := checkGenericTree(t, &m.generic)
-	if annexPages(m) != n || pages.count() != n {
-		t.Fatalf("annexes hold %d pages, %d live, for %d entries", annexPages(m), pages.count(), n)
+	checkPages(t, m, pages, checkGenericTree(t, &m.generic))
+	m.Clear()
+	if pages.count() != 0 {
+		t.Fatalf("%d pages outlived Clear", pages.count())
 	}
 }
 
@@ -257,9 +265,11 @@ func TestAnnexedVacantPanicReleases(t *testing.T) {
 	for k := range annexKey(nodeSize * 4) {
 		pagedInsert(t, m, pages, k*2+1, 0, false)
 	}
-	if n := checkGenericTree(t, &m.generic); n != nodeSize*8 || pages.count() != n {
-		t.Fatalf("tree holds %d entries, %d pages", n, pages.count())
+	n := checkGenericTree(t, &m.generic)
+	if n != nodeSize*8 {
+		t.Fatalf("tree holds %d entries", n)
 	}
+	checkPages(t, m, pages, n)
 }
 
 // cellKey orders by the value its cell holds, as a store's key orders by
@@ -310,5 +320,100 @@ func TestAnnexedReplaceKeyMovesTheHead(t *testing.T) {
 		if _, ok := m.Get(key(v*2 + 1)); ok {
 			t.Fatalf("Get(%d) found a key never inserted", v*2+1)
 		}
+	}
+}
+
+// leafIDs mints, retires and frees the ids of an identity annex, which
+// names its leaf: the root's first leaf is 0, Split names the new one, and
+// Merge and Release retire them.
+type leafIDs struct {
+	mu   sync.Mutex
+	next uint64
+	live map[uint64]bool
+}
+
+// testLeafIDs are TestAnnexesNameTheirLeaves's, which sets them anew.
+var testLeafIDs *leafIDs
+
+type leafID struct{ id uint64 }
+
+func (a *leafID) Split(right *leafID) {
+	testLeafIDs.mu.Lock()
+	defer testLeafIDs.mu.Unlock()
+	testLeafIDs.next++
+	right.id = testLeafIDs.next
+	testLeafIDs.live[right.id] = true
+}
+
+func (a *leafID) Merge(right *leafID) {
+	testLeafIDs.mu.Lock()
+	defer testLeafIDs.mu.Unlock()
+	if !testLeafIDs.live[right.id] {
+		panic("merged a leaf twice")
+	}
+	delete(testLeafIDs.live, right.id)
+}
+
+func (a *leafID) Release() {
+	testLeafIDs.mu.Lock()
+	defer testLeafIDs.mu.Unlock()
+	delete(testLeafIDs.live, a.id)
+}
+
+// Each split, merge and Clear calls its annex method once: the tree's
+// leaves carry exactly the ids minted and not retired, one each.
+func TestAnnexesNameTheirLeaves(t *testing.T) {
+	testLeafIDs = &leafIDs{live: map[uint64]bool{0: true}}
+	m := NewAnnexedMapOf[annexKey, uint64, leafID]()
+	accept := func(AnnexedLeaf[annexKey, leafID], annexKey, uint64) bool { return true }
+	update := func(AnnexedLeaf[annexKey, leafID], annexKey, *uint64) bool { return true }
+	var wg sync.WaitGroup
+	for w := range 4 {
+		wg.Go(func() {
+			rng := rand.New(rand.NewPCG(uint64(w), 11))
+			for range 30000 {
+				key := annexKey(rng.Uint64N(3000)*4 + uint64(w))
+				if rng.IntN(3) < 2 {
+					m.UpdateOrInsertWithLeaf(key, 1, update, accept)
+				} else {
+					m.DeleteWithLeaf(key, func(AnnexedLeaf[annexKey, leafID], annexKey, uint64) {})
+				}
+			}
+		})
+	}
+	wg.Wait()
+	checkGenericTree(t, &m.generic)
+	tree := &m.generic
+	seen := map[uint64]bool{}
+	var walk func(h *gheader)
+	walk = func(h *gheader) {
+		if h.leaf {
+			id := (*leafID)(tree.annexOf(asLeaf[annexKey, uint64](h))).id
+			if seen[id] {
+				t.Fatalf("two leaves carry id %d: a split gave none", id)
+			}
+			seen[id] = true
+			return
+		}
+		n := asInner[annexKey](h)
+		for i := range int(n.count.Load()) {
+			walk(n.children[i].Load())
+		}
+	}
+	walk(tree.root.Load())
+	testLeafIDs.mu.Lock()
+	live := len(testLeafIDs.live)
+	for id := range seen {
+		if !testLeafIDs.live[id] {
+			t.Errorf("a leaf carries retired id %d", id)
+		}
+	}
+	testLeafIDs.mu.Unlock()
+	if live != len(seen) {
+		t.Fatalf("%d ids live for %d leaves: a merge kept one", live, len(seen))
+	}
+	m.Clear()
+	if len(testLeafIDs.live) != 0 {
+		t.Fatalf("%d ids outlived Clear", len(testLeafIDs.live))
 	}
 }
