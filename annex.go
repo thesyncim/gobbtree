@@ -247,7 +247,7 @@ func (t *genericTree[K, V, O]) replaceKey(leaf unsafe.Pointer, i int, key K) {
 // separator is, and compares that key holding the leaf shared. false where
 // a racing walk finds no such leaf; the caller's check of n's version
 // settles the rest.
-func (t *genericTree[K, V, O]) compareSeparatorHeld(n *ginner[K], i int, key K) (int, bool) {
+func (t *genericTree[K, V, O]) compareSeparatorHeld(n *ginner[K], i int, key K, equal int) (int, bool) {
 	h := n.children[i&(nodeSize-1)].Load()
 	for depth := 0; h != nil && !h.leaf && depth < maxDepth; depth++ {
 		h = asInner[K](h).children[0].Load()
@@ -261,7 +261,7 @@ func (t *genericTree[K, V, O]) compareSeparatorHeld(n *ginner[K], i int, key K) 
 	if leaf.count.Load() == 0 {
 		return 0, false
 	}
-	return t.compare(t.key(leaf, 0), key), true
+	return t.compareTied(t.key(leaf, 0), key, equal), true
 }
 
 // walkHeld is walk for an annexed tree, as upstream's latched scan: visit

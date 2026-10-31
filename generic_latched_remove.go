@@ -179,7 +179,11 @@ func (t *genericTree[K, V, O]) replaceSeparator(n *ginner[K], i int, sep K, f fe
 		if f.head != nil {
 			code = windowIn(&f.head.win, int(n.prefix.Load()))
 		}
-		n.codes[i].Store(code)
+		if t.narrowInner() {
+			storeSum(n.sums(), i, uint32(narrowed(code, t.inline.innerWidth)))
+		} else {
+			n.codes[i].Store(code)
+		}
 	default:
 		n.codes[i].Store(t.code(sep))
 	}

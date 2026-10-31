@@ -117,6 +117,13 @@ v, ok := index.Get(buf) // lookups don't allocate or keep buf
 
 A composite key encodes its fields one after another, for example a `uint32` tenant as four big-endian bytes followed by a name; `StringWindow`, `BytesWindow` and `Uint64Window` window the common encodings. Equal keys must have equal windows. Windows that tie are settled by `Compare`, so even a constant `Window` is correct, only slower. A key that refers to reusable memory also implements `Clone() K`, and containers store a clone of each new key.
 
+Nodes skip what their keys share, as upstream's do: a node's windows are its keys' past the bytes its bounds share, and the map's past what all its keys share. A key may also add upstream's optional `InlineKey` items as methods, which its maps find once and call directly:
+
+- `CompareFrom(other K, equalLen int) int` compares two keys whose first `equalLen` bytes are known equal, from there; internal nodes then keep 4 bytes of each window, as for strings.
+- `HashTag() uint8` is a byte equal keys share; leaves keep each key's, and a lookup compares only the tied keys with its tag.
+- `ComparePrefix(prefix []byte) int` orders a key against what all the map's keys share, checked once per search.
+- `InlineWidth() InlineWidth` declares how many bytes of each window nodes keep: 2, 4 or 8.
+
 ### File maps
 
 ```go
@@ -186,7 +193,7 @@ The API follows upstream's operations with Go names. Results are multiple return
 | `retain` · `extract_if` · `split_off` · `append` · `Extend` · `FromIterator` | `Retain` · `ExtractIf` · `SplitOff` · `Append` · `InsertAll` |
 | set `contains_many` · `replace` · `take` · `union` · `intersection` · `difference` · `symmetric_difference` · `is_subset` | the same names on `Set` |
 | `Clone` · `PartialEq`/`Eq` · `PartialOrd`/`Ord` · `Debug` · `into_iter`/`into_keys`/`into_values` | `Clone` · `EqualFunc`/`Equal` · `CompareFunc`/`Compare` · `String` · `Drain` |
-| `InlineKey` (`inline_key_at`) · byte-string keys, which compare from where they differ (`cmp_from`) | `Key` (`Window`) · `Bytes`; string and `Bytes` keys compare from where they differ |
+| `InlineKey` (`inline_key_at`) · `WIDTH` · `hash_tag` · `cmp_from` · `cmp_prefix` · byte-string keys, which compare from where they differ | `Key` (`Window`) · `InlineWidth` · `HashTag` · `CompareFrom` · `ComparePrefix`, methods a key may add · `Bytes`; string and `Bytes` keys compare from where they differ |
 | `LeafAnnex` · `WithLeafAnnex` · `update_or_insert_with_leaf` · `remove_with_leaf` · `AnnexedLeaf::annex` · `keys` | `LeafAnnex` · `AnnexedMapOf` · `UpdateOrInsertWithLeaf` · `DeleteWithLeaf` · `AnnexedLeaf.Annex` · `Keys`, for keys ordered by `Key`; a callback refuses by returning false, and `ReplaceKey` replaces a key with an equal one, as upstream's keys change in place |
 | `FileWriter::from_ascending` · `byte_len` · `write` | `NewFileWriter` · `ByteLen` · `WriteTo`; a container's `WriteFile` writes one directly |
 | `FileMap::open` · `open_unchecked` · `NotAscending::index` | `OpenFileMap` · `OpenFileMapUnchecked` · `NotAscendingError.Index` |
@@ -206,7 +213,7 @@ Not carried over, because Go has no counterpart:
 - **Rust-only traits:** no operator overloading for `Index` (use `Get`), and no `Hash`.
 - **Allocators and `InsertError`:** Go's allocation failure is fatal, so `Insert` has no error path.
 - **`NodeConfig` page sizes, not ported for now:** nodes hold a fixed 32 entries. One copy of the node code could serve several sizes, but measured with 64-entry nodes, every `Tree` and `Map` cell was slower (4–26% at 262K entries, churn up to 38%): the searches compare 8-byte codes, so a wider node costs a level's work twice over and shifts twice the entries. A store ran its lookups no faster and its inserts 5–20% slower, in 15% less memory.
-- **The rest of `InlineKey`** (`WIDTH`, `hash_tag`, `cmp_prefix`, and `cmp_from` on custom keys): these tune upstream's node layout, and a generic Go container can't call an optional key method without boxing the key.
+- **Custom keys' nodes,** where they differ from upstream's: prefixes stop at 56 bytes; below 8 bytes of prefix a node's windows are its keys' first, past it, so a lookup takes no other; and narrower widths keep leaves' windows in 8-byte slots and internal nodes' in 4-byte ones, as Go's nodes hold 32 entries whatever their windows' width.
 - **The `inspect` and `check_invariants` debugging helpers.**
 
 ## SIMD

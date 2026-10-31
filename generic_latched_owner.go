@@ -57,6 +57,28 @@ func (t *genericTree[K, V, O]) ownerSeek(key K, code uint64, place bool) (n *gle
 		return t.ownerDescend(code, place)
 	}
 	if !prefixed[O, K]() {
+		if windowed[O, K]() && t.sharesBytes() {
+			// A key without the shared prefix is in no leaf, and routes
+			// only by codes it doesn't share: it sorts before or after
+			// every key, the first leaf's first or the last's end, and a
+			// writer admits its key first (D50).
+			if order := t.sharedOrderOf(key); order != 0 {
+				h := plainPointer(&t.root)
+				for !h.leaf {
+					n := asInner[K](h)
+					i := 0
+					if order > 0 {
+						i = owned(&n.count) - 1
+					}
+					h = plainPointer(&n.children[i&(nodeSize-1)])
+				}
+				i := 0
+				if order > 0 {
+					i = owned(&h.count)
+				}
+				return asLeaf[K, V](h), i, false, false
+			}
+		}
 		n := t.ownerLeaf(key, code)
 		i, ok := t.find(n, key, code)
 		return n, i, ok, false

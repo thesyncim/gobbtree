@@ -121,8 +121,16 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 			leafIDs++
 			n := asLeaf[K, V](h)
 			for i := range n.tags {
-				if want := uint8(0); i < count && exactCodes[O, K]() && n.tags[i] != uint8(n.codes[i]) || (i >= count || !exactCodes[O, K]()) && n.tags[i] != want {
-					t.Fatalf("leaf tag %d is %x, its code %x", i, n.tags[i], n.codes[i])
+				want := uint8(0)
+				switch {
+				case i >= count:
+				case exactCodes[O, K]():
+					want = uint8(n.codes[i])
+				case tree.tagged():
+					want = tree.inline.hashTag(tree.key(n, i))
+				}
+				if n.tags[i] != want {
+					t.Fatalf("leaf tag %d is %x, want %x", i, n.tags[i], want)
 				}
 			}
 			// A leaf's head is its separator, its low fence, and its first
@@ -177,7 +185,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				}
 				want := windowKey[O](key, p)
 				if windowed[O, K]() {
-					want = tree.codeOf(key, windowKey[O](key, 0), p)
+					want = narrowed(tree.codeOf(key, windowKey[O](key, 0), p), tree.inline.leafWidth)
 				}
 				if n.codes[i] != want {
 					t.Fatalf("leaf code %d is stale", i)
@@ -274,7 +282,18 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				case i < count:
 					want = tree.codeOf(seps[i], windowKey[O](seps[i], 0), p)
 				}
-				if got := n.codes[i].Load(); got != want {
+				got := n.codes[i].Load()
+				if tree.narrowInner() {
+					// 4-byte summaries, of windows cut to the nodes' width.
+					got, want = uint64(n.sums()[i]), uint64(^uint32(0))
+					switch {
+					case i == 0:
+						want = 0
+					case i < count:
+						want = narrowed(tree.codeOf(seps[i], windowKey[O](seps[i], 0), p), tree.inline.innerWidth)
+					}
+				}
+				if got != want {
 					t.Fatalf("separator %d code %x, its window at %d is %x", i, got, p, want)
 				}
 			}
@@ -324,7 +343,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 			total += check(child, childLow, childHigh, depth+1)
 		}
 		for i := count; i < nodeSize; i++ {
-			if n.children[i].Load() != nil || !prefixed[O, K]() && n.codes[i].Load() != codePad {
+			if n.children[i].Load() != nil || !prefixed[O, K]() && !tree.narrowInner() && n.codes[i].Load() != codePad {
 				t.Fatalf("internal slot %d past count %d holds a child", i, count)
 			}
 		}

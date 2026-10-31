@@ -141,9 +141,13 @@ func (t *genericTree[K, V, O]) sharedLenOf(key K, shared string) int {
 }
 
 // sharedOrderOf is sharedOrder for custom keys: 0 where key's encoding
-// begins with the shared prefix, else as key sorts against every key.
+// begins with the shared prefix, else as key sorts against every key; by
+// the key's ComparePrefix, where it has one.
 func (t *genericTree[K, V, O]) sharedOrderOf(key K) int {
 	shared := t.sharedText()
+	if f := t.inline.comparePrefix; f != nil {
+		return f(key, unsafe.Slice(unsafe.StringData(shared), len(shared)))
+	}
 	for off := 0; off < len(shared); off += 8 {
 		m := headMask(len(shared) - off)
 		if w, s := windowKey[O](key, off)&m, stringCode(shared, off)&m; w != s {
@@ -203,7 +207,7 @@ func (t *genericTree[K, V, O]) refitLeafOf(n *gleaf[K, V], p int) {
 		if p < 8 {
 			w0 = windowKey[O](keys[i], 0)
 		}
-		n.codes[i] = t.codeOf(keys[i], w0, p)
+		n.codes[i] = narrowed(t.codeOf(keys[i], w0, p), t.inline.leafWidth)
 	}
 }
 
@@ -237,3 +241,32 @@ func (t *genericTree[K, V, O]) sharesBytes() bool {
 	s := t.shared.Load()
 	return s == nil || len(*s) > 0
 }
+
+// narrowInner reports custom keys whose internal nodes keep windows of
+// fewer than 8 bytes, as 4-byte summaries, the text nodes' layout.
+func (t *genericTree[K, V, O]) narrowInner() bool {
+	return windowed[O, K]() && t.inline.innerWidth < 8
+}
+
+// innerWidth is how many bytes of each window a custom key's internal
+// nodes keep.
+func (t *genericTree[K, V, O]) innerWidth() int {
+	if t.narrowInner() {
+		return t.inline.innerWidth
+	}
+	return 8
+}
+
+// compareTied orders keys a and b, whose codes tie, so that their first
+// equal bytes are equal: by a custom key's CompareFrom where it has one.
+func (t *genericTree[K, V, O]) compareTied(a, b K, equal int) int {
+	if windowed[O, K]() {
+		if f := t.inline.compareFrom; f != nil {
+			return f(a, b, equal)
+		}
+	}
+	return t.compare(a, b)
+}
+
+// tagged reports custom keys whose leaves keep each key's hash tag.
+func (t *genericTree[K, V, O]) tagged() bool { return windowed[O, K]() && t.inline.hashTag != nil }

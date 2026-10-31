@@ -770,13 +770,16 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 		copy(keys[i+1:count+1], keys[i:count])
 		keys[i] = ownKey[O](key)
 		if windowed[O, K]() {
-			n.codes[i] = t.codeOf(key, windowKey[O](key, 0), p)
+			n.codes[i] = narrowed(t.codeOf(key, windowKey[O](key, 0), p), t.inline.leafWidth)
 		} else {
 			n.codes[i] = windowKey[O](key, p)
 		}
 		if exactCodes[O, K]() {
 			copy(n.tags[i+1:count+1], n.tags[i:count])
 			n.tags[i] = uint8(n.codes[i])
+		} else if t.tagged() {
+			copy(n.tags[i+1:count+1], n.tags[i:count])
+			n.tags[i] = t.inline.hashTag(key)
 		}
 	}
 	n.values[i] = value
@@ -921,12 +924,12 @@ func (t *genericTree[K, V, O]) removeEntry(n *gleaf[K, V], i int, handOut bool) 
 	copy(n.values[i:count-1], n.values[i+1:count])
 	var zv V
 	n.codes[count-1], n.values[count-1] = codePad, zv
-	if t.wordCodes() {
+	if t.wordCodes() || t.tagged() {
 		copy(n.tags[i:count-1], n.tags[i+1:count])
 		n.tags[count-1] = 0
-		if i == 0 {
-			t.setFirst(n, count-1)
-		}
+	}
+	if t.wordCodes() && i == 0 {
+		t.setFirst(n, count-1)
 	}
 	if prefixed[O, K]() {
 		c := n.text()
@@ -1012,6 +1015,11 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 		clear(src.tags[srcCount-count : srcCount])
 		t.setFirst(dst, dstCount+count)
 		t.setFirst(src, srcCount-count)
+	} else if t.tagged() {
+		copy(dst.tags[at+count:dstCount+count], dst.tags[at:dstCount])
+		copy(dst.tags[at:at+count], src.tags[from:from+count])
+		copy(src.tags[from:srcCount-count], src.tags[from+count:srcCount])
+		clear(src.tags[srcCount-count : srcCount])
 	}
 	dst.count.Store(int32(dstCount + count))
 	src.count.Store(int32(srcCount - count))
@@ -1089,14 +1097,18 @@ func (t *genericTree[K, V, O]) insertChild(n *ginner[K], i int, separator K, cod
 	n.count.Store(int32(count + 1))
 	// A separator between n's fences moves neither (D26): the codes or
 	// summaries shift, and only the new one is read from its key.
-	if prefixed[O, K]() {
+	if prefixed[O, K]() || t.narrowInner() {
 		sums := n.sums()
 		for j := count; j > i; j-- {
 			storeSum(sums, j, loadSum(sums, j-1))
 		}
 		sum := uint32(0)
-		if i > 0 {
+		switch {
+		case i == 0:
+		case prefixed[O, K]():
 			sum = summaryOf(textView(&separator), int(n.prefix.Load()))
+		default:
+			sum = uint32(narrowed(code, t.inline.innerWidth))
 		}
 		storeSum(sums, i, sum)
 		return
@@ -1122,7 +1134,7 @@ func (t *genericTree[K, V, O]) removeChild(n *ginner[K], i int) {
 	n.children[count-1].Store(nil)
 	n.count.Store(int32(count - 1))
 	// n's fences stay: the codes or summaries past i shift down.
-	if prefixed[O, K]() {
+	if prefixed[O, K]() || t.narrowInner() {
 		sums := n.sums()
 		for j := i; j < count-1; j++ {
 			storeSum(sums, j, loadSum(sums, j+1))

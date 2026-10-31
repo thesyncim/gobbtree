@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/binary"
 	"slices"
 	"unsafe"
@@ -271,3 +272,37 @@ func (k storeKey) Compare(other storeKey) int { return bytes.Compare(k.bytes(), 
 
 // Window is the key bytes' window at offset, as a byte string's.
 func (k storeKey) Window(offset int) uint64 { return gobbtree.BytesWindow(k.bytes(), offset) }
+
+// The rest of upstream's StoreKey InlineKey impl, a byte string's: its maps'
+// leaves keep each key's hash tag, and its internal nodes 4 bytes of each
+// window, whose ties compare from where keys can differ.
+
+// HashTag is the key's length, saturated at 255, a byte string's tag.
+func (k storeKey) HashTag() uint8 { return uint8(min(len(k.bytes()), 255)) }
+
+// CompareFrom orders the keys by their bytes past the first equal, which
+// the map knows are equal, zero-padded: where those agree, the shorter key
+// first.
+func (k storeKey) CompareFrom(other storeKey, equal int) int {
+	a, b := k.bytes(), other.bytes()
+	if c := bytes.Compare(a[min(equal, len(a)):], b[min(equal, len(b)):]); c != 0 {
+		return c
+	}
+	return cmp.Compare(len(a), len(b))
+}
+
+// ComparePrefix orders the key's first len(prefix) bytes, zero-padded,
+// against prefix.
+func (k storeKey) ComparePrefix(prefix []byte) int {
+	b := k.bytes()
+	n := min(len(b), len(prefix))
+	if c := bytes.Compare(b[:n], prefix[:n]); c != 0 {
+		return c
+	}
+	for _, c := range prefix[n:] {
+		if c != 0 {
+			return -1
+		}
+	}
+	return 0
+}

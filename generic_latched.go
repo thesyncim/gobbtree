@@ -75,6 +75,9 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	// type, and the annex's offset in it.
 	annexLeaf reflect.Type
 	annexAt   uintptr
+	// inline is a custom key type's optional methods, found as the root is
+	// first made (inline.go).
+	inline inlineOptions[K]
 }
 
 // Leaves and internal nodes below the root are underfull below these sizes,
@@ -575,9 +578,14 @@ func tieRange(codes *[nodeSize]uint64, count int, code uint64) (lo, hi int) {
 // false where a racing read finds no separator.
 func (t *genericTree[K, V, O]) route(n *ginner[K], key K, code uint64, count int, strict bool) (int, bool) {
 	var lo, hi int
-	if prefixed[O, K]() {
+	if prefixed[O, K]() || t.narrowInner() {
 		// Every key under n begins with its prefix (D26): no check.
-		s := summaryOf(textView(&key), int(n.prefix.Load()))
+		var s uint32
+		if prefixed[O, K]() {
+			s = summaryOf(textView(&key), int(n.prefix.Load()))
+		} else {
+			s = uint32(narrowed(code, t.inline.innerWidth))
+		}
 		sums := n.sums()
 		if seqlockPlainStores {
 			lo = lowerSummary(sums, count, s)
@@ -601,11 +609,16 @@ func (t *genericTree[K, V, O]) route(n *ginner[K], key K, code uint64, count int
 	}
 	// Separator 0 bounds the node from below, so it is never above key.
 	lo = max(lo, 1)
+	// The keys of tied codes share the prefix and the bytes they keep.
+	equal := 0
+	if windowed[O, K]() {
+		equal = equalThrough(int(n.prefix.Load()), t.innerWidth())
+	}
 	for lo < hi {
 		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
 		var order int
 		if annexed[O, K]() {
-			o, ok := t.compareSeparatorHeld(n, mid, key)
+			o, ok := t.compareSeparatorHeld(n, mid, key, equal)
 			if !ok {
 				return 0, false
 			}
@@ -615,7 +628,7 @@ func (t *genericTree[K, V, O]) route(n *ginner[K], key K, code uint64, count int
 			if !ok {
 				return 0, false
 			}
-			order = t.compare(sep, key)
+			order = t.compareTied(sep, key, equal)
 		}
 		if order > 0 || strict && order == 0 {
 			hi = mid
@@ -1047,6 +1060,7 @@ func (t *genericTree[K, V, O]) refitInner(n *ginner[K], high fence[K]) {
 		// moves leave as they were.
 		p := t.fencePrefix(t.lowFence(n), high)
 		n.prefix.Store(int32(p))
+		narrow, sums := t.narrowInner(), n.sums()
 		for i := 0; i < nodeSize; i++ {
 			code := codePad
 			switch {
@@ -1058,7 +1072,15 @@ func (t *genericTree[K, V, O]) refitInner(n *ginner[K], high fence[K]) {
 					code = windowIn(&h.win, p)
 				}
 			}
-			n.codes[i].Store(code)
+			if !narrow {
+				n.codes[i].Store(code)
+				continue
+			}
+			sum := ^uint32(0)
+			if code != codePad {
+				sum = uint32(narrowed(code, t.inline.innerWidth))
+			}
+			storeSum(sums, i, sum)
 		}
 		return
 	}
@@ -1211,14 +1233,29 @@ func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K, code uint64) (int, bo
 			}
 			code = t.codeOf(key, code, p)
 		}
+		code = narrowed(code, t.inline.leafWidth)
 	}
 	// Only the keys whose codes are key's can be it, and they are rare
 	// past the first: they follow the first code at least key's.
 	lo, hi := tieRange(&n.codes, count, code)
+	equal := 0
+	if windowed[O, K]() && lo < hi {
+		equal = equalThrough(int(n.prefix.Load()), t.inline.leafWidth)
+		if tag := t.inline.hashTag; tag != nil {
+			// A key with its tag first, compared from where keys of tied
+			// codes can differ: one without is another key.
+			want := tag(key)
+			for i := lo; i < hi; i++ {
+				if n.tags[i&(nodeSize-1)] == want && t.compareTied(t.key(n, i), key, equal) == 0 {
+					return i, true
+				}
+			}
+		}
+	}
 	order := 1
 	for lo < hi {
 		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
-		if o := t.compare(t.key(n, mid), key); o < 0 {
+		if o := t.compareTied(t.key(n, mid), key, equal); o < 0 {
 			lo = mid + 1
 		} else {
 			hi, order = mid, o
@@ -1241,6 +1278,9 @@ func (t *genericTree[K, V, O]) start() {
 		}
 		if t.exact {
 			t.setupLeaves()
+		}
+		if windowed[O, K]() {
+			t.inline = inlineOptionsOf[K]()
 		}
 		if annexed[O, K]() {
 			t.setupAnnexes()
@@ -1289,7 +1329,11 @@ func (t *genericTree[K, V, O]) wholeCodes() bool { return wordSized[O, K]() && t
 // children, never read again from their separators' keys: keys their codes
 // hold whole, and an annexed tree's, whose keys a writer may read only
 // holding their leaf, which the leaves under another's node aren't.
-func (t *genericTree[K, V, O]) movesCodes() bool { return t.wholeCodes() || annexed[O, K]() }
+// A custom key's are computed from its separators' head copies instead,
+// at the node's prefix.
+func (t *genericTree[K, V, O]) movesCodes() bool {
+	return t.wholeCodes() || annexed[O, K]() && !windowed[O, K]()
+}
 
 // decode is the key of code c, of a key its codes hold whole: its low
 // bytes, its sign flipped back.
