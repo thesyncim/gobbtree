@@ -202,3 +202,59 @@ func diskSlotCount64(slots []uint64, key uint64) (int, int) {
 	}
 	return below, equal
 }
+
+// diskCountWindows16 counts the 2-byte windows of a page's slots, slots
+// of them from p, below key and equal to it, by loads from the page's
+// address: its caller checked the page lies in the map. The windows below
+// key are counted in vectors, over every slot, as upstream's NeonCount
+// does; those equal to it follow them, and are counted one by one: windows
+// are sorted, and few are equal. tail masks the last tile's lanes past the
+// whole tiles, for slots short of a multiple of 8 (diskTailMask).
+func diskCountWindows16(p unsafe.Pointer, slots int, tail *[16]int16, key uint64) (int, int) {
+	if simd.Emulated() || slots < 8 {
+		return diskCountWindowsBy(p, slots, key)
+	}
+	at := func(i int) *[8]uint16 { return (*[8]uint16)(unsafe.Add(p, 2*i)) }
+	var lo0, lo1 archsimd.Int16x8
+	target := archsimd.BroadcastUint16x8(uint16(key))
+	if slots >= 48 && slots <= 64 {
+		// The default pages' counts, 49 slots in an internal page and 55
+		// in a uint64 leaf, in one run without a loop: six whole tiles,
+		// then the last 8 slots and the 8 before, masked to what the whole
+		// tiles left (diskTailMasks).
+		a := archsimd.LoadUint16x8Array(at(0)).Less(target).ToInt16x8()
+		b := archsimd.LoadUint16x8Array(at(8)).Less(target).ToInt16x8()
+		c := archsimd.LoadUint16x8Array(at(16)).Less(target).ToInt16x8()
+		d := archsimd.LoadUint16x8Array(at(24)).Less(target).ToInt16x8()
+		e := archsimd.LoadUint16x8Array(at(32)).Less(target).ToInt16x8()
+		f := archsimd.LoadUint16x8Array(at(40)).Less(target).ToInt16x8()
+		g := archsimd.LoadUint16x8Array(at(slots - 16)).Less(target).ToInt16x8().And(archsimd.LoadInt16x8Array((*[8]int16)(tail[8:16])))
+		h := archsimd.LoadUint16x8Array(at(slots - 8)).Less(target).ToInt16x8().And(archsimd.LoadInt16x8Array((*[8]int16)(tail[0:8])))
+		below := -int(a.Add(b).Add(c.Add(d)).Add(e.Add(f).Add(g.Add(h))).ReduceSum())
+		return below, countEqual16(p, below, slots, uint16(key))
+	}
+	whole := slots &^ 7
+	i := 0
+	for ; i+16 <= whole; i += 16 {
+		lo0 = lo0.Add(archsimd.LoadUint16x8Array(at(i)).Less(target).ToInt16x8())
+		lo1 = lo1.Add(archsimd.LoadUint16x8Array(at(i + 8)).Less(target).ToInt16x8())
+	}
+	if i < whole {
+		lo0 = lo0.Add(archsimd.LoadUint16x8Array(at(i)).Less(target).ToInt16x8())
+	}
+	if whole < slots {
+		below := archsimd.LoadUint16x8Array(at(slots - 8)).Less(target).ToInt16x8()
+		lo1 = lo1.Add(below.And(archsimd.LoadInt16x8Array((*[8]int16)(tail[0:8]))))
+	}
+	below := -int(lo0.Add(lo1).ReduceSum())
+	return below, countEqual16(p, below, slots, uint16(key))
+}
+
+// countEqual16 counts the slots from below that hold key, before slots.
+func countEqual16(p unsafe.Pointer, below, slots int, key uint16) int {
+	equal := 0
+	for below+equal < slots && *(*uint16)(unsafe.Add(p, 2*(below+equal))) == key {
+		equal++
+	}
+	return equal
+}

@@ -32,6 +32,14 @@ type fileImage struct {
 	// mapped tells a mapping, which a read reaches with faults made panics:
 	// a file truncated under it would otherwise end the program.
 	mapped bool
+	// For integer keys of 8 bytes, the shared prefix as the top bits of a
+	// word, past sharedShift: a key that differs from shared there sorts
+	// before or after every key (findWordFast).
+	shared      uint64
+	sharedShift uint8
+	// fastGet tells an image whose Get takes findWordFast: integer keys
+	// of 8 bytes in its pages, plain values, a root, and in memory.
+	fastGet bool
 }
 
 // OpenFileMap checks every page of a serialized snapshot and takes an owned
@@ -63,7 +71,15 @@ func openFileMap[K cmp.Ordered, V any](data []byte, checked bool, unmap func() e
 		return nil, err
 	}
 	n := int(binary.LittleEndian.Uint64(data[40:]))
-	img := &fileImage{data: data[:n:n], root: root, length: count, mapped: unmap != nil}
+	img := &fileImage{data: data[:n:n], root: root, length: count, mapped: unmap != nil, sharedShift: 64}
+	if l.wordPages && root != 0 {
+		// The header's check put the root page, and its area, in the map:
+		// the prefix's length, then its bytes, at most 8 for these keys.
+		start := (root &^ 1) + l.area
+		img.shared = binary.BigEndian.Uint64(data[start+1 : start+9])
+		img.sharedShift = uint8(64 - 8*min(int(data[start]), 8))
+		img.fastGet = l.wordFast && !l.value.variable && unmap == nil
+	}
 	if unmap != nil {
 		// The cleanup holds the mapping's release, never the image.
 		runtime.AddCleanup(img, func(release func() error) { _ = release() }, unmap)
@@ -479,10 +495,15 @@ func (c *fileCursor[K, V]) next() (key K, value V, ok bool) {
 // find is where key's entry is in img: the slots of its key and value, ok
 // if it holds key. It reads the pages a search reaches, from the root down.
 func (m *FileMap[K, V]) find(img *fileImage, key K) (keySlot, valueSlot int, ok bool) {
-	data := img.data
-	if unsafe.Sizeof(key) == 8 && m.layout.leaf.width == 2 && img.root != 0 {
-		return m.findWord(data, img.root, m.keyWord(key))
+	if unsafe.Sizeof(key) == 8 && m.layout.wordPages && img.root != 0 {
+		return m.findWord(img, m.keyWord(key))
 	}
+	return m.findKey(img, key)
+}
+
+// findKey is find for every key, by the general search.
+func (m *FileMap[K, V]) findKey(img *fileImage, key K) (keySlot, valueSlot int, ok bool) {
+	data := img.data
 	if img.root == 0 || m.compareShared(data, img.root, key) != 0 {
 		return
 	}
@@ -510,24 +531,76 @@ func (m *FileMap[K, V]) find(img *fileImage, key K) (keySlot, valueSlot int, ok 
 	return keySlot, m.valueSlot(data, leaf, i), true
 }
 
+// loadImage is the map's image, for a lookup. Where stores stay ordered
+// (seqlockPlainStores) it is a plain load: the image is immutable once
+// published, and every read through it depends on its address, which
+// orders those reads after it on these targets, where an acquire load
+// would also hold the next lookup's loads behind it.
+func (m *FileMap[K, V]) loadImage() *fileImage {
+	if seqlockPlainStores {
+		return plainPointer(&m.image)
+	}
+	return m.image.Load()
+}
+
 func (m *FileMap[K, V]) Get(key K) (value V, ok bool) {
-	img := m.image.Load()
+	img := m.loadImage()
 	if img == nil {
 		return
 	}
+	// get, written out for integer keys: a frame less.
+	if unsafe.Sizeof(key) == 8 && img.fastGet {
+		_, slot, state := m.findWordFast(img, *(*uint64)(unsafe.Pointer(&key))^m.layout.flip)
+		switch state {
+		case wordFound:
+			// In a page findWordFast checked lies in the map.
+			return *(*V)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(img.data)), slot)), true
+		case wordAbsent:
+			return
+		}
+	}
 	if img.mapped {
-		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+		return m.getMapped(img, key)
 	}
-	_, slot, ok := m.find(img, key)
-	if ok {
-		value = diskRead[V](img.data, slot, m.layout.value)
+	return m.get(img, key)
+}
+
+// get is Get on img. A heap image needs nothing kept alive: its bytes keep
+// themselves.
+func (m *FileMap[K, V]) get(img *fileImage, key K) (value V, ok bool) {
+	var slot int
+	if unsafe.Sizeof(key) == 8 && m.layout.wordPages && img.root != 0 {
+		_, slot, ok = m.findWord(img, m.keyWord(key))
+	} else {
+		_, slot, ok = m.findKey(img, key)
 	}
+	if !ok {
+		return
+	}
+	if m.layout.value.variable {
+		return m.readVariable(img.data, slot), true
+	}
+	return diskReadPlain[V](img.data, slot, m.layout.value.size), true
+}
+
+// readVariable is the string or byte slice value in slot, out of get's
+// line: inlined, its copy would cost every get a larger frame.
+//
+//go:noinline
+func (m *FileMap[K, V]) readVariable(data []byte, slot int) V {
+	return diskReadVariable[V](data, slot, m.layout.value)
+}
+
+// getMapped is get on a mapping, with faults made panics, held to the end.
+func (m *FileMap[K, V]) getMapped(img *fileImage, key K) (value V, ok bool) {
+	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+	value, ok = m.get(img, key)
 	runtime.KeepAlive(img)
 	return
 }
 
 func (m *FileMap[K, V]) GetKeyValue(key K) (stored K, value V, ok bool) {
-	img := m.image.Load()
+	img := m.loadImage()
 	if img == nil {
 		return
 	}
@@ -544,7 +617,7 @@ func (m *FileMap[K, V]) GetKeyValue(key K) (stored K, value V, ok bool) {
 }
 
 func (m *FileMap[K, V]) Contains(key K) bool {
-	img := m.image.Load()
+	img := m.loadImage()
 	if img == nil {
 		return false
 	}
@@ -590,7 +663,7 @@ func (m *FileMap[K, V]) GetMany(keys []K, dst []Result[V]) {
 	if len(dst) < len(keys) {
 		panic("gobbtree: GetMany destination too short")
 	}
-	img := m.image.Load()
+	img := m.loadImage()
 	if img == nil {
 		clear(dst[:len(keys)])
 		return

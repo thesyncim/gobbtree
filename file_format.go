@@ -112,6 +112,14 @@ type diskLayout struct {
 	leaf, internal            diskNodeLayout
 	rootSize, rootAlign, area int
 	fingerprint               uint64
+	// wordPages tells keys of 8 bytes with 2-byte windows, which findWord
+	// searches, and the masks of its counts' last tiles.
+	wordPages              bool
+	internalTail, leafTail [16]int16
+	// flip is what a stored key's bits are flipped by for its word: a
+	// signed key's sign bit. wordFast tells layouts findWordFast searches.
+	flip     uint64
+	wordFast bool
 }
 
 func diskAlign(n, a int) int { return (n + a - 1) & -a }
@@ -211,6 +219,13 @@ func newDiskLayout[K, V any]() (diskLayout, error) {
 	}
 	l.internal = diskNode(l.key, l.value, iw, 0, false)
 	l.area, l.rootAlign = max(l.leaf.size, l.internal.size), max(l.leaf.align, l.internal.align)
+	l.wordPages = (l.key.kind == reflect.Int64 || l.key.kind == reflect.Uint64) && l.leaf.width == 2 && l.internal.width == 2 &&
+		l.leaf.capacity < 1<<15 && l.internal.capacity < 1<<15 && l.leaf.headKey >= 0
+	l.internalTail, l.leafTail = diskTailMasks(l.internal.capacity), diskTailMasks(l.leaf.capacity)
+	if l.key.kind == reflect.Int64 {
+		l.flip = 1 << 63
+	}
+	l.wordFast = fastWordPages(&l)
 	l.rootSize = l.area + 65
 	b := l.leaf
 	in := l.internal

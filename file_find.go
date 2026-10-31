@@ -4,16 +4,41 @@ import (
 	"bytes"
 	"encoding/binary"
 	"reflect"
+	"unsafe"
+)
+
+// What findWordFast settled.
+const (
+	wordAbsent = iota
+	wordFound
+	wordUnsettled
 )
 
 // findWord is find for keys of 8 bytes with inline windows, int64 and
-// uint64, by word, the big-endian word their encoding is: one loop down the
-// levels, whose windows it takes from word, and whose separators and keys
-// it compares as words.
-func (m *FileMap[K, V]) findWord(data []byte, root int, word uint64) (keySlot, valueSlot int, ok bool) {
-	in, lf := &m.layout.internal, &m.layout.leaf
+// uint64, by word, the big-endian word their encoding is: findWordFast's
+// descent where it settles the lookup, findWordBy's otherwise.
+func (m *FileMap[K, V]) findWord(img *fileImage, word uint64) (keySlot, valueSlot int, ok bool) {
+	keySlot, valueSlot, state := m.findWordFast(img, word)
+	if state != wordUnsettled {
+		return keySlot, valueSlot, state == wordFound
+	}
+	return m.findWordBy(img.data, img.root, word)
+}
+
+// findWordBy is findWord's every lookup: one loop down the levels, whose
+// windows it takes from word, and whose separators and keys it compares as
+// words.
+//
+// It checks each page it reaches lies in the map, and clamps the page's
+// count to its capacity: every read the layout places within the page is
+// then in bounds, and reads it by its address, as upstream's node code
+// reads a page, without a check for each. A corrupt map may give wrong
+// answers, or panic, but is never read out of bounds.
+func (m *FileMap[K, V]) findWordBy(data []byte, root int, word uint64) (keySlot, valueSlot int, ok bool) {
+	l := &m.layout
+	in, lf := &l.internal, &l.leaf
 	// The shared prefix: every key begins with its bytes.
-	start := (root &^ 1) + m.layout.area
+	start := (root &^ 1) + l.area
 	if n := int(data[start]); n != 0 {
 		var encoded [8]byte
 		binary.BigEndian.PutUint64(encoded[:], word)
@@ -21,75 +46,116 @@ func (m *FileMap[K, V]) findWord(data []byte, root int, word uint64) (keySlot, v
 			return
 		}
 	}
-	signed := m.layout.key.kind == reflect.Int64
-	// stored is the word of the key in slot.
-	stored := func(slot int) uint64 {
-		w := binary.NativeEndian.Uint64(data[slot:])
-		if signed {
-			w ^= 1 << 63
-		}
-		return w
+	// A stored key's word: its bits, a signed key's sign bit flipped.
+	flip := uint64(0)
+	if l.key.kind == reflect.Int64 {
+		flip = 1 << 63
 	}
-	tagged, left, leftIndex := root, -1, 0
+	base := unsafe.Pointer(unsafe.SliceData(data))
+	tagged, size := root, l.rootSize
 	for depth := 0; tagged&1 == 0; depth++ {
-		if depth == fileMaxDepth {
-			panic("gobbtree: corrupt file map: tree too deep")
-		}
 		node := tagged
-		count := int(binary.NativeEndian.Uint16(data[node:]))
-		prefix := int(binary.NativeEndian.Uint16(data[node+4:]))
-		var window uint64
-		if prefix < 8 {
-			window = word << (prefix * 8) >> 48
+		if depth == fileMaxDepth || node < 0 || node > len(data)-size {
+			panic("gobbtree: corrupt file map: page out of bounds")
 		}
-		lo, hi := diskSlotRange(data[node+in.inline:node+in.inline+in.capacity*2], 2, count, window)
+		p := unsafe.Add(base, node)
+		n := min(int(*(*uint16)(p)), in.capacity)
+		below, equal := diskCountWindows16(unsafe.Add(p, in.inline), in.capacity, &l.internalTail, windowOf(word, *(*uint16)(unsafe.Add(p, 4))))
+		lo, hi := min(below, n), min(below+equal, n)
 		for lo < hi {
 			mid := int(uint(lo+hi) >> 1)
-			if stored(m.separatorSlot(data, node, mid)) > word {
+			if binary.NativeEndian.Uint64(data[m.separatorSlot(data, node, mid):])^flip > word {
 				hi = mid
 			} else {
 				lo = mid + 1
 			}
 		}
-		if lo > 0 {
-			left, leftIndex = node, lo-1
-		}
-		tagged = node + int(binary.NativeEndian.Uint64(data[node+in.trailing+lo*in.stride:]))
+		tagged = node + int(*(*uint64)(unsafe.Add(p, in.trailing+lo*in.stride)))
+		size = in.size
 	}
 	leaf := tagged &^ 1
-	head := int(data[leaf+2])
-	n := int(binary.NativeEndian.Uint16(data[leaf:])) + head
-	headSlot := -1
-	if head != 0 {
-		headSlot = m.headSlot(data, leaf, left, leftIndex)
-		if h := stored(headSlot); h >= word {
-			if h != word {
-				return headSlot, 0, false
+	if size != l.rootSize {
+		size = lf.size
+	}
+	if leaf < 0 || leaf > len(data)-size {
+		panic("gobbtree: corrupt file map: page out of bounds")
+	}
+	p := unsafe.Add(base, leaf)
+	n := min(int(*(*uint16)(p)), lf.capacity)
+	// The head entry, the leaf's first, keeps its key in the leaf, as every
+	// leaf with inline windows does (D49).
+	if *(*uint8)(unsafe.Add(p, 2)) != 0 {
+		if head := *(*uint64)(unsafe.Add(p, lf.headKey)) ^ flip; head >= word {
+			if head != word {
+				return leaf + lf.headKey, 0, false
 			}
-			return headSlot, leaf + lf.trailing, true
+			return leaf + lf.headKey, leaf + lf.trailing, true
 		}
 	}
-	prefix := int(binary.NativeEndian.Uint16(data[leaf+4:]))
-	var window uint64
-	if prefix < 8 {
-		window = word << (prefix * 8) >> 48
-	}
-	lo, hi := diskSlotRange(data[leaf+lf.inline:leaf+lf.inline+lf.capacity*2], 2, n-head, window)
+	below, equal := diskCountWindows16(unsafe.Add(p, lf.inline), lf.capacity, &l.leafTail, windowOf(word, *(*uint16)(unsafe.Add(p, 4))))
 	// The keys past the head: index i is entry i+head.
+	lo, hi := min(below, n), min(below+equal, n)
+	keys := unsafe.Add(p, lf.keys)
 	for lo < hi {
 		mid := int(uint(lo+hi) >> 1)
-		if stored(leaf+lf.keys+mid*lf.keyStride) < word {
+		if *(*uint64)(unsafe.Add(keys, mid*lf.keyStride))^flip < word {
 			lo = mid + 1
 		} else {
 			hi = mid
 		}
 	}
-	if lo >= n-head {
+	if lo >= n {
 		return
 	}
 	keySlot = leaf + lf.keys + lo*lf.keyStride
-	if stored(keySlot) != word {
+	if *(*uint64)(unsafe.Add(keys, lo*lf.keyStride))^flip != word {
 		return keySlot, 0, false
 	}
 	return keySlot, leaf + lf.trailing + (lo+1)*lf.stride, true
+}
+
+// windowOf is word's 2-byte window past a page's prefix: zero for a prefix
+// that takes all its bytes.
+func windowOf(word uint64, prefix uint16) uint64 {
+	if prefix >= 8 {
+		return 0
+	}
+	return word << (prefix * 8) >> 48
+}
+
+// diskCountWindowsBy is diskCountWindows16 one slot at a time.
+func diskCountWindowsBy(p unsafe.Pointer, slots int, key uint64) (below, equal int) {
+	target := uint16(key)
+	for i := range slots {
+		v := *(*uint16)(unsafe.Add(p, 2*i))
+		if v < target {
+			below++
+		}
+		if v == target {
+			equal++
+		}
+	}
+	return below, equal
+}
+
+// diskTailMasks are the masks of a count's last two tiles for slots slots,
+// the last 8 slots, then the 8 before: all ones in the lanes past the whole
+// tiles of 8 that the count runs before them, which are slots&^7 of them
+// where it runs a loop, and 48 where it runs its default pages' sequence of
+// six (diskCountWindows16, findWord).
+func diskTailMasks(slots int) (mask [16]int16) {
+	whole := slots &^ 7
+	if slots >= 48 && slots <= 64 {
+		whole = 48
+	}
+	for lane := range 8 {
+		if slots-8+lane >= whole {
+			mask[lane] = -1
+		}
+		// The tile before the last only where it isn't the last one.
+		if at := slots - 16 + lane; at >= whole && at < slots-8 {
+			mask[8+lane] = -1
+		}
+	}
+	return mask
 }

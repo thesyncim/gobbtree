@@ -130,3 +130,14 @@ func diskCount64(values []uint64, key uint64) (int, int) {
 func diskSlotRange(slots []byte, width, n int, target uint64) (int, int) {
 	return diskInlineRange(slots[:n*width], width, target)
 }
+
+// diskCountWindows16 counts the 2-byte windows of a page's slots, slots
+// of them from p, below key and equal to it; its caller checked the page
+// lies in the map.
+func diskCountWindows16(p unsafe.Pointer, slots int, _ *[16]int16, key uint64) (int, int) {
+	if simd.Emulated() {
+		return diskCountWindowsBy(p, slots, key)
+	}
+	lo, hi := diskCount16(unsafe.Slice((*uint16)(p), slots), uint16(key))
+	return lo, hi - lo
+}
