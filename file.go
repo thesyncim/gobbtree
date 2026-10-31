@@ -668,13 +668,38 @@ func (m *FileMap[K, V]) GetMany(keys []K, dst []Result[V]) {
 		clear(dst[:len(keys)])
 		return
 	}
-	for i, key := range keys {
-		_, slot, ok := m.find(img, key)
-		var value V
-		if ok {
-			value = diskRead[V](img.data, slot, m.layout.value)
+	dst = dst[:len(keys)]
+	base := unsafe.Pointer(unsafe.SliceData(img.data))
+	// Get's descents, key by key: each a leaf call, whose loads the next
+	// key's overlap.
+	switch {
+	case unsafe.Sizeof(*new(K)) == 8 && img.fastGet:
+		for i := range keys {
+			_, slot, state := m.findWordFast(img, *(*uint64)(unsafe.Pointer(&keys[i]))^m.layout.flip)
+			if state == wordUnsettled {
+				var ok bool
+				_, slot, ok = m.findWordBy(img.data, img.root, *(*uint64)(unsafe.Pointer(&keys[i]))^m.layout.flip)
+				state = wordAbsent
+				if ok {
+					state = wordFound
+				}
+			}
+			if state == wordFound {
+				// In a page the descent checked lies in the map.
+				dst[i] = Result[V]{*(*V)(unsafe.Add(base, slot)), true}
+			} else {
+				dst[i] = Result[V]{}
+			}
 		}
-		dst[i] = Result[V]{value, ok}
+	default:
+		for i, key := range keys {
+			_, slot, ok := m.find(img, key)
+			var value V
+			if ok {
+				value = diskRead[V](img.data, slot, m.layout.value)
+			}
+			dst[i] = Result[V]{value, ok}
+		}
 	}
 	runtime.KeepAlive(img)
 }
