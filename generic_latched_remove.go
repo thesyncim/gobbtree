@@ -33,13 +33,14 @@ func (t *genericTree[K, V, O]) remove(seek int, key K, condition func(K, V) bool
 	if k, v, removed, done := t.removeLatched(seek, key, code, condition); done {
 		return k, v, removed
 	}
+	var b backoff
 	for {
 		if k, v, removed, done := t.removeRebalancing(seek, key, code, condition, true); done {
 			return k, v, removed
 		}
-		// Another goroutine holds a node the removal needs: wait a moment,
-		// as upstream's Interleaving::wait(1).
-		spinWait()
+		// Another goroutine holds a node the removal needs: wait for it, as
+		// upstream's retry loops do, longer each time.
+		b.spin()
 	}
 }
 

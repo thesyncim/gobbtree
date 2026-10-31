@@ -387,6 +387,7 @@ func (t *genericTree[K, V, O]) insertIntoReleasing(n *gleaf[K, V], version uint6
 // keeping its path, and splits, until no other goroutine holds a node the
 // split needs.
 func (t *genericTree[K, V, O]) insertSplitting(key K, code uint64, value V, policy int, merge func(K, V, V) V) (V, bool) {
+	var b backoff
 	for {
 		var path gpath[K]
 		n, version := t.descend(key, code, seekKey, false, exclusive, &path)
@@ -399,9 +400,9 @@ func (t *genericTree[K, V, O]) insertSplitting(key K, code uint64, value V, poli
 			return old, false
 		}
 		n.latch.unlockExclusive(version)
-		// Another goroutine holds a node the split needs: wait a moment,
-		// as upstream's Interleaving::wait(1).
-		spinWait()
+		// Another goroutine holds a node the split needs: wait for it, as
+		// upstream's retry loops do, longer each time.
+		b.spin()
 	}
 }
 
@@ -411,6 +412,7 @@ func (t *genericTree[K, V, O]) insertSplitting(key K, code uint64, value V, poli
 // without a search. A key the leaf no longer ends below, or that has room
 // again, takes the general way.
 func (t *genericTree[K, V, O]) appendSplitting(key K, code uint64, value V, policy int, merge func(K, V, V) V) (V, bool) {
+	var b backoff
 	for {
 		var path gpath[K]
 		n, version := t.descend(key, code, seekLast, false, exclusive, &path)
@@ -424,7 +426,7 @@ func (t *genericTree[K, V, O]) appendSplitting(key K, code uint64, value V, poli
 			return zero, false
 		}
 		n.latch.unlockExclusive(version)
-		spinWait()
+		b.spin()
 	}
 }
 

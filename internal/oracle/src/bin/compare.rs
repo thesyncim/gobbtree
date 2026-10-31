@@ -262,7 +262,7 @@ fn main() {
     if args.iter().any(|arg| arg == "text") {
         let threads: usize = args.get(3).map_or(0, |v| v.parse().unwrap());
         let mutations = args.get(6).is_some_and(|arg| arg == "mutations");
-        println!("upstream 1c72bd2 allocator={ALLOCATOR_NAME} n={size} rounds={rounds} queries={query_count} kind={kind} keys={pattern} text");
+        println!("upstream 8ef597b allocator={ALLOCATOR_NAME} n={size} rounds={rounds} queries={query_count} kind={kind} keys={pattern} text");
         text(size, rounds, threads, query_count, kind, mutations, &key);
         return;
     }
@@ -286,7 +286,7 @@ fn main() {
             concurrent.insert(k, k).unwrap();
         }
     }
-    println!("upstream 1c72bd2 allocator={ALLOCATOR_NAME} n={size} rounds={rounds} queries={query_count} kind={kind} keys={pattern}");
+    println!("upstream 8ef597b allocator={ALLOCATOR_NAME} n={size} rounds={rounds} queries={query_count} kind={kind} keys={pattern}");
     let mut queries = vec![0_u64; query_count];
     if let Some(name) = scale_mix {
         let threads: usize = args.get(3).map_or(0, |v| v.parse().unwrap());

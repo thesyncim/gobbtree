@@ -145,8 +145,10 @@ func (l *nodeLatch) lockSharedContended() {
 
 func (l *nodeLatch) unlockShared() { l.Add(^(latchSharedUnit - 1)) }
 
-// backoff waits exponentially longer, as upstream's does. Go has no spin
-// hint, so past the last round it yields the processor instead.
+// backoff waits exponentially longer, then yields the processor each round,
+// as upstream's does with its std feature. Go has no spin hint: a round
+// spins on an empty call, which takes less than one, so it runs more of
+// them.
 type backoff struct{ round uint32 }
 
 func (b *backoff) spin() {
