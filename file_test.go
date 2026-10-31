@@ -846,3 +846,64 @@ func TestMappedFileTruncatedPanics(t *testing.T) {
 		t.Fatal("an iteration past the truncated file's end did not panic")
 	}
 }
+
+// String lookups that take findTextFast answer as a model does, for keys
+// of awkward shapes: long shared prefixes, zero bytes, empty and short
+// keys, many lengths.
+func TestFileMapTextLookupsMatchModel(t *testing.T) {
+	rng := rand.New(rand.NewPCG(21, 21))
+	shapes := map[string]func(i int) string{
+		"hex":    func(i int) string { return fmt.Sprintf("%016x", mixedKey(uint64(i))) },
+		"shared": func(i int) string { return strings.Repeat("p", 70) + fmt.Sprintf("%08d", i) },
+		"zeros": func(i int) string {
+			return strings.Repeat("\x00", i%5) + fmt.Sprintf("%x", mixedKey(uint64(i))%997) + strings.Repeat("\x00", i%3)
+		},
+		"lengths": func(i int) string {
+			b := make([]byte, rng.IntN(80))
+			for j := range b {
+				b[j] = "ab\x00"[rng.IntN(3)]
+			}
+			return string(b)
+		},
+	}
+	for name, shape := range shapes {
+		for _, size := range []int{1, 40, 41, 42, 2000, 30000} {
+			model := map[string]uint64{}
+			for i := range size {
+				model[shape(i)] = uint64(i)
+			}
+			keys := make([]string, 0, len(model))
+			for k := range model {
+				keys = append(keys, k)
+			}
+			slices.Sort(keys)
+			w, err := NewFileWriter(func(yield func(string, uint64) bool) {
+				for _, k := range keys {
+					if !yield(k, model[k]) {
+						return
+					}
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, open := range []func([]byte) (*FileMap[string, uint64], error){OpenFileMap[string, uint64], OpenFileMapUnchecked[string, uint64]} {
+				m, err := open(w.Bytes())
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, k := range keys {
+					for _, q := range []string{k, k + "\x00", k + "z", strings.TrimSuffix(k, k[max(len(k)-1, 0):])} {
+						want, had := model[q]
+						if got, ok := m.Get(string([]byte(q))); ok != had || got != want {
+							t.Fatalf("%s/%d: Get(%q) = %d %v, want %d %v", name, size, q, got, ok, want, had)
+						}
+						if m.Contains(q) != had {
+							t.Fatalf("%s/%d: Contains(%q) != %v", name, size, q, had)
+						}
+					}
+				}
+			}
+		}
+	}
+}

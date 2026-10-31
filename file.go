@@ -40,6 +40,10 @@ type fileImage struct {
 	// fastGet tells an image whose Get takes findWordFast: integer keys
 	// of 8 bytes in its pages, plain values, a root, and in memory.
 	fastGet bool
+	// For string keys, the shared prefix, copied (findTextFast), and
+	// fastText, fastGet's counterpart for them.
+	sharedText string
+	fastText   bool
 }
 
 // OpenFileMap checks every page of a serialized snapshot and takes an owned
@@ -79,6 +83,11 @@ func openFileMap[K cmp.Ordered, V any](data []byte, checked bool, unmap func() e
 		img.shared = binary.BigEndian.Uint64(data[start+1 : start+9])
 		img.sharedShift = uint8(64 - 8*min(int(data[start]), 8))
 		img.fastGet = l.wordFast && !l.value.variable && unmap == nil
+	}
+	if l.textFast && root != 0 {
+		start := (root &^ 1) + l.area
+		img.sharedText = string(data[start+1 : start+1+int(data[start])])
+		img.fastText = !l.value.variable && unmap == nil
 	}
 	if unmap != nil {
 		// The cleanup holds the mapping's release, never the image.
@@ -498,6 +507,12 @@ func (m *FileMap[K, V]) find(img *fileImage, key K) (keySlot, valueSlot int, ok 
 	if unsafe.Sizeof(key) == 8 && m.layout.wordPages && img.root != 0 {
 		return m.findWord(img, m.keyWord(key))
 	}
+	if unsafe.Sizeof(key) == unsafe.Sizeof("") && m.layout.textFast && img.root != 0 {
+		keySlot, valueSlot, state := m.findTextFast(img, *(*string)(unsafe.Pointer(&key)))
+		if state != wordUnsettled {
+			return keySlot, valueSlot, state == wordFound
+		}
+	}
 	return m.findKey(img, key)
 }
 
@@ -559,6 +574,16 @@ func (m *FileMap[K, V]) Get(key K) (value V, ok bool) {
 			return
 		}
 	}
+	if unsafe.Sizeof(key) == unsafe.Sizeof("") && img.fastText {
+		_, slot, state := m.findTextFast(img, *(*string)(unsafe.Pointer(&key)))
+		switch state {
+		case wordFound:
+			// In a page findTextFast checked lies in the map.
+			return *(*V)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(img.data)), slot)), true
+		case wordAbsent:
+			return
+		}
+	}
 	if img.mapped {
 		return m.getMapped(img, key)
 	}
@@ -568,12 +593,7 @@ func (m *FileMap[K, V]) Get(key K) (value V, ok bool) {
 // get is Get on img. A heap image needs nothing kept alive: its bytes keep
 // themselves.
 func (m *FileMap[K, V]) get(img *fileImage, key K) (value V, ok bool) {
-	var slot int
-	if unsafe.Sizeof(key) == 8 && m.layout.wordPages && img.root != 0 {
-		_, slot, ok = m.findWord(img, m.keyWord(key))
-	} else {
-		_, slot, ok = m.findKey(img, key)
-	}
+	_, slot, ok := m.find(img, key)
 	if !ok {
 		return
 	}

@@ -9,3 +9,9 @@ func (m *FileMap[K, V]) findWordFast(*fileImage, uint64) (keySlot, valueSlot, st
 }
 
 func fastWordPages(*diskLayout) bool { return false }
+
+func fastTextPages(*diskLayout) bool { return false }
+
+func (m *FileMap[K, V]) findTextFast(*fileImage, string) (keySlot, valueSlot, state int) {
+	return 0, 0, wordUnsettled
+}

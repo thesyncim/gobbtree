@@ -118,8 +118,8 @@ type diskLayout struct {
 	internalTail, leafTail [16]int16
 	// flip is what a stored key's bits are flipped by for its word: a
 	// signed key's sign bit. wordFast tells layouts findWordFast searches.
-	flip     uint64
-	wordFast bool
+	flip               uint64
+	wordFast, textFast bool
 }
 
 func diskAlign(n, a int) int { return (n + a - 1) & -a }
@@ -225,7 +225,7 @@ func newDiskLayout[K, V any]() (diskLayout, error) {
 	if l.key.kind == reflect.Int64 {
 		l.flip = 1 << 63
 	}
-	l.wordFast = fastWordPages(&l)
+	l.wordFast, l.textFast = fastWordPages(&l), fastTextPages(&l)
 	l.rootSize = l.area + 65
 	b := l.leaf
 	in := l.internal
