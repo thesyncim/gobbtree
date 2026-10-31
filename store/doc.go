@@ -72,7 +72,10 @@
 //     are out, and leaves the store empty. It is the owner's.
 //   - A lookup's key points to a struct that holds the caller's slice,
 //     marked by a key length no record has, as upstream's QueryKey points to
-//     the caller's bytes; the tree never keeps a lookup's key.
+//     the caller's bytes; the tree never keeps a lookup's key. The tree
+//     calls its keys' methods through their dictionary, so the compiler
+//     can't keep that struct on the stack: a lookup, an insert and a removal
+//     each allocate it, 32 bytes, where upstream's lies on the stack.
 //   - The tree hands occupied the stored key but not its index in the leaf:
 //     the store finds it among the leaf's keys by its pointer.
 //   - GetInto appends to the caller's buffer and returns it, where upstream's
