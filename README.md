@@ -142,6 +142,21 @@ A file map searches the image in place, with no rebuild, and supports `Get`, `Ge
 - **Writing:** `WriteFile` replaces the file atomically, syncing it and its directory, keeps the permissions of a file it replaces, and writes through a symbolic link. `CreateFile` writes one from an ascending `iter.Seq2`. `NewFileWriter`, `WriteAt`, `ReadFileRange` and `Mmap(...).Range` handle snapshots inside larger files; `Mmap(...).Pages(OsPagesHuge)` advises huge pages on Linux.
 - **Immutable:** to change a file map, write a new snapshot.
 
+### Store and WAL
+
+`store` is upstream's `bbtree-store`: a concurrent map from byte strings to byte strings whose every byte lies in heap pages a `Budget` grants, so that a cache can stay within a memory budget. Values of any length go to overflow pages, and freed room is compacted in place. It runs on `AnnexedMapOf`, the tree's leaf annexes, as upstream's runs on its `LeafAnnex`.
+
+```go
+s := store.New() // or store.NewIn(budget)
+replaced, err := s.Insert([]byte("user:42"), []byte("Ada"))
+v, ok := s.Get([]byte("user:42"))
+for k, v := range s.Scan(store.AtLeast([]byte("user:"))) { // holding each leaf: don't use s here
+    fmt.Printf("%s=%s\n", k, v)
+}
+```
+
+`store/wal` is upstream's write-ahead log: CRC-checked records appended to numbered files through a `Storage`, a writer that fences the one before it, and a replay on open. Its files are upstream's byte for byte. As upstream's, it is a library of its own: the store doesn't log to it, and the package brings no storage of its own. Each package's documentation lists how it differs from upstream.
+
 ## Concurrency
 
 `Map` ports the protocol of upstream's `BBTreeMap` ([design](https://github.com/XiangpengHao/bbtree/blob/8ef597b5b8d957531d88871bdb566f391206f860/design/09-concurrency.md)). Every node carries a latch word with a version. Lookups descend optimistically, checking each node's version, and write nothing. Writers latch only the leaf they change; a split or merge takes only the nodes it changes, without waiting, and starts over if another goroutine holds one. No lock or counter is shared by all writers, so writes scale with cores. Lookups of custom keys, and of string keys a leaf's summaries don't settle, read the leaf under its shared latch, as upstream's do for keys it can't read inline. A lookup whose leaf keeps changing takes that latch too, which lets readers progress behind a hot leaf.
@@ -176,6 +191,8 @@ The API follows upstream's operations with Go names. Results are multiple return
 | `FileWriter::from_ascending` · `byte_len` · `write` | `NewFileWriter` · `ByteLen` · `WriteTo`; a container's `WriteFile` writes one directly |
 | `FileMap::open` · `open_unchecked` · `NotAscending::index` | `OpenFileMap` · `OpenFileMapUnchecked` · `NotAscendingError.Index` |
 | bbtree-mmap `create` · `write_at` · `read` · `read_range` · `mmap().range().pages().open()` | `CreateFile` · `WriteAt` · `ReadFile` · `ReadFileRange` · `Mmap().Range().Pages().Open()` |
+| bbtree-store `BBTreeStore` · `get` · `get_into` · `contains_key` · `insert` · `remove` · `scan` · `scan_rev` · `range` | `store.Store` · `Get` · `GetInto` · `Contains` · `Insert` · `Remove` · `Scan` · `ScanReverse` · `Range`; Go has no `Drop`, so `Clear` gives the pages back |
+| bbtree-store `wal::WalWriter::open` · `append` · `RecordAddress::read_value` · `WalStorage` | `wal.Open` · `Writer.Append` · `Address.ReadValue` · `wal.Storage`, blocking with a `context.Context` where upstream's are async |
 
 Beyond upstream:
 
