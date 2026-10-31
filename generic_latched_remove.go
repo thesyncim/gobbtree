@@ -139,14 +139,15 @@ func (t *genericTree[K, V, O]) takePromotion(path *gpath[K], level int, held *la
 // which it rarely does, as the new separator is the old one's successor.
 func (t *genericTree[K, V, O]) promote(path *gpath[K], level int, n *gleaf[K, V]) {
 	t.setHead(n)
-	sep := t.firstKey(n)
+	key := t.firstKey(n)
+	sep := t.headFence(key, n)
 	at := path.levels[level]
-	t.replaceSeparator(at.n, at.edge, sep)
+	t.replaceSeparator(at.n, at.edge, key, sep)
 	// The right subtree's left border, n's path below the separator: their
 	// low fences.
 	for l := level + 1; l < path.depth; l++ {
 		inner := path.levels[l].n
-		if high := t.nodeHigh(path, l); prefixed[O, K]() && t.fencePrefix(&sep, high) != int(inner.prefix.Load()) {
+		if high := t.nodeHigh(path, l); fenced[O, K]() && t.fencePrefix(sep, high) != int(inner.prefix.Load()) {
 			t.refitInner(inner, high)
 		}
 	}
@@ -158,30 +159,37 @@ func (t *genericTree[K, V, O]) promote(path *gpath[K], level int, n *gleaf[K, V]
 	h := at.n.children[(at.edge-1)&(nodeSize-1)].Load()
 	for !h.leaf {
 		inner := asInner[K](h)
-		if prefixed[O, K]() && t.fencePrefix(t.lowFence(inner), &sep) != int(inner.prefix.Load()) {
-			t.refitInner(inner, &sep)
+		if fenced[O, K]() && t.fencePrefix(t.lowFence(inner), sep) != int(inner.prefix.Load()) {
+			t.refitInner(inner, sep)
 		}
 		h = inner.children[(inner.count.Load()-1)&(nodeSize-1)].Load()
 	}
-	t.refitMoved(asLeaf[K, V](h), &sep)
+	t.refitMoved(asLeaf[K, V](h), sep)
 }
 
-// replaceSeparator makes sep, a held leaf's head, internal node n's
-// separator i, held, where n's fences stay: its prefix holds, and only code
-// i changes.
-func (t *genericTree[K, V, O]) replaceSeparator(n *ginner[K], i int, sep K) {
-	if prefixed[O, K]() {
+// replaceSeparator makes sep, a held leaf's head, as fence f, internal node
+// n's separator i, held, where n's fences stay: its prefix holds, and only
+// code i changes, a custom key's read from its head copy.
+func (t *genericTree[K, V, O]) replaceSeparator(n *ginner[K], i int, sep K, f fence[K]) {
+	switch {
+	case prefixed[O, K]():
 		storeSum(n.sums(), i, summaryOf(textView(&sep), int(n.prefix.Load())))
-		return
+	case windowed[O, K]():
+		code := uint64(0)
+		if f.head != nil {
+			code = windowIn(&f.head.win, int(n.prefix.Load()))
+		}
+		n.codes[i].Store(code)
+	default:
+		n.codes[i].Store(t.code(sep))
 	}
-	n.codes[i].Store(t.code(sep))
 }
 
-// refitMoved refits text leaf n, held, whose windows are its keys' at its
+// refitMoved refits leaf n, held, whose windows are its keys' at its
 // prefix, where its fences, its head and high, one of them moved, share
 // another.
-func (t *genericTree[K, V, O]) refitMoved(n *gleaf[K, V], high *K) {
-	if !prefixed[O, K]() {
+func (t *genericTree[K, V, O]) refitMoved(n *gleaf[K, V], high fence[K]) {
+	if !fenced[O, K]() {
 		return
 	}
 	if p := t.fencePrefix(t.leafLow(n), high); p != int(n.prefix.Load()) {
@@ -393,22 +401,23 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 		// The right leaf's new first key, which it holds.
 		sep = t.firstKey(asLeaf[K, V](r))
 	}
-	if annexed[O, K]() && !leaves {
-		// The code that moved with the separator: its key lies in a leaf
-		// the removal doesn't hold.
-		parent.codes[pairRight].Store(sepCode)
-	} else {
-		t.replaceSeparator(parent, pairRight, sep)
+	// A custom key's separator is read from its head copy: its key may lie
+	// in a leaf the removal doesn't hold, whose keys an annexed tree moves.
+	sepFence := fenceOfKey(sep)
+	if windowed[O, K]() {
+		sepFence = t.separatorFence(parent, pairRight)
 	}
+	_ = sepCode
+	t.replaceSeparator(parent, pairRight, sep, sepFence)
 	if leaves {
 		if t.wordCodes() {
 			setHigh(l, t.code(sep))
 		}
-		t.fitLeaf(asLeaf[K, V](l), t.leafLow(asLeaf[K, V](l)), &sep)
-		t.fitLeaf(asLeaf[K, V](r), &sep, high)
+		t.fitLeaf(asLeaf[K, V](l), t.leafLow(asLeaf[K, V](l)), sepFence)
+		t.fitLeaf(asLeaf[K, V](r), sepFence, high)
 		return
 	}
-	t.refitInner(asInner[K](l), &sep)
+	t.refitInner(asInner[K](l), sepFence)
 	t.refitInner(asInner[K](r), high)
 }
 

@@ -129,7 +129,7 @@ type gleaf[K any, V any] struct {
 type keyedLeaf[K any, V any] struct {
 	gleaf[K, V]
 	keys [nodeSize]K
-	head atomic.Pointer[K]
+	head atomic.Pointer[headCopy[K]]
 }
 
 // A text leaf also keeps, for each key, its window past the code's (its
@@ -229,11 +229,11 @@ func (t *genericTree[K, V, O]) head(n *gleaf[K, V]) (K, bool) {
 		}
 		return keyOfText[K](unsafe.String((*byte)(unsafe.Add(unsafe.Pointer(p), 8)), length)), true
 	}
-	p := (*keyedLeaf[K, V])(unsafe.Pointer(n)).head.Load()
+	p := headOf(n)
 	if p == nil {
 		return k, false
 	}
-	return *p, true
+	return p.key, true
 }
 
 // setHead makes leaf n's head a copy of its first key, n and its
@@ -251,8 +251,11 @@ func (t *genericTree[K, V, O]) setHead(n *gleaf[K, V]) {
 		n.text().head.Store(&b[0])
 		return
 	}
-	k := t.key(n, 0)
-	(*keyedLeaf[K, V])(unsafe.Pointer(n)).head.Store(&k)
+	c := &headCopy[K]{key: t.key(n, 0)}
+	if windowed[O, K]() {
+		c.win = t.keyWindows(c.key)
+	}
+	(*keyedLeaf[K, V])(unsafe.Pointer(n)).head.Store(c)
 }
 
 // clearHead drops leaf n's head, for a leaf merged away.
@@ -360,42 +363,51 @@ func (t *genericTree[K, V, O]) separatorKey(n *ginner[K], i int) (K, bool) {
 	return t.key(leaf, 0), true
 }
 
-// lowFence is internal node n's low fence, the head of its leftmost leaf,
-// nil on the tree's left border; n is held.
-func (t *genericTree[K, V, O]) lowFence(n *ginner[K]) *K {
-	if k, ok := t.separatorKey(n, 0); ok {
-		return &k
+// separatorFence is internal node n's separator i as a fence: a text
+// key, or a custom key's head copy; none where a racing walk finds no leaf,
+// or a leaf without a head.
+func (t *genericTree[K, V, O]) separatorFence(n *ginner[K], i int) fence[K] {
+	if !windowed[O, K]() {
+		if k, ok := t.separatorKey(n, i); ok {
+			return fence[K]{key: &k}
+		}
+		return fence[K]{}
 	}
-	return nil
+	h := n.children[i&(nodeSize-1)].Load()
+	for depth := 0; h != nil && !h.leaf && depth < maxDepth; depth++ {
+		h = asInner[K](h).children[0].Load()
+	}
+	if h == nil || !h.leaf {
+		return fence[K]{}
+	}
+	return fence[K]{head: headOf(asLeaf[K, V](h))}
 }
+
+// lowFence is internal node n's low fence, the head of its leftmost leaf,
+// none on the tree's left border; n is held.
+func (t *genericTree[K, V, O]) lowFence(n *ginner[K]) fence[K] { return t.separatorFence(n, 0) }
 
 // nodeHigh is the high fence of path's node at level: the separator right
 // of it at the lowest level above that has one, nil on the right border.
 // The node is held, which keeps it.
-func (t *genericTree[K, V, O]) nodeHigh(path *gpath[K], level int) *K {
+func (t *genericTree[K, V, O]) nodeHigh(path *gpath[K], level int) fence[K] {
 	for l := level - 1; l >= 0; l-- {
 		// The count the descent read, with the edge: a node above those an
 		// operation holds may change, but not one whose separator is a
 		// fence it uses, which it holds too (gpath.takeHighHolder).
 		at := path.levels[l]
 		if at.edge+1 < at.count {
-			if k, ok := t.separatorKey(at.n, at.edge+1); ok {
-				return &k
-			}
-			return nil
+			return t.separatorFence(at.n, at.edge+1)
 		}
 	}
-	return nil
+	return fence[K]{}
 }
 
 // childHigh is the high fence of child edge of path's node at level.
-func (t *genericTree[K, V, O]) childHigh(path *gpath[K], level, edge int) *K {
+func (t *genericTree[K, V, O]) childHigh(path *gpath[K], level, edge int) fence[K] {
 	n := path.levels[level].n
 	if edge+1 < int(n.count.Load()) {
-		if k, ok := t.separatorKey(n, edge+1); ok {
-			return &k
-		}
-		return nil
+		return t.separatorFence(n, edge+1)
 	}
 	return t.nodeHigh(path, level)
 }
@@ -721,7 +733,8 @@ func (t *genericTree[K, V, O]) compare(a, b K) int { return compareKeys[O](a, b)
 // seeks the leaf of keys below key, whose code is code. path, if not nil,
 // keeps the internal nodes. The tree has a root.
 func (t *genericTree[K, V, O]) descend(key K, code uint64, seek int, strict bool, mode int, path *gpath[K]) (*gleaf[K, V], uint64) {
-	if prefixed[O, K]() && seek == seekKey {
+	// A custom key's shared prefix is read only where there is one.
+	if fenced[O, K]() && seek == seekKey && (!windowed[O, K]() || t.sharesBytes()) {
 		// A key without the shared prefix sorts before or after every key:
 		// its leaf is the first or the last. Writers admit theirs first.
 		switch t.sharedOrder(key) {
@@ -731,11 +744,14 @@ func (t *genericTree[K, V, O]) descend(key K, code uint64, seek int, strict bool
 			seek = seekLast
 		}
 	}
+	// A custom key's code is its window at each node's prefix.
+	code0 := code
 restart:
 	for {
 		if path != nil {
 			path.depth = 0
 		}
+		cp, code := 0, code0
 		h := t.root.Load()
 		if h.leaf {
 			version := latchHeader(h, mode)
@@ -762,6 +778,13 @@ restart:
 			case seekLast:
 				i = count - 1
 			default:
+				if windowed[O, K]() {
+					// A custom key's code at the node's prefix, the level
+					// before's where that is the same.
+					if q := int(n.prefix.Load()); q != cp {
+						cp, code = q, t.codeOf(key, code0, q)
+					}
+				}
 				var ok bool
 				if i, ok = t.route(n, key, code, count, strict); !ok {
 					continue restart
@@ -799,9 +822,19 @@ func (t *genericTree[K, V, O]) code(key K) uint64 {
 	return windowKey[O](key, 0)
 }
 
-// prefixed reports keys whose nodes keep prefixes: built-in text, whose
-// bytes are compared directly, with no user code.
+// prefixed reports text keys: built-in text, whose bytes are compared
+// directly, with no user code.
 func prefixed[O keyOrder[K], K any]() bool { return directText[O, K]() }
+
+// fenced reports keys whose nodes keep prefixes (D26): text, and custom
+// keys, by their windows (custom_prefix.go).
+//
+// Every custom order's keys are one or the other.
+func fenced[O keyOrder[K], K any]() bool {
+	var o O
+	var k K
+	return unsafe.Sizeof(o) != 0 || unsafe.Sizeof(k) == unsafe.Sizeof("")
+}
 
 func prefixOf(s string, p int) string { return s[:min(len(s), p)] }
 
@@ -883,18 +916,21 @@ func (t *genericTree[K, V, O]) firstKey(n *gleaf[K, V]) K {
 	return t.key(n, 0)
 }
 
-// leafLow is leaf n's low fence, its head, nil for the leftmost leaf.
-func (t *genericTree[K, V, O]) leafLow(n *gleaf[K, V]) *K {
-	if k, ok := t.head(n); ok {
-		return &k
+// leafLow is leaf n's low fence, its head, none for the leftmost leaf.
+func (t *genericTree[K, V, O]) leafLow(n *gleaf[K, V]) fence[K] {
+	if windowed[O, K]() {
+		return fence[K]{head: headOf(n)}
 	}
-	return nil
+	if k, ok := t.head(n); ok {
+		return fence[K]{key: &k}
+	}
+	return fence[K]{}
 }
 
-// fitLeaf refits text leaf n, held, to its fences low and high, from its
-// keys. An emptied leaf, only ever the root, keeps no prefix.
-func (t *genericTree[K, V, O]) fitLeaf(n *gleaf[K, V], low, high *K) {
-	if !prefixed[O, K]() {
+// fitLeaf refits leaf n, held, to its fences low and high, from its keys.
+// An emptied leaf, only ever the root, keeps no prefix.
+func (t *genericTree[K, V, O]) fitLeaf(n *gleaf[K, V], low, high fence[K]) {
+	if !fenced[O, K]() {
 		return
 	}
 	if n.count.Load() == 0 {
@@ -904,9 +940,13 @@ func (t *genericTree[K, V, O]) fitLeaf(n *gleaf[K, V], low, high *K) {
 	t.refitLeaf(n, t.fencePrefix(low, high))
 }
 
-// refitLeaf sets text leaf n's prefix to p, which its keys share, and
-// recomputes its windows from its keys. n is held.
+// refitLeaf sets leaf n's prefix to p, which its keys share, and recomputes
+// its windows from its keys. n is held.
 func (t *genericTree[K, V, O]) refitLeaf(n *gleaf[K, V], p int) {
+	if windowed[O, K]() {
+		t.refitLeafOf(n, p)
+		return
+	}
 	count := int(n.count.Load())
 	n.setPrefix(t.keyText(n, 0), p)
 	for i := 0; i < count; i++ {
@@ -922,6 +962,14 @@ func (t *genericTree[K, V, O]) refitLeaf(n *gleaf[K, V], p int) {
 // them, and the first for the head, are read.
 func (t *genericTree[K, V, O]) growLeaf(n *gleaf[K, V], p int) {
 	q := int(n.prefix.Load())
+	if windowed[O, K]() {
+		// A custom key's windows are its own to take: no shift reads past
+		// the bytes a window held.
+		if p != q {
+			t.refitLeafOf(n, p)
+		}
+		return
+	}
 	if p <= q {
 		if p < q {
 			t.refitLeaf(n, p)
@@ -992,8 +1040,28 @@ func slotOrder[K any, V any](n *gleaf[K, V], i int, k *textProbe, p int) (order 
 // recomputes its codes or summaries from its separators, padding the slots
 // past its count. Whole codes are their separators, which moved with their
 // children: they stay. n is held.
-func (t *genericTree[K, V, O]) refitInner(n *ginner[K], high *K) {
+func (t *genericTree[K, V, O]) refitInner(n *ginner[K], high fence[K]) {
 	count := int(n.count.Load())
+	if windowed[O, K]() {
+		// From the separators' head copies, which an annexed tree's keys'
+		// moves leave as they were.
+		p := t.fencePrefix(t.lowFence(n), high)
+		n.prefix.Store(int32(p))
+		for i := 0; i < nodeSize; i++ {
+			code := codePad
+			switch {
+			case i == 0 && count > 0:
+				code = 0
+			case i < count:
+				code = 0
+				if h := t.separatorFence(n, i).head; h != nil {
+					code = windowIn(&h.win, p)
+				}
+			}
+			n.codes[i].Store(code)
+		}
+		return
+	}
 	if t.movesCodes() {
 		for i := 0; i < nodeSize; i++ {
 			switch {
@@ -1045,24 +1113,30 @@ func (t *genericTree[K, V, O]) sharedText() string {
 
 // fencePrefix is what every key between fences low and high begins with:
 // what they share, a missing one taken as the shared prefix (D50).
-func (t *genericTree[K, V, O]) fencePrefix(low, high *K) int {
+func (t *genericTree[K, V, O]) fencePrefix(low, high fence[K]) int {
+	if windowed[O, K]() {
+		return t.fencePrefixOf(low.head, high.head)
+	}
 	shared := t.sharedText()
-	if low == nil && high == nil {
+	if low.key == nil && high.key == nil {
 		return len(shared)
 	}
 	a, b := shared, shared
-	if low != nil {
-		a = textView(low)
+	if low.key != nil {
+		a = textView(low.key)
 	}
-	if high != nil {
-		b = textView(high)
+	if high.key != nil {
+		b = textView(high.key)
 	}
 	return commonPrefix(a, b)
 }
 
-// sharedOrder orders text key against the shared prefix: 0 where key begins
+// sharedOrder orders key against the shared prefix: 0 where key begins
 // with it, else as key sorts against every key, which do.
 func (t *genericTree[K, V, O]) sharedOrder(key K) int {
+	if windowed[O, K]() {
+		return t.sharedOrderOf(key)
+	}
 	shared, s := t.sharedText(), textView(&key)
 	if len(s) >= len(shared) && s[:len(shared)] == shared {
 		return 0
@@ -1115,6 +1189,28 @@ func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K, code uint64) (int, bo
 	if exactCodes[O, K]() {
 		lo := lowerCode(&n.codes, count, code)
 		return lo, lo < count && n.codes[lo&(nodeSize-1)] == code
+	}
+	if windowed[O, K]() {
+		// A key without the leaf's prefix sorts before or after its keys;
+		// one with it, by its window past it.
+		if p := int(n.prefix.Load()); p > 0 {
+			// A prefix within key's first window is checked by it.
+			order := 0
+			if m := headMask(p); p <= 8 {
+				if w, h := code&m, n.head[0].Load(); w != h {
+					order = cmp.Compare(w, h)
+				}
+			} else {
+				order = t.leafOrderOf(n, key, code, p)
+			}
+			switch {
+			case order < 0:
+				return 0, false
+			case order > 0:
+				return count, false
+			}
+			code = t.codeOf(key, code, p)
+		}
 	}
 	// Only the keys whose codes are key's can be it, and they are rare
 	// past the first: they follow the first code at least key's.

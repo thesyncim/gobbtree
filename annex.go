@@ -230,11 +230,12 @@ func (t *genericTree[K, V, O]) replaceKey(leaf unsafe.Pointer, i int, key K) {
 	n.keyed()[i] = key
 	// The leaf's head is a copy of its first key, which lookups past its
 	// separator compare racing: they read the old copy or the new, equal
-	// either way.
+	// either way, and whose windows, the key's bytes, stay.
 	if i == 0 {
 		if head := &(*keyedLeaf[K, V])(leaf).head; head.Load() != nil {
-			k := key
-			head.Store(&k)
+			c := *head.Load()
+			c.key = key
+			head.Store(&c)
 		}
 	}
 }

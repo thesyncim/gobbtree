@@ -1,6 +1,7 @@
 package gobbtree
 
 import (
+	"encoding/binary"
 	"math"
 	"strings"
 	"unsafe"
@@ -177,6 +178,8 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 		} else {
 			t.admit(key)
 		}
+	} else if windowed[O, K]() && t.sharesBytes() {
+		t.admit(key)
 	}
 	if seqlockPlainStores && t.wordCodes() && policy != insertMerge {
 		// The code once: in shared code each is a check of the key's type.
@@ -240,6 +243,10 @@ func (t *genericTree[K, V, O]) insert(key K, value V, policy int, merge func(K, 
 // the first key's sets it, and a key without it shortens it to what they
 // share (D50). It only shortens, so a key that had it keeps it.
 func (t *genericTree[K, V, O]) admit(key K) {
+	if windowed[O, K]() {
+		t.admitWindows(key)
+		return
+	}
 	s := textView(&key)
 	for {
 		cur := t.shared.Load()
@@ -255,6 +262,30 @@ func (t *genericTree[K, V, O]) admit(key K) {
 			return
 		}
 		t.shrinkShared(cur, commonPrefix(s, *cur))
+	}
+}
+
+// admitWindows is admit for custom keys, by their windows: the first key's
+// first customPrefixMax bytes set the shared prefix.
+func (t *genericTree[K, V, O]) admitWindows(key K) {
+	for {
+		cur := t.shared.Load()
+		if cur == nil {
+			var b [customPrefixMax]byte
+			for off := 0; off < customPrefixMax; off += 8 {
+				binary.BigEndian.PutUint64(b[off:], windowKey[O](key, off))
+			}
+			shared := string(b[:])
+			if t.shared.CompareAndSwap(nil, &shared) {
+				return
+			}
+			continue
+		}
+		p := t.sharedLenOf(key, *cur)
+		if p == len(*cur) {
+			return
+		}
+		t.shrinkShared(cur, p)
 	}
 }
 
@@ -280,9 +311,9 @@ func (t *genericTree[K, V, O]) shrinkShared(cur *string, p int) {
 			// The borders take the shared prefix for a fence: the root, the
 			// internal nodes and the leaves along them.
 			if root.leaf {
-				t.fitLeaf(asLeaf[K, V](root), nil, nil)
+				t.fitLeaf(asLeaf[K, V](root), fence[K]{}, fence[K]{})
 			} else {
-				t.refitInner(asInner[K](root), nil)
+				t.refitInner(asInner[K](root), fence[K]{})
 				for _, right := range [2]bool{false, true} {
 					t.refitBorder(asInner[K](root), right)
 				}
@@ -321,15 +352,15 @@ func takeBorder[K any](held *latchSet, n *ginner[K], right bool) bool {
 // or its last when right, leaf included, to their fences: on the left
 // border each one's high is the separator right of it, or its parent's.
 func (t *genericTree[K, V, O]) refitBorder(root *ginner[K], right bool) {
-	n, high := root, (*K)(nil)
+	n, high := root, fence[K]{}
 	for {
 		i := 0
 		if right {
 			i = int(n.count.Load()) - 1
 		}
 		if !right && i+1 < int(n.count.Load()) {
-			if k, ok := t.separatorKey(n, i+1); ok {
-				high = &k
+			if f := t.separatorFence(n, i+1); f.key != nil || f.head != nil {
+				high = f
 			}
 		}
 		c := n.children[i&(nodeSize-1)].Load()
@@ -533,12 +564,13 @@ func (t *genericTree[K, V, O]) redistribute(path *gpath[K], leaf *gleaf[K, V], i
 		t.moveLeafEntries(sib, int(sib.count.Load()), leaf, 0, moved)
 		separator := t.firstKey(leaf)
 		t.setHead(leaf)
-		t.replaceSeparator(parent, edge, separator)
+		sep := t.headFence(separator, leaf)
+		t.replaceSeparator(parent, edge, separator, sep)
 		if t.wordCodes() {
 			setHigh(&sib.gheader, t.code(separator))
 		}
-		t.fitLeaf(sib, t.leafLow(sib), &separator)
-		t.fitLeaf(leaf, &separator, t.childHigh(path, level, edge))
+		t.fitLeaf(sib, t.leafLow(sib), sep)
+		t.fitLeaf(leaf, sep, t.childHigh(path, level, edge))
 		// A key below the leaf's new first, the separator, is the
 		// sibling's.
 		if index <= moved {
@@ -554,12 +586,13 @@ func (t *genericTree[K, V, O]) redistribute(path *gpath[K], leaf *gleaf[K, V], i
 	t.moveLeafEntries(sib, 0, leaf, nodeSize-moved, moved)
 	separator := t.firstKey(sib)
 	t.setHead(sib)
-	t.replaceSeparator(parent, best, separator)
+	sep := t.headFence(separator, sib)
+	t.replaceSeparator(parent, best, separator, sep)
 	if t.wordCodes() {
 		setHigh(&leaf.gheader, t.code(separator))
 	}
-	t.fitLeaf(leaf, t.leafLow(leaf), &separator)
-	t.fitLeaf(sib, &separator, t.childHigh(path, level, best))
+	t.fitLeaf(leaf, t.leafLow(leaf), sep)
+	t.fitLeaf(sib, sep, t.childHigh(path, level, best))
 	if index <= nodeSize-moved {
 		t.insertEntry(leaf, index, key, value)
 	} else {
@@ -604,13 +637,12 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 	// right half's head; the halves take what it shares with the leaf's
 	// fences.
 	separator := t.firstKey(right)
-	// An annexed tree's separator code rises with it, read here from the
-	// leaf the split holds.
-	var sepCode uint64
-	if annexed[O, K]() {
-		sepCode = t.code(separator)
-	}
 	t.setHead(right)
+	// A custom key's separator code is its window at the prefix of the node
+	// it goes into, read from its head copy: an annexed tree's separator
+	// lies in a leaf the split may not hold.
+	var sepCode uint64
+	sepFence := t.headFence(separator, right)
 	if t.wordCodes() {
 		// The halves' fences: the separator between them, and the leaf's.
 		_, high := bounds(&leaf.gheader)
@@ -620,14 +652,14 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 			t.tail.Store(&right.gheader)
 		}
 	}
-	if prefixed[O, K]() {
-		var high *K
+	if fenced[O, K]() {
+		var high fence[K]
 		if path.depth > 0 {
 			level := &path.levels[path.depth-1]
 			high = t.childHigh(path, path.depth-1, level.edge)
 		}
-		t.growLeaf(leaf, t.fencePrefix(t.leafLow(leaf), &separator))
-		t.growLeaf(right, t.fencePrefix(&separator, high))
+		t.growLeaf(leaf, t.fencePrefix(t.leafLow(leaf), sepFence))
+		t.growLeaf(right, t.fencePrefix(sepFence, high))
 	}
 	if left {
 		t.insertEntry(leaf, index, key, value)
@@ -637,6 +669,9 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 	carried := &right.gheader
 	for level := path.depth - 1; level >= top && carried != nil; level-- {
 		n, edge := path.levels[level].n, path.levels[level].edge+1
+		if windowed[O, K]() && sepFence.head != nil {
+			sepCode = windowIn(&sepFence.head.win, int(n.prefix.Load()))
+		}
 		if int(n.count.Load()) < nodeSize {
 			t.insertChild(n, edge, separator, sepCode, carried)
 			carried = nil
@@ -660,14 +695,15 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 		switch {
 		case !t.wholeCodes():
 			separator, _ = t.separatorKey(split, 0)
-			if annexed[O, K]() && (left || edge > cut) {
-				sepCode = first
+			sepFence = t.separatorFence(split, 0)
+			if !windowed[O, K]() {
+				sepFence = fenceOfKey(separator)
 			}
 		case left || edge > cut:
 			separator = t.decode(first)
 		}
 		carried = &split.gheader
-		t.refitInner(n, &separator)
+		t.refitInner(n, sepFence)
 		t.refitInner(split, high)
 	}
 	if carried != nil {
@@ -678,7 +714,7 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 		t.insertChild(root, 0, none, 0, t.root.Load())
 		t.insertChild(root, 1, separator, sepCode, carried)
 		// Its fences are the tree's borders: it takes the shared prefix.
-		t.refitInner(root, nil)
+		t.refitInner(root, fence[K]{})
 		t.root.Store(&root.gheader)
 	}
 }
@@ -697,6 +733,11 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 	if prefixed[O, K]() {
 		if count == 0 {
 			n.setPrefix(textView(&key), len(t.sharedText()))
+		}
+		p = int(n.prefix.Load())
+	} else if windowed[O, K]() {
+		if count == 0 {
+			n.setPrefixOf(windowKey[O](key, 0), windowKey[O](key, 8), len(t.sharedText()))
 		}
 		p = int(n.prefix.Load())
 	}
@@ -728,7 +769,11 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 		keys := n.keyed()
 		copy(keys[i+1:count+1], keys[i:count])
 		keys[i] = ownKey[O](key)
-		n.codes[i] = windowKey[O](key, p)
+		if windowed[O, K]() {
+			n.codes[i] = t.codeOf(key, windowKey[O](key, 0), p)
+		} else {
+			n.codes[i] = windowKey[O](key, p)
+		}
 		if exactCodes[O, K]() {
 			copy(n.tags[i+1:count+1], n.tags[i:count])
 			n.tags[i] = uint8(n.codes[i])
@@ -1062,7 +1107,7 @@ func (t *genericTree[K, V, O]) insertChild(n *ginner[K], i int, separator K, cod
 	switch {
 	case i == 0:
 		code = 0
-	case !annexed[O, K]():
+	case !windowed[O, K]():
 		code = t.code(separator)
 	}
 	n.codes[i].Store(code)
@@ -1172,7 +1217,7 @@ func (t *genericTree[K, V, O]) insertWithLeaf(key K, value V, occupied func(*gle
 	if t.root.Load() == nil {
 		t.start()
 	}
-	if prefixed[O, K]() {
+	if prefixed[O, K]() || windowed[O, K]() && t.sharesBytes() {
 		t.admit(key)
 	}
 	code := t.code(key)

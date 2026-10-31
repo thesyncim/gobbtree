@@ -22,8 +22,16 @@ func owned(p *atomic.Int32) int { return int(*(*int32)(unsafe.Pointer(p))) }
 // prefixes; ownerSeek descends for text keys.
 func (t *genericTree[K, V, O]) ownerLeaf(key K, code uint64) *gleaf[K, V] {
 	h := plainPointer(&t.root)
+	cp, code0 := 0, code
 	for !h.leaf {
 		n := asInner[K](h)
+		if windowed[O, K]() {
+			// A custom key's code at the node's prefix, the level before's
+			// where that is the same.
+			if q := int(h.prefix.Load()); q != cp {
+				cp, code = q, t.codeOf(key, code0, q)
+			}
+		}
 		i, _ := t.route(n, key, code, owned(&n.count), false)
 		h = plainPointer(&n.children[i&(nodeSize-1)])
 	}
@@ -187,6 +195,9 @@ func (t *genericTree[K, V, O]) ownerInsert(key K, value V) (n *gleaf[K, V], i in
 		}
 		return t.ownerPlace(key, code, value, asLeaf[K, V](h), j, ok)
 	default:
+		if windowed[O, K]() && t.sharesBytes() {
+			t.admit(key)
+		}
 		n, i, found, _ = t.ownerSeek(key, code, true)
 	}
 	if found {
@@ -303,9 +314,17 @@ func (t *genericTree[K, V, O]) ownerInsertText(n *gleaf[K, V], i int, found, fit
 // ownerPath records key's path to leaf n, by a plain descent.
 func (t *genericTree[K, V, O]) ownerPath(path *gpath[K], n *gleaf[K, V], key K, code uint64) {
 	h := plainPointer(&t.root)
+	cp, code0 := 0, code
 	for !h.leaf {
 		inner := asInner[K](h)
 		count := owned(&inner.count)
+		if windowed[O, K]() {
+			// A custom key's code at the node's prefix, the level before's
+			// where that is the same.
+			if q := int(h.prefix.Load()); q != cp {
+				cp, code = q, t.codeOf(key, code0, q)
+			}
+		}
 		edge, _ := t.route(inner, key, code, count, false)
 		path.levels[path.depth] = gpathLevel[K]{n: inner, edge: edge, count: count}
 		path.depth++

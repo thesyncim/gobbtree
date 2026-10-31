@@ -29,10 +29,45 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 		return 0
 	}
 	leafDepth, leafIDs := -1, 0
+	// wantPrefix is what fences low and high share, read from the keys:
+	// a custom key's windows, which its head copy should hold.
+	wantPrefix := func(low, high *K) int {
+		if !windowed[O, K]() {
+			f := func(k *K) fence[K] {
+				if k == nil {
+					return fence[K]{}
+				}
+				return fence[K]{key: k}
+			}
+			return tree.fencePrefix(f(low), f(high))
+		}
+		copyOf := func(k *K) *headCopy[K] {
+			if k == nil {
+				return nil
+			}
+			return &headCopy[K]{key: *k, win: tree.keyWindows(*k)}
+		}
+		return tree.fencePrefixOf(copyOf(low), copyOf(high))
+	}
 	// checkPrefix checks that a node's keys, when it has any, begin with its
 	// prefix, which its head holds, and returns the prefix's length.
 	checkPrefix := func(h *gheader, any bool, keys func() []string) int {
 		p := int(h.prefix.Load())
+		if windowed[O, K]() && any {
+			n := asLeaf[K, V](h)
+			first := tree.keyWindows(tree.key(n, 0))
+			for i := 0; i < int(h.count.Load()); i++ {
+				if w := tree.keyWindows(tree.key(n, i)); commonWindows(&w, &first, customPrefixMax) < p {
+					t.Fatalf("key %d lacks the node's prefix of %d bytes", i, p)
+				}
+			}
+			var probe gheader
+			probe.setPrefixOf(first[0], first[1], p)
+			if probe.head[0].Load() != h.head[0].Load() || probe.head[1].Load() != h.head[1].Load() {
+				t.Fatal("node head is stale")
+			}
+			return p
+		}
 		if !prefixed[O, K]() || !any {
 			// Exact codes' leaves keep their bounds in head, checked apart.
 			if bounded := h.leaf && exactCodes[O, K](); p != 0 || !bounded && (h.head[0].Load() != 0 || h.head[1].Load() != 0) {
@@ -96,11 +131,13 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				t.Fatalf("leaf head present %v, low fence %v", ok, low != nil)
 			} else if ok && (compareKeys[O](head, *low) != 0 || count == 0 || compareKeys[O](head, tree.key(n, 0)) != 0) {
 				t.Fatalf("leaf head %v is not its separator %v and first key", head, *low)
+			} else if ok && windowed[O, K]() && headOf(n).win != tree.keyWindows(head) {
+				t.Fatal("leaf head copy's windows are not its key's")
 			}
 			// A leaf's prefix is what its fences share (D26), the shared
 			// prefix standing in for one missing on a border (D50).
-			if prefixed[O, K]() && count > 0 {
-				if want := tree.fencePrefix(low, high); int(h.prefix.Load()) != want {
+			if fenced[O, K]() && count > 0 {
+				if want := wantPrefix(low, high); int(h.prefix.Load()) != want {
 					t.Fatalf("leaf prefix %d, fences share %d", h.prefix.Load(), want)
 				}
 			}
@@ -138,7 +175,11 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 						t.Fatalf("key %q lacks the shared prefix %q", s, tree.sharedText())
 					}
 				}
-				if n.codes[i] != windowKey[O](key, p) {
+				want := windowKey[O](key, p)
+				if windowed[O, K]() {
+					want = tree.codeOf(key, windowKey[O](key, 0), p)
+				}
+				if n.codes[i] != want {
 					t.Fatalf("leaf code %d is stale", i)
 				}
 				if prefixed[O, K]() {
@@ -220,8 +261,25 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 		// A text node's prefix is what its fences share (D26, D50), and its
 		// summaries the top halves of its separators' windows past it.
 		p := 0
-		if prefixed[O, K]() {
-			p = tree.fencePrefix(low, high)
+		if windowed[O, K]() {
+			p = wantPrefix(low, high)
+			if int(h.prefix.Load()) != p {
+				t.Fatalf("internal prefix %d, fences share %d", h.prefix.Load(), p)
+			}
+			for i := 0; i < nodeSize; i++ {
+				want := codePad
+				switch {
+				case i == 0:
+					want = 0
+				case i < count:
+					want = tree.codeOf(seps[i], windowKey[O](seps[i], 0), p)
+				}
+				if got := n.codes[i].Load(); got != want {
+					t.Fatalf("separator %d code %x, its window at %d is %x", i, got, p, want)
+				}
+			}
+		} else if prefixed[O, K]() {
+			p = wantPrefix(low, high)
 			if int(h.prefix.Load()) != p {
 				t.Fatalf("internal prefix %d, fences share %d", h.prefix.Load(), p)
 			}

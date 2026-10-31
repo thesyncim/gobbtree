@@ -158,11 +158,15 @@ func naturalText[O keyOrder[K], K any]() bool {
 
 // directText adds the exact Bytes key, whose slice header begins with a
 // string header over the same bytes, to the direct textual paths.
+//
+// Its tests are written out, not naturalText's call: an inlined generic call
+// still loads its dictionary, which a shape's constant answer doesn't need.
 func directText[O keyOrder[K], K any]() bool {
-	if naturalText[O, K]() {
-		return true
-	}
+	var o O
 	var k K
+	if unsafe.Sizeof(o) == 0 {
+		return unsafe.Sizeof(k) == unsafe.Sizeof("")
+	}
 	if unsafe.Sizeof(k) != unsafe.Sizeof(Bytes(nil)) {
 		return false
 	}
