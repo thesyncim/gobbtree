@@ -591,11 +591,20 @@ func (t *genericTree[K, V, O]) route(n *ginner[K], key K, code uint64, count int
 	lo = max(lo, 1)
 	for lo < hi {
 		mid := int(uint(lo+hi)>>1) & (nodeSize - 1)
-		sep, ok := t.separatorKey(n, mid)
-		if !ok {
-			return 0, false
+		var order int
+		if annexed[O, K]() {
+			o, ok := t.compareSeparatorHeld(n, mid, key)
+			if !ok {
+				return 0, false
+			}
+			order = o
+		} else {
+			sep, ok := t.separatorKey(n, mid)
+			if !ok {
+				return 0, false
+			}
+			order = t.compare(sep, key)
 		}
-		order := t.compare(sep, key)
 		if order > 0 || strict && order == 0 {
 			hi = mid
 		} else {
@@ -985,7 +994,7 @@ func slotOrder[K any, V any](n *gleaf[K, V], i int, k *textProbe, p int) (order 
 // children: they stay. n is held.
 func (t *genericTree[K, V, O]) refitInner(n *ginner[K], high *K) {
 	count := int(n.count.Load())
-	if t.wholeCodes() {
+	if t.movesCodes() {
 		for i := 0; i < nodeSize; i++ {
 			switch {
 			case i == 0 && count > 0:
@@ -1179,6 +1188,12 @@ func setHigh(h *gheader, high uint64) { storeOrdered(&h.head[1], high) }
 
 // wholeCodes is codeKeys for the hot paths, as wordCodes is exactCodes.
 func (t *genericTree[K, V, O]) wholeCodes() bool { return wordSized[O, K]() && t.whole }
+
+// movesCodes reports trees whose internal nodes' codes move with their
+// children, never read again from their separators' keys: keys their codes
+// hold whole, and an annexed tree's, whose keys a writer may read only
+// holding their leaf, which the leaves under another's node aren't.
+func (t *genericTree[K, V, O]) movesCodes() bool { return t.wholeCodes() || annexed[O, K]() }
 
 // decode is the key of code c, of a key its codes hold whole: its low
 // bytes, its sign flipped back.

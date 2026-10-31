@@ -224,3 +224,27 @@ func (t *genericTree[K, V, O]) replaceKey(leaf unsafe.Pointer, i int, key K) {
 		}
 	}
 }
+
+// compareSeparatorHeld compares internal node n's separator i with key for
+// an annexed tree, whose keys may read what only a writer holding their
+// leaf changes, as upstream's latched tree compares keys that don't order
+// by their own bytes (D57): it walks to the leaf whose first key the
+// separator is, and compares that key holding the leaf shared. false where
+// a racing walk finds no such leaf; the caller's check of n's version
+// settles the rest.
+func (t *genericTree[K, V, O]) compareSeparatorHeld(n *ginner[K], i int, key K) (int, bool) {
+	h := n.children[i&(nodeSize-1)].Load()
+	for depth := 0; h != nil && !h.leaf && depth < maxDepth; depth++ {
+		h = asInner[K](h).children[0].Load()
+	}
+	if h == nil || !h.leaf {
+		return 0, false
+	}
+	leaf := asLeaf[K, V](h)
+	leaf.latch.lockShared()
+	defer leaf.latch.unlockShared()
+	if leaf.count.Load() == 0 {
+		return 0, false
+	}
+	return t.compare(t.key(leaf, 0), key), true
+}

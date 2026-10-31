@@ -500,7 +500,10 @@ func (t *genericTree[K, V, O]) redistribute(path *gpath[K], leaf *gleaf[K, V], i
 	// Text leaves split: moving their keys copies the keys' bytes and
 	// refits both leaves' windows, which costs a build more than the fill
 	// saves.
-	if path.depth == 0 || index == 0 || index == nodeSize || prefixed[O, K]() {
+	// An annexed tree's leaves split, as upstream's do: entries a
+	// redistribution moved would leave what their annexes keep for them in
+	// the leaf they left.
+	if path.depth == 0 || index == 0 || index == nodeSize || prefixed[O, K]() || annexed[O, K]() {
 		return false
 	}
 	level := path.depth - 1
@@ -597,6 +600,12 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 	// right half's head; the halves take what it shares with the leaf's
 	// fences.
 	separator := t.firstKey(right)
+	// An annexed tree's separator code rises with it, read here from the
+	// leaf the split holds.
+	var sepCode uint64
+	if annexed[O, K]() {
+		sepCode = t.code(separator)
+	}
 	t.setHead(right)
 	if t.wordCodes() {
 		// The halves' fences: the separator between them, and the leaf's.
@@ -625,7 +634,7 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 	for level := path.depth - 1; level >= top && carried != nil; level-- {
 		n, edge := path.levels[level].n, path.levels[level].edge+1
 		if int(n.count.Load()) < nodeSize {
-			t.insertChild(n, edge, separator, carried)
+			t.insertChild(n, edge, separator, sepCode, carried)
 			carried = nil
 			break
 		}
@@ -638,15 +647,18 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 		// separator between the halves, unless carried goes first.
 		first := split.codes[0].Load()
 		if left {
-			t.insertChild(n, edge, separator, carried)
+			t.insertChild(n, edge, separator, sepCode, carried)
 		} else {
-			t.insertChild(split, edge-cut, separator, carried)
+			t.insertChild(split, edge-cut, separator, sepCode, carried)
 		}
 		// The halves' fences: the separator between them, the first key
 		// below split, and n's.
 		switch {
 		case !t.wholeCodes():
 			separator, _ = t.separatorKey(split, 0)
+			if annexed[O, K]() && (left || edge > cut) {
+				sepCode = first
+			}
 		case left || edge > cut:
 			separator = t.decode(first)
 		}
@@ -659,8 +671,8 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 		root := newGInner[K]()
 		fresh.push(&root.gheader, 0)
 		var none K
-		t.insertChild(root, 0, none, t.root.Load())
-		t.insertChild(root, 1, separator, carried)
+		t.insertChild(root, 0, none, 0, t.root.Load())
+		t.insertChild(root, 1, separator, sepCode, carried)
 		// Its fences are the tree's borders: it takes the shared prefix.
 		t.refitInner(root, nil)
 		t.root.Store(&root.gheader)
@@ -1016,7 +1028,10 @@ func (t *genericTree[K, V, O]) splitLeafEntries(dst, src *gleaf[K, V], from, cou
 
 // insertChild inserts child, whose keys are at least separator, at i in
 // internal node n, which has room.
-func (t *genericTree[K, V, O]) insertChild(n *ginner[K], i int, separator K, child *gheader) {
+//
+// An annexed tree's separator code is code, which the caller has from the
+// codes that moved with it: its key lies in a leaf the caller may not hold.
+func (t *genericTree[K, V, O]) insertChild(n *ginner[K], i int, separator K, code uint64, child *gheader) {
 	count := int(n.count.Load())
 	for j := count; j > i; j-- {
 		n.children[j].Store(n.children[j-1].Load())
@@ -1040,8 +1055,10 @@ func (t *genericTree[K, V, O]) insertChild(n *ginner[K], i int, separator K, chi
 	for j := count; j > i; j-- {
 		n.codes[j].Store(n.codes[j-1].Load())
 	}
-	code := uint64(0)
-	if i > 0 {
+	switch {
+	case i == 0:
+		code = 0
+	case !annexed[O, K]():
 		code = t.code(separator)
 	}
 	n.codes[i].Store(code)
@@ -1076,7 +1093,7 @@ func (t *genericTree[K, V, O]) removeChild(n *ginner[K], i int) {
 // those that cross a node's first slot, which holds 0.
 func (t *genericTree[K, V, O]) moveChildEntries(dst *ginner[K], at int, src *ginner[K], from, count int) {
 	srcCount, dstCount := int(src.count.Load()), int(dst.count.Load())
-	if t.wholeCodes() {
+	if t.movesCodes() {
 		for j := dstCount - 1; j >= at; j-- {
 			dst.codes[j+count].Store(dst.codes[j].Load())
 		}

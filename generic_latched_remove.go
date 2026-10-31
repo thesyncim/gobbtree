@@ -335,7 +335,7 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 			// r's first child takes the separator between them.
 			at, sep := int(l.count.Load()), parent.codes[right].Load()
 			t.moveChildEntries(asInner[K](l), at, asInner[K](r), 0, int(r.count.Load()))
-			if t.wholeCodes() {
+			if t.movesCodes() {
 				asInner[K](l).codes[at].Store(sep)
 			}
 			t.removeChild(parent, right)
@@ -351,7 +351,9 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 	// Whole codes: the child crossing takes the separator between the
 	// pair, and the code it leaves at the right one's front replaces it.
 	whole, old := t.wholeCodes(), parent.codes[pairRight].Load()
+	moves := t.movesCodes()
 	var sep K
+	var sepCode uint64
 	switch {
 	case sibling < index && leaves:
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
@@ -360,9 +362,12 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 	case sibling < index:
 		c, o := asInner[K](child), asInner[K](other)
 		t.moveChildEntries(c, 0, o, int(o.count.Load())-1, 1)
-		if whole {
-			sep = t.decode(c.codes[0].Load())
+		if moves {
+			sepCode = c.codes[0].Load()
 			c.codes[1].Store(old)
+		}
+		if whole {
+			sep = t.decode(sepCode)
 		}
 	case leaves:
 		c, o := asLeaf[K, V](child), asLeaf[K, V](other)
@@ -372,9 +377,12 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 		c, o := asInner[K](child), asInner[K](other)
 		at := int(c.count.Load())
 		t.moveChildEntries(c, at, o, 0, 1)
-		if whole {
+		if moves {
 			c.codes[at].Store(old)
-			sep = t.decode(o.codes[0].Load())
+			sepCode = o.codes[0].Load()
+		}
+		if whole {
+			sep = t.decode(sepCode)
 		}
 	}
 	l, r := parent.children[pairLeft].Load(), parent.children[pairRight].Load()
@@ -385,7 +393,13 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 		// The right leaf's new first key, which it holds.
 		sep = t.firstKey(asLeaf[K, V](r))
 	}
-	t.replaceSeparator(parent, pairRight, sep)
+	if annexed[O, K]() && !leaves {
+		// The code that moved with the separator: its key lies in a leaf
+		// the removal doesn't hold.
+		parent.codes[pairRight].Store(sepCode)
+	} else {
+		t.replaceSeparator(parent, pairRight, sep)
+	}
 	if leaves {
 		if t.wordCodes() {
 			setHigh(l, t.code(sep))
