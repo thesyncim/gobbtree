@@ -290,25 +290,27 @@ func (t *genericTree[K, V, O]) walkHeld(b *Bounds[K], reverse bool, visit func(K
 			n.latch.unlockShared()
 		}
 	}()
+	// Only a bounded walk compares its keys with the bounds.
+	lower, upper := b.lowerKind != unbounded, b.upperKind != unbounded
 	for {
 		count := int(n.count.Load())
 		if !reverse {
 			for i := 0; i < count; i++ {
 				k := t.key(n, i)
-				if !aboveLower[K, O](b, k) {
+				if lower && !aboveLower[K, O](b, k) {
 					continue
 				}
-				if !belowUpper[K, O](b, k) || !visit(k, n.values[i]) {
+				if upper && !belowUpper[K, O](b, k) || !visit(k, n.values[i]) {
 					return
 				}
 			}
 		} else {
 			for i := count - 1; i >= 0; i-- {
 				k := t.key(n, i)
-				if !belowUpper[K, O](b, k) {
+				if upper && !belowUpper[K, O](b, k) {
 					continue
 				}
-				if !aboveLower[K, O](b, k) || !visit(k, n.values[i]) {
+				if lower && !aboveLower[K, O](b, k) || !visit(k, n.values[i]) {
 					return
 				}
 			}
