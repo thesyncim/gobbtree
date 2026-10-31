@@ -134,7 +134,7 @@ defer disk.Close()
 value, found := disk.Get("alpha") // 1, true
 ```
 
-A file map searches the image in place, with no rebuild, and supports `Get`, `GetMany` and iteration in both directions over any bounds. Files use upstream's version 1 format, which the Rust oracle tests both ways.
+A file map searches the image in place, with no rebuild, and supports `Get`, `GetMany` and iteration in both directions over any bounds. Files use upstream's version 1 format, byte for byte: the Rust oracle checks that Go writes the bytes upstream writes for the same entries, and that each side reads the other's files.
 
 - **Types:** integer and string keys; number, plain-array, empty-struct, string and byte-slice values.
 - **Checking:** `ReadFile`, `ReadFileRange` and `OpenFileMap` check every page, as upstream's do. `Mmap(...).Open()` and `OpenFileMapUnchecked` check the header alone: a corrupt file may give wrong answers or panic, but is never read out of bounds. A mapped file truncated under its map makes the reads that reach past its end panic.
@@ -423,13 +423,15 @@ GOEXPERIMENT=simd GODEBUG=simd=0 go test ./...   # the scalar path
 GOEXPERIMENT=simd go test -run '^$' -fuzz FuzzTree -fuzztime 20s
 ```
 
-The tests check every container against independent references: randomized operation sequences with tree invariants, concurrent mutation and panicking callbacks, SIMD boundaries, steady-state allocations and custom key orders. CI also fuzzes file maps, runs the amd64 kernels at each vector width, and checks containers and files against a live Rust oracle of upstream at [`8ef597b`](https://github.com/XiangpengHao/bbtree/tree/8ef597b5b8d957531d88871bdb566f391206f860) (v0.1.7):
+The tests check every container against independent references: randomized operation sequences with tree invariants, concurrent mutation and panicking callbacks, SIMD boundaries, steady-state allocations and custom key orders. CI also fuzzes file maps and the WAL, runs the amd64 kernels at each vector width, and checks containers, files (byte for byte) and WAL files against a live Rust oracle of upstream at [`8ef597b`](https://github.com/XiangpengHao/bbtree/tree/8ef597b5b8d957531d88871bdb566f391206f860) (v0.1.7):
 
 ```sh
 cargo build --release --locked --manifest-path internal/oracle/Cargo.toml
 GOBBTREE_ORACLE="$PWD/internal/oracle/target/release/gobbtree-oracle" \
 GOBBTREE_FILE_ORACLE="$PWD/internal/oracle/target/release/file-oracle" \
 GOEXPERIMENT=simd go test -run 'TestUpstream.*Oracle' -v
+GOBBTREE_WAL_ORACLE="$PWD/internal/oracle/target/release/wal-oracle" \
+go test ./store/wal -run TestUpstreamWALOracle -v
 ```
 
 ## License
