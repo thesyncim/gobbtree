@@ -8,7 +8,6 @@ import (
 	"iter"
 	"os"
 	"runtime"
-	"runtime/debug"
 	"sync/atomic"
 	"unsafe"
 )
@@ -29,9 +28,6 @@ type FileMap[K cmp.Ordered, V any] struct {
 type fileImage struct {
 	data         []byte
 	root, length int
-	// mapped tells a mapping, which a read reaches with faults made panics:
-	// a file truncated under it would otherwise end the program.
-	mapped bool
 	// For integer keys of 8 bytes, the shared prefix as the top bits of a
 	// word, past sharedShift: a key that differs from shared there sorts
 	// before or after every key (findWordFast).
@@ -75,7 +71,7 @@ func openFileMap[K cmp.Ordered, V any](data []byte, checked bool, unmap func() e
 		return nil, err
 	}
 	n := int(binary.LittleEndian.Uint64(data[40:]))
-	img := &fileImage{data: data[:n:n], root: root, length: count, mapped: unmap != nil, sharedShift: 64}
+	img := &fileImage{data: data[:n:n], root: root, length: count, sharedShift: 64}
 	if l.wordPages && root != 0 {
 		// The header's check put the root page, and its area, in the map:
 		// the prefix's length, then its bytes, at most 8 for these keys.
@@ -178,8 +174,9 @@ func (o MmapOptions[K, V]) Range(r FileRange) MmapOptions[K, V] {
 // Open maps the snapshot read-only and checks its header alone, as upstream's
 // mmap does: opening reads the first page, lookups read the rest as they
 // reach it. The file should hold what a FileWriter wrote and must not be
-// modified or truncated while mapped; WriteFile publishes a replacement by
-// renaming. A corrupt snapshot is never read out of bounds, but lookups and
+// modified or truncated while mapped, the contract upstream's unsafe open
+// states: a read past the end of a truncated file faults, which ends the
+// program. WriteFile publishes a replacement by renaming. A corrupt snapshot is never read out of bounds, but lookups and
 // iteration on it may give wrong answers or panic. ReadFile checks every page.
 func (o MmapOptions[K, V]) Open() (*FileMap[K, V], error) {
 	f, err := os.Open(o.path)
@@ -475,9 +472,6 @@ func (c *fileCursor[K, V]) next() (key K, value V, ok bool) {
 		c.done = true
 		return
 	}
-	if c.image.mapped {
-		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
-	}
 	if first {
 		c.descend(c.image.root, c.reverse && c.bounds.upperKind != unbounded || !c.reverse && c.bounds.lowerKind != unbounded)
 	}
@@ -563,10 +557,10 @@ func (m *FileMap[K, V]) Get(key K) (value V, ok bool) {
 	if img == nil {
 		return
 	}
-	if img.mapped {
-		return m.getMapped(img, key)
-	}
-	return m.getHeld(img, key)
+	// A mapping goes once nothing holds its image: Get holds it to its end.
+	value, ok = m.getHeld(img, key)
+	runtime.KeepAlive(img)
+	return
 }
 
 // getHeld is Get on img, by findWordFast's or findTextFast's descent where
@@ -616,21 +610,10 @@ func (m *FileMap[K, V]) readVariable(data []byte, slot int) V {
 	return diskReadVariable[V](data, slot, m.layout.value)
 }
 
-// getMapped is get on a mapping, with faults made panics, held to the end.
-func (m *FileMap[K, V]) getMapped(img *fileImage, key K) (value V, ok bool) {
-	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
-	value, ok = m.getHeld(img, key)
-	runtime.KeepAlive(img)
-	return
-}
-
 func (m *FileMap[K, V]) GetKeyValue(key K) (stored K, value V, ok bool) {
 	img := m.loadImage()
 	if img == nil {
 		return
-	}
-	if img.mapped {
-		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
 	}
 	ks, vs, ok := m.find(img, key)
 	if ok {
@@ -645,9 +628,6 @@ func (m *FileMap[K, V]) Contains(key K) bool {
 	img := m.loadImage()
 	if img == nil {
 		return false
-	}
-	if img.mapped {
-		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
 	}
 	_, _, ok := m.find(img, key)
 	runtime.KeepAlive(img)
@@ -692,9 +672,6 @@ func (m *FileMap[K, V]) GetMany(keys []K, dst []Result[V]) {
 	if img == nil {
 		clear(dst[:len(keys)])
 		return
-	}
-	if img.mapped {
-		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
 	}
 	for i, key := range keys {
 		_, slot, ok := m.find(img, key)
@@ -767,9 +744,6 @@ func (m *FileMap[K, V]) WriteTo(w io.Writer) (int64, error) {
 	img := m.image.Load()
 	if img == nil {
 		return 0, os.ErrClosed
-	}
-	if img.mapped {
-		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
 	}
 	n, err := w.Write(img.data)
 	if err == nil && n != len(img.data) {
