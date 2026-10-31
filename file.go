@@ -707,9 +707,62 @@ func (m *FileMap[K, V]) GetMany(keys []K, dst []Result[V]) {
 // scan visits the keys in b.
 func (m *FileMap[K, V]) scan(b *Bounds[K], reverse bool, visit func(K, V) bool) {
 	c := fileCursor[K, V]{mapFile: m, reverse: reverse, bounds: b}
+	if !m.layout.key.variable && !m.layout.value.variable {
+		m.scanPlain(&c, visit)
+		return
+	}
 	for {
 		k, v, ok := c.next()
 		if !ok || !visit(k, v) {
+			return
+		}
+	}
+}
+
+// scanPlain is scan for keys and values of fixed size, a leaf at a time:
+// the cursor finds each leaf, checked once to lie in the map, and its
+// entries are read by address within it, as findWordFast reads a page,
+// where next finds and checks each entry anew. An iteration that Close
+// overtakes ends at its next entry, as next's does.
+func (m *FileMap[K, V]) scanPlain(c *fileCursor[K, V], visit func(K, V) bool) {
+	img := m.loadImage()
+	if img == nil || img.root == 0 {
+		return
+	}
+	c.started, c.image, c.last = true, img, -1
+	b := c.bounds
+	bounded := b.lowerKind != unbounded || b.upperKind != unbounded
+	c.descend(img.root, c.reverse && b.upperKind != unbounded || !c.reverse && b.lowerKind != unbounded)
+	data := img.data
+	base := unsafe.Pointer(unsafe.SliceData(data))
+	lf := &m.layout.leaf
+	step := 1
+	if c.reverse {
+		step = -1
+	}
+	for {
+		leaf := c.leaf
+		if leaf < 0 || leaf > len(data)-lf.size {
+			panic("gobbtree: corrupt file map: page out of bounds")
+		}
+		h := min(int(data[leaf+2]), 1)
+		n := min(int(*(*uint16)(unsafe.Add(base, leaf))), lf.capacity) + h
+		for i := c.index; i >= 0 && i < n; i += step {
+			var key K
+			if i < h {
+				key = diskRead[K](data, c.head(), m.layout.key)
+			} else {
+				key = *(*K)(unsafe.Add(base, leaf+lf.keys+(i-h)*lf.keyStride))
+			}
+			if bounded && (!aboveLower[K, natural[K]](b, key) || !belowUpper[K, natural[K]](b, key)) {
+				return
+			}
+			value := *(*V)(unsafe.Add(base, leaf+lf.trailing+(i+1-h)*lf.stride))
+			if m.loadImage() != img || !visit(key, value) {
+				return
+			}
+		}
+		if !c.advanceLeaf() {
 			return
 		}
 	}
