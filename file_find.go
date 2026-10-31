@@ -189,7 +189,8 @@ func (m *FileMap[K, V]) findTextBy(img *fileImage, s string) (keySlot, valueSlot
 			panic("gobbtree: corrupt file map: page out of bounds")
 		}
 		p := unsafe.Add(base, node)
-		code := stringCode(s, int(*(*uint16)(unsafe.Add(p, 4))))
+		prefix := int(*(*uint16)(unsafe.Add(p, 4)))
+		code := stringCode(s, prefix)
 		if !leaf {
 			n := min(int(*(*uint16)(p)), in.capacity)
 			slots := unsafe.Slice((*byte)(unsafe.Add(p, in.inline)), in.capacity*4)
@@ -197,7 +198,9 @@ func (m *FileMap[K, V]) findTextBy(img *fileImage, s string) (keySlot, valueSlot
 			equal := false
 			for lo < hi {
 				mid := int(uint(lo+hi) >> 1)
-				order, ok := diskCompareSpan(data, m.separatorSlot(data, node, mid), s)
+				// The keys under the page share its prefix, and those that
+				// tie its window, past it: they compare from there.
+				order, ok := diskCompareSpan(data, m.separatorSlot(data, node, mid), s, prefix+4)
 				if !ok {
 					panic("gobbtree: corrupt file map: key out of bounds")
 				}
@@ -221,7 +224,7 @@ func (m *FileMap[K, V]) findTextBy(img *fileImage, s string) (keySlot, valueSlot
 		slots := unsafe.Slice((*byte)(unsafe.Add(p, lf.inline)), lf.capacity*8)
 		lo, hi := diskSlotRange(slots, 8, n, code)
 		for ; lo < hi; lo++ {
-			order, ok := diskCompareSpan(data, node+lf.keys+lo*lf.keyStride, s)
+			order, ok := diskCompareSpan(data, node+lf.keys+lo*lf.keyStride, s, prefix+8)
 			if !ok {
 				panic("gobbtree: corrupt file map: key out of bounds")
 			}
@@ -237,9 +240,11 @@ func (m *FileMap[K, V]) findTextBy(img *fileImage, s string) (keySlot, valueSlot
 }
 
 // diskCompareSpan compares the bytes that the span in slot points to with
-// s, as strings.Compare does, eight at a time; false where the span, or the
-// slot, leaves the map.
-func diskCompareSpan(data []byte, slot int, s string) (int, bool) {
+// s, as strings.Compare does, eight at a time, from byte from on: those
+// before it the caller knows equal, as upstream's byte strings compare from
+// where they can differ (cmp_from). false where the span, or the slot,
+// leaves the map.
+func diskCompareSpan(data []byte, slot int, s string, from int) (int, bool) {
 	if slot < 0 || slot > len(data)-8 {
 		return 0, false
 	}
@@ -250,7 +255,10 @@ func diskCompareSpan(data []byte, slot int, s string) (int, bool) {
 		return 0, false
 	}
 	p := unsafe.Add(base, start)
-	k, i := min(n, len(s)), 0
+	// Whole words from the one from lies in: a byte at a time costs more
+	// than a word's bytes the caller knew equal.
+	k := min(n, len(s))
+	i := min(from, k) &^ 7
 	for ; i+8 <= k; i += 8 {
 		a, b := bits.ReverseBytes64(*(*uint64)(unsafe.Add(p, i))), loadWord(s, i)
 		if a != b {

@@ -274,7 +274,9 @@ func (m *FileMap[K, V]) findTextFast(img *fileImage, s string) (keySlot, valueSl
 					if down &^= 1; down < 0 || down > len(data)-l.leaf.size {
 						return 0, 0, wordUnsettled
 					}
-					order, ok := diskCompareSpan(data, down+l.leaf.headKey, s)
+					// The keys under the page share its prefix, and those
+					// that tie its window, past it: they compare from there.
+					order, ok := diskCompareSpan(data, down+l.leaf.headKey, s, prefix+4)
 					if !ok {
 						return 0, 0, wordUnsettled
 					}
@@ -321,7 +323,7 @@ func (m *FileMap[K, V]) findTextFast(img *fileImage, s string) (keySlot, valueSl
 		lo = min(lo, n)
 		// The keys whose windows tie, settled by their bytes in turn.
 		for lo < n && *(*uint64)(unsafe.Add(slots, 8*lo)) == code {
-			order, ok := diskCompareSpan(data, node+lf.keys+lo*lf.keyStride, s)
+			order, ok := diskCompareSpan(data, node+lf.keys+lo*lf.keyStride, s, prefix+8)
 			if !ok {
 				return 0, 0, wordUnsettled
 			}
