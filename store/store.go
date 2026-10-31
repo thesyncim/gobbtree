@@ -109,10 +109,11 @@ func (s *Store) MaxValueLen() int { return int(min(math.MaxUint32, uint64(math.M
 // GetInto appends the value of key to buf and returns it, with whether the
 // store holds key; buf unchanged without it.
 func (s *Store) GetInto(key, buf []byte) ([]byte, bool) {
-	var q queryKey
-	found := s.m.Read(newQuery(&q, key), func(stored storeKey, _ struct{}) {
+	var q pointQuery
+	found := s.m.Read(q.key(key), func(stored storeKey, _ struct{}) {
 		buf = s.heap.value(stored.record()).appendTo(&s.heap.g, buf)
 	})
+	q.release()
 	return buf, found
 }
 
@@ -127,8 +128,10 @@ func (s *Store) Get(key []byte) ([]byte, bool) {
 
 // Contains reports whether the store holds key.
 func (s *Store) Contains(key []byte) bool {
-	var q queryKey
-	return s.m.Contains(newQuery(&q, key))
+	var q pointQuery
+	found := s.m.Contains(q.key(key))
+	q.release()
+	return found
 }
 
 // Insert inserts key with value, or gives the key it holds already value in
@@ -151,8 +154,8 @@ func (s *Store) Insert(key, value []byte) (replaced bool, err error) {
 	if !ok {
 		return false, ErrAlloc
 	}
-	var q queryKey
-	found, ok := s.m.UpdateOrInsertWithLeaf(newQuery(&q, key), struct{}{},
+	var q pointQuery
+	found, ok := s.m.UpdateOrInsertWithLeaf(q.key(key), struct{}{},
 		func(leaf storeLeaf, stored storeKey, _ *struct{}) bool {
 			return h.overwrite(leaf, indexOf(leaf, stored), key, value, link)
 		},
@@ -165,6 +168,7 @@ func (s *Store) Insert(key, value []byte) (replaced bool, err error) {
 			// the leaf, which the map holds exclusively, next.
 			return storeKey{r.at}, true
 		})
+	q.release()
 	if !ok {
 		// No record links the overflow pages.
 		h.freeOverflow(link)
@@ -185,10 +189,11 @@ func indexOf(leaf storeLeaf, stored storeKey) int {
 
 // Remove removes key, and reports whether the store held it.
 func (s *Store) Remove(key []byte) bool {
-	var q queryKey
-	stored, _, ok := s.m.DeleteWithLeaf(newQuery(&q, key), func(leaf storeLeaf, stored storeKey, _ struct{}) {
+	var q pointQuery
+	stored, _, ok := s.m.DeleteWithLeaf(q.key(key), func(leaf storeLeaf, stored storeKey, _ struct{}) {
 		s.heap.beforeRemoval(leaf, stored)
 	})
+	q.release()
 	if !ok {
 		return false
 	}

@@ -84,8 +84,12 @@
 //     marked by a key length no record has, as upstream's QueryKey points to
 //     the caller's bytes; the tree never keeps a lookup's key. The tree
 //     calls its keys' methods through their dictionary, so the compiler
-//     can't keep that struct on the stack: a lookup, an insert and a removal
-//     each allocate it, 32 bytes, where upstream's lies on the stack.
+//     can't see that the struct stays in its caller's frame: a lookup, an
+//     insert and a removal hide its address from escape analysis, by an
+//     assembly identity on amd64 and arm64, and keep it on the stack, as
+//     upstream's lies there. The storepoison build tag checks the tree keeps
+//     none of them. Elsewhere, and for a scan's bounds, as a scan may
+//     outlive its call, it is allocated, 32 bytes.
 //   - The tree hands occupied the stored key but not its index in the leaf:
 //     the store finds it among the leaf's keys by its pointer.
 //   - GetInto appends to the caller's buffer and returns it, where upstream's

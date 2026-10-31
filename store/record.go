@@ -240,16 +240,26 @@ type queryKey struct {
 	key    []byte
 }
 
-// newQuery is the store key of a query for key, valid while q is.
+// newQuery is the store key of a query for key, valid while q is. Escape
+// analysis moves q to the heap; a scan keeps its bounds' queries there, as
+// a scan may outlive its call, and a point lookup's lie in its frame
+// (pointQuery).
 func newQuery(q *queryKey, key []byte) storeKey {
 	*q = queryKey{marker: queryMarker, key: key}
 	return storeKey{unsafe.Pointer(q)}
 }
 
+// poisonedKey is the key of a released query, under storepoison.
+var poisonedKey [1]byte
+
 // bytes is the key's bytes.
 func (k storeKey) bytes() []byte {
 	if *(*byte)(unsafe.Add(k.p, 1)) == queryMarker>>8 {
-		return (*queryKey)(k.p).key
+		key := (*queryKey)(k.p).key
+		if poisonedQueries && unsafe.SliceData(key) == &poisonedKey[0] {
+			panic("store: the map kept a released query's key")
+		}
+		return key
 	}
 	return record{k.p}.key()
 }

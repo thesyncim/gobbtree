@@ -31,6 +31,14 @@ jobs:
       - run: go vet ./...
         env:
           GOEXPERIMENT: simd
+      # A store's point queries lie in their callers' frames; poisoned
+      # instead, a query key the map kept panics on its next read.
+      - run: go test -race -tags storepoison ./store
+        env:
+          GOEXPERIMENT: simd
+      - run: go test -run '^$' -fuzz FuzzStore -fuzztime 20s -tags storepoison ./store
+        env:
+          GOEXPERIMENT: simd
       - run: go test -run '^$' -fuzz FuzzTree -fuzztime 20s
         env:
           GOEXPERIMENT: simd
