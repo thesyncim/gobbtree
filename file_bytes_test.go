@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"unsafe"
@@ -18,12 +19,12 @@ import (
 
 // The byte-identity gate: for the same entries, NewFileWriter writes the
 // bytes upstream's writer does (bbtree-mmap's BBTreeMapFile::create, through
-// the pinned Rust file oracle's write-entries mode). The one exception is
-// what upstream's writer never initializes: with keys or values of bytes,
-// the root page keeps the slots of the leaf it held before the tree was
-// raised, which hold that writer's pointers into its arena (ArenaBytes)
-// and differ from run to run; Go's writer leaves zeros there
-// (upstreamPointerMask).
+// the pinned Rust file oracle's write-entries mode), and reads them back.
+// The one exception is bytes upstream's writer leaves stale: with keys or
+// values of bytes, the root page keeps the slots of the leaf it held
+// before the tree was raised, which hold that writer's pointers into its
+// arena (ArenaBytes) and differ from run to run; Go's writer leaves zeros
+// there (upstreamPointerMask).
 
 // fileOracle is the Rust file oracle, or a skip.
 func fileOracle(t *testing.T) string {
@@ -230,19 +231,11 @@ func checkFileBytes[K cmp.Ordered, V any](t *testing.T, oracle, kname, vname str
 	mask := upstreamPointerMask(l, got)
 	if l.key.variable || l.value.variable {
 		again := rustFileBytes(t, oracle, kname, vname, keys, values)
-		masked, differing := 0, 0
 		for i := range want {
-			if mask[i] {
-				masked++
-			}
-			if want[i] != again[i] {
-				differing++
-				if !mask[i] {
-					t.Fatalf("two upstream runs differ outside the mask at %d: %s", i, describeOffset(l, got, i))
-				}
+			if want[i] != again[i] && !mask[i] {
+				t.Fatalf("two upstream runs differ outside the mask at %d: %s", i, describeOffset(l, got, i))
 			}
 		}
-		t.Logf("%d bytes masked, %d differ between two upstream runs", masked, differing)
 	}
 	for i := range got {
 		if mask[i] {
@@ -256,8 +249,38 @@ func checkFileBytes[K cmp.Ordered, V any](t *testing.T, oracle, kname, vname str
 				kname, vname, len(keys), i, got[i], want[i], describeOffset(l, got, i))
 		}
 	}
-	if _, err := OpenFileMap[K, V](got); err != nil {
-		t.Fatalf("Go's file map refused: %v", err)
+	checkFileReads(t, got, keys, values)
+}
+
+// checkFileReads opens a file map and reads every entry back: each key's
+// Get, and the iteration, in order.
+func checkFileReads[K cmp.Ordered, V any](t *testing.T, data []byte, keys []K, values []V) {
+	t.Helper()
+	m, err := OpenFileMap[K, V](data)
+	if err != nil {
+		t.Fatalf("file map refused: %v", err)
+	}
+	defer m.Close()
+	equal := func(a, b V) bool {
+		if x, ok := any(a).([]byte); ok {
+			return bytes.Equal(x, any(b).([]byte))
+		}
+		return reflect.DeepEqual(a, b)
+	}
+	for i, k := range keys {
+		if v, ok := m.Get(k); !ok || !equal(v, values[i]) {
+			t.Fatalf("Get of key %d, %v: %v %v", i, k, v, ok)
+		}
+	}
+	i := 0
+	for k, v := range m.All() {
+		if i >= len(keys) || k != keys[i] || !equal(v, values[i]) {
+			t.Fatalf("iteration's entry %d: %v", i, k)
+		}
+		i++
+	}
+	if i != len(keys) || m.Len() != len(keys) {
+		t.Fatalf("iteration of %d entries, Len %d, of %d", i, m.Len(), len(keys))
 	}
 }
 
@@ -330,6 +353,12 @@ func stringKeys(n int, mode string, rng *rand.Rand) []string {
 		for i := range n {
 			keys = append(keys, strings.Repeat("p", 70)+fmt.Sprintf("%08d", i))
 		}
+	case "zeros":
+		// Keys equal but for trailing zeros, whose zero-padded encodings,
+		// and so fences, share as much as a prefix records (65535 bytes).
+		for i := range n {
+			keys = append(keys, "k"+strings.Repeat("\x00", i))
+		}
 	default:
 		const letters = "\x00\x00ab\x01z"
 		for len(keys) < n {
@@ -377,7 +406,7 @@ func valuesOf[V any](n int, f func(int) V) []V {
 
 var fileBytesSizes = []int{0, 1, 2, 56, 57, 58, 2800, 2801, 5000, 140055, 150001}
 
-func TestUpstreamFileBytes(t *testing.T) {
+func TestUpstreamFileBytesOracle(t *testing.T) {
 	oracle := fileOracle(t)
 	rng := rand.New(rand.NewPCG(1, 2))
 	for _, n := range fileBytesSizes {
@@ -399,6 +428,8 @@ func TestUpstreamFileBytes(t *testing.T) {
 			if n <= 5000 || mode == "dense" {
 				values := byteValues(n, rng)
 				intCase(t, oracle, "u64", "bytes", name, intKeys[uint64](n, mode, rng), func(i int) []byte { return values[i] })
+				// Go's string values are Rust's Vec<u8>, of the same layout.
+				intCase(t, oracle, "u64", "bytes", name+"/string", intKeys[uint64](n, mode, rng), func(i int) string { return string(values[i]) })
 				intCase(t, oracle, "u32", "bytes", name, intKeys[uint32](n, mode, rng), func(i int) []byte { return values[i] })
 				intCase(t, oracle, "isize", "bytes", name, intKeys[int](n, mode, rng), func(i int) string { return string(values[i]) })
 			}
@@ -415,6 +446,12 @@ func TestUpstreamFileBytes(t *testing.T) {
 				stringCase(t, oracle, "bytes", "bytes", name+"/heap", keys, func(i int) []byte { return values[i] })
 			}
 		}
+	}
+	// Two leaf levels of keys equal but for trailing zeros.
+	for _, n := range []int{100, 2000} {
+		keys := stringKeys(n, "zeros", rng)
+		stringCase(t, oracle, "bytes", "u64", fmt.Sprintf("%d/zeros", n), keys, func(i int) uint64 { return uint64(i) })
+		stringCase(t, oracle, "bytes", "bytes", fmt.Sprintf("%d/zeros", n), keys, func(i int) []byte { return []byte{byte(i)} })
 	}
 	// The oracle's text map, of 4000 entries, and one of 4000-byte values.
 	text := stringKeys(4000, "text", rng)
@@ -443,10 +480,17 @@ func stringCase[V any](t *testing.T, oracle, kname, vname, name string, keys []s
 	})
 }
 
-// TestUpstreamFileBytesRandom checks maps of random sizes, keys and values.
-func TestUpstreamFileBytesRandom(t *testing.T) {
+// TestUpstreamRandomFileBytesOracle checks maps of random sizes, keys and
+// values, from a seed it logs, or GOBBTREE_FILE_SEED's to repeat a run.
+func TestUpstreamRandomFileBytesOracle(t *testing.T) {
 	oracle := fileOracle(t)
 	seed := rand.Uint64()
+	if s := os.Getenv("GOBBTREE_FILE_SEED"); s != "" {
+		var err error
+		if seed, err = strconv.ParseUint(s, 10, 64); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Logf("seed %d", seed)
 	rng := rand.New(rand.NewPCG(seed, 3))
 	for round := range 60 {

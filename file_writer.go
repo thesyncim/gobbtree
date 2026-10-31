@@ -93,7 +93,10 @@ func NewFileWriter[K cmp.Ordered, V any](entries iter.Seq2[K, V]) (*FileWriter[K
 		return nil, err
 	}
 	w.length = t.length
-	return w, w.layOut()
+	if err = w.layOut(); err != nil {
+		return nil, err
+	}
+	return w, nil
 }
 
 // layOut places the tree's pages as upstream's FilePages::of does, in
