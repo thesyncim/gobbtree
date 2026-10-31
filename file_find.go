@@ -3,6 +3,7 @@ package gobbtree
 import (
 	"bytes"
 	"encoding/binary"
+	"math/bits"
 	"reflect"
 	"unsafe"
 )
@@ -158,4 +159,120 @@ func diskTailMasks(slots int) (mask [16]int16) {
 		}
 	}
 	return mask
+}
+
+// findTextBy is findTextFast's search where the target has no vectors to
+// count windows with in the loop, as descendTextBy is descendText's: the
+// same descent, each page checked once and read by address, its windows
+// counted by diskSlotRange's kernels. It settles every lookup, and panics
+// on a corrupt map as findKey does.
+func (m *FileMap[K, V]) findTextBy(img *fileImage, s string) (keySlot, valueSlot int, ok bool) {
+	l := &m.layout
+	if p := img.sharedText; p != "" {
+		if len(s) < len(p) {
+			return m.findKey(img, *(*K)(unsafe.Pointer(&s)))
+		}
+		if s[:len(p)] != p {
+			return
+		}
+	}
+	data := img.data
+	base := unsafe.Pointer(unsafe.SliceData(data))
+	in, lf := &l.internal, &l.leaf
+	tagged, size, atSeparator := img.root, l.rootSize, false
+	for depth := 0; ; depth++ {
+		node, leaf := tagged&^1, tagged&1 != 0
+		if leaf && size != l.rootSize {
+			size = lf.size
+		}
+		if depth > fileMaxDepth || node < 0 || node > len(data)-size {
+			panic("gobbtree: corrupt file map: page out of bounds")
+		}
+		p := unsafe.Add(base, node)
+		code := stringCode(s, int(*(*uint16)(unsafe.Add(p, 4))))
+		if !leaf {
+			n := min(int(*(*uint16)(p)), in.capacity)
+			slots := unsafe.Slice((*byte)(unsafe.Add(p, in.inline)), in.capacity*4)
+			lo, hi := diskSlotRange(slots, 4, n, code>>32)
+			equal := false
+			for lo < hi {
+				mid := int(uint(lo+hi) >> 1)
+				order, ok := diskCompareSpan(data, m.separatorSlot(data, node, mid), s)
+				if !ok {
+					panic("gobbtree: corrupt file map: key out of bounds")
+				}
+				if order > 0 {
+					hi = mid
+				} else {
+					lo, equal = mid+1, order == 0
+				}
+			}
+			if lo > 0 {
+				atSeparator = equal
+			}
+			tagged = node + int(*(*uint64)(unsafe.Add(p, in.trailing+lo*in.stride)))
+			size = in.size
+			continue
+		}
+		n := min(int(*(*uint16)(p)), lf.capacity)
+		if atSeparator && *(*uint8)(unsafe.Add(p, 2)) != 0 {
+			return node + lf.headKey, node + lf.trailing, true
+		}
+		slots := unsafe.Slice((*byte)(unsafe.Add(p, lf.inline)), lf.capacity*8)
+		lo, hi := diskSlotRange(slots, 8, n, code)
+		for ; lo < hi; lo++ {
+			order, ok := diskCompareSpan(data, node+lf.keys+lo*lf.keyStride, s)
+			if !ok {
+				panic("gobbtree: corrupt file map: key out of bounds")
+			}
+			if order == 0 {
+				return node + lf.keys + lo*lf.keyStride, node + lf.trailing + (lo+1)*lf.stride, true
+			}
+			if order > 0 {
+				break
+			}
+		}
+		return node + lf.keys + lo*lf.keyStride, 0, false
+	}
+}
+
+// diskCompareSpan compares the bytes that the span in slot points to with
+// s, as strings.Compare does, eight at a time; false where the span, or the
+// slot, leaves the map.
+func diskCompareSpan(data []byte, slot int, s string) (int, bool) {
+	if slot < 0 || slot > len(data)-8 {
+		return 0, false
+	}
+	base := unsafe.Pointer(unsafe.SliceData(data))
+	n := int(*(*uint32)(unsafe.Add(base, slot)))
+	start := slot + int(*(*uint32)(unsafe.Add(base, slot+4)))
+	if start < 0 || start > len(data)-n {
+		return 0, false
+	}
+	p := unsafe.Add(base, start)
+	k, i := min(n, len(s)), 0
+	for ; i+8 <= k; i += 8 {
+		a, b := bits.ReverseBytes64(*(*uint64)(unsafe.Add(p, i))), loadWord(s, i)
+		if a != b {
+			if a < b {
+				return -1, true
+			}
+			return 1, true
+		}
+	}
+	for ; i < k; i++ {
+		if a, b := *(*byte)(unsafe.Add(p, i)), s[i]; a != b {
+			if a < b {
+				return -1, true
+			}
+			return 1, true
+		}
+	}
+	switch {
+	case n < len(s):
+		return -1, true
+	case n > len(s):
+		return 1, true
+	}
+	return 0, true
 }

@@ -3,7 +3,6 @@
 package gobbtree
 
 import (
-	"math/bits"
 	"reflect"
 	"simd"
 	"simd/archsimd"
@@ -336,42 +335,4 @@ func (m *FileMap[K, V]) findTextFast(img *fileImage, s string) (keySlot, valueSl
 		}
 		return node + lf.keys + lo*lf.keyStride, 0, wordAbsent
 	}
-}
-
-// diskCompareSpan compares the bytes that the span in slot points to with
-// s, as strings.Compare does, eight at a time; false where the span leaves
-// the map. slot lies in a page checked to lie in the map.
-func diskCompareSpan(data []byte, slot int, s string) (int, bool) {
-	base := unsafe.Pointer(unsafe.SliceData(data))
-	n := int(*(*uint32)(unsafe.Add(base, slot)))
-	start := slot + int(*(*uint32)(unsafe.Add(base, slot+4)))
-	if start < 0 || start > len(data)-n {
-		return 0, false
-	}
-	p := unsafe.Add(base, start)
-	k, i := min(n, len(s)), 0
-	for ; i+8 <= k; i += 8 {
-		a, b := bits.ReverseBytes64(*(*uint64)(unsafe.Add(p, i))), loadWord(s, i)
-		if a != b {
-			if a < b {
-				return -1, true
-			}
-			return 1, true
-		}
-	}
-	for ; i < k; i++ {
-		if a, b := *(*byte)(unsafe.Add(p, i)), s[i]; a != b {
-			if a < b {
-				return -1, true
-			}
-			return 1, true
-		}
-	}
-	switch {
-	case n < len(s):
-		return -1, true
-	case n > len(s):
-		return 1, true
-	}
-	return 0, true
 }
