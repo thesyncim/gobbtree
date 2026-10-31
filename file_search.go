@@ -5,21 +5,44 @@ import (
 	"cmp"
 	"encoding/binary"
 	"reflect"
+	"strings"
+	"unsafe"
 )
 
-func diskCompare[K cmp.Ordered](data []byte, slot int, d diskType, key K) int {
-	if d.kind == reflect.String {
+// compareAt compares the key in slot with key, as cmp.Compare does.
+func (m *FileMap[K, V]) compareAt(data []byte, slot int, key K) int {
+	if unsafe.Sizeof(key) == unsafe.Sizeof("") {
+		// The only ordered keys of a string's size are strings.
 		n := int(binary.NativeEndian.Uint32(data[slot:]))
 		start := slot + int(binary.NativeEndian.Uint32(data[slot+4:]))
-		return bytes.Compare(data[start:start+n], []byte(reflect.ValueOf(key).String()))
+		stored := data[start : start+n]
+		return strings.Compare(unsafe.String(unsafe.SliceData(stored), n), *(*string)(unsafe.Pointer(&key)))
 	}
-	return cmp.Compare(diskRead[K](data, slot, d), key)
+	return cmp.Compare(diskReadPlain[K](data, slot, m.layout.key.size), key)
 }
 
-func diskWindow[K cmp.Ordered](key K, prefix, width int) uint64 {
-	v := reflect.ValueOf(key)
-	if v.Kind() == reflect.String {
-		s := v.String()
+// keyWord is an integer key of 8 bytes as the big-endian word that orders
+// its encoding: its own bits, with a signed key's sign bit flipped.
+func (m *FileMap[K, V]) keyWord(key K) uint64 {
+	if unsafe.Sizeof(key) != 8 {
+		return 0
+	}
+	word := *(*uint64)(unsafe.Pointer(&key))
+	if m.layout.key.kind == reflect.Int64 {
+		word ^= 1 << 63
+	}
+	return word
+}
+
+// window is key's inline key: width bytes of its encoding from prefix on,
+// zero past its end, as the writer's diskInline puts them.
+func (m *FileMap[K, V]) window(key K, prefix, width int) uint64 {
+	if unsafe.Sizeof(key) == unsafe.Sizeof("") {
+		s := *(*string)(unsafe.Pointer(&key))
+		if prefix >= 0 && prefix <= len(s)-8 {
+			b := unsafe.Slice(unsafe.StringData(s), len(s))
+			return binary.BigEndian.Uint64(b[prefix:]) >> (64 - width*8)
+		}
 		var word uint64
 		for i := 0; i < width; i++ {
 			word <<= 8
@@ -32,46 +55,38 @@ func diskWindow[K cmp.Ordered](key K, prefix, width int) uint64 {
 	if prefix >= 8 {
 		return 0
 	}
-	var word uint64
-	if v.Kind() == reflect.Int64 {
-		word = uint64(v.Int()) ^ (1 << 63)
-	} else {
-		word = v.Uint()
-	}
-	return word << (prefix * 8) >> (64 - width*8)
+	return m.keyWord(key) << (prefix * 8) >> (64 - width*8)
 }
 
-func (m *FileMap[K, V]) compareShared(key K) int {
+// compareShared compares key with the prefix every key of the map begins
+// with: 0 if it begins with it too, else the order of the two.
+func (m *FileMap[K, V]) compareShared(data []byte, root int, key K) int {
 	if m.layout.leaf.width == 0 {
 		return 0
 	}
-	start := (m.root &^ 1) + m.layout.area
-	n := int(m.data[start])
+	start := (root &^ 1) + m.layout.area
+	n := int(data[start])
 	if n == 0 {
 		return 0
 	}
-	prefix := m.data[start+1 : start+1+n]
-	v := reflect.ValueOf(key)
-	if v.Kind() == reflect.String {
-		s := v.String()
+	prefix := data[start+1 : start+1+n]
+	if unsafe.Sizeof(key) == unsafe.Sizeof("") {
 		// VarBytes uses WithInlineKey: a short encoding is zero-padded,
 		// including a one-key map's 64-byte shared prefix.
-		for i, b := range prefix {
-			var q byte
-			if i < len(s) {
-				q = s[i]
-			}
-			if q < b {
+		s := *(*string)(unsafe.Pointer(&key))
+		k := min(len(s), n)
+		if c := bytes.Compare(unsafe.Slice(unsafe.StringData(s), k), prefix[:k]); c != 0 {
+			return c
+		}
+		for _, b := range prefix[k:] {
+			if b != 0 {
 				return -1
-			}
-			if q > b {
-				return 1
 			}
 		}
 		return 0
 	}
 	var encoded [8]byte
-	binary.BigEndian.PutUint64(encoded[:], diskWindow(key, 0, 8))
+	binary.BigEndian.PutUint64(encoded[:], m.keyWord(key))
 	return bytes.Compare(encoded[:min(n, 8)], prefix)
 }
 

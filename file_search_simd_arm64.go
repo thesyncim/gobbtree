@@ -27,61 +27,178 @@ func diskInlineRange(data []byte, width int, target uint64) (int, int) {
 	return diskInlineRangeScalar(data, width, target)
 }
 
+// The counts accumulate each tile's masks, all ones where they hold, and
+// reduce once, after the last tile.
+
 func diskCount16(values []uint16, key uint16) (int, int) {
-	lo, eq, i := 0, 0, 0
+	var lo, eq archsimd.Int16x8
+	i, n := 0, len(values)
 	target := archsimd.BroadcastUint16x8(key)
-	for ; i+8 <= len(values); i += 8 {
+	for ; i+8 <= n; i += 8 {
 		v := archsimd.LoadUint16x8(values[i : i+8])
-		lo -= int(v.Less(target).ToInt16x8().ReduceSum())
-		eq -= int(v.Equal(target).ToInt16x8().ReduceSum())
+		lo = lo.Add(v.Less(target).ToInt16x8())
+		eq = eq.Add(v.Equal(target).ToInt16x8())
 	}
-	for ; i < len(values); i++ {
+	below, equal := -int(lo.ReduceSum()), -int(eq.ReduceSum())
+	for ; i < n; i++ {
 		if values[i] < key {
-			lo++
+			below++
 		}
 		if values[i] == key {
-			eq++
+			equal++
 		}
 	}
-	return lo, lo + eq
+	return below, below + equal
 }
 
 func diskCount32(values []uint32, key uint32) (int, int) {
-	lo, eq, i := 0, 0, 0
+	var lo, eq archsimd.Int32x4
+	i, n := 0, len(values)
 	target := archsimd.BroadcastUint32x4(key)
-	for ; i+4 <= len(values); i += 4 {
+	for ; i+4 <= n; i += 4 {
 		v := archsimd.LoadUint32x4(values[i : i+4])
-		lo -= int(v.Less(target).ToInt32x4().ReduceSum())
-		eq -= int(v.Equal(target).ToInt32x4().ReduceSum())
+		lo = lo.Add(v.Less(target).ToInt32x4())
+		eq = eq.Add(v.Equal(target).ToInt32x4())
 	}
-	for ; i < len(values); i++ {
+	below, equal := -int(lo.ReduceSum()), -int(eq.ReduceSum())
+	for ; i < n; i++ {
 		if values[i] < key {
-			lo++
+			below++
 		}
 		if values[i] == key {
-			eq++
+			equal++
 		}
 	}
-	return lo, lo + eq
+	return below, below + equal
 }
 
 func diskCount64(values []uint64, key uint64) (int, int) {
-	lo, eq, i := 0, 0, 0
+	var lo, eq archsimd.Int64x2
+	i, n := 0, len(values)
 	target := archsimd.BroadcastUint64x2(key)
-	for ; i+2 <= len(values); i += 2 {
+	for ; i+2 <= n; i += 2 {
 		v := archsimd.LoadUint64x2(values[i : i+2])
-		a := v.Less(target).ToInt64x2()
-		b := v.Equal(target).ToInt64x2()
-		lo -= int(a.GetElem(0) + a.GetElem(1))
-		eq -= int(b.GetElem(0) + b.GetElem(1))
+		lo = lo.Add(v.Less(target).ToInt64x2())
+		eq = eq.Add(v.Equal(target).ToInt64x2())
 	}
-	for ; i < len(values); i++ {
+	below := -int(lo.GetElem(0) + lo.GetElem(1))
+	equal := -int(eq.GetElem(0) + eq.GetElem(1))
+	for ; i < n; i++ {
 		if values[i] < key {
-			lo++
+			below++
 		}
 		if values[i] == key {
-			eq++
+			equal++
 		}
 	}
-	return lo, lo + eq
+	return below, below + equal
+}
+
+// diskSlotRange is diskInlineRange over a page's slots, n of them live: it
+// counts every slot, as upstream's NeonCount does (D56), and clamps the
+// counts to n. Slots past n hold the greatest window (upstream's invariant
+// 4), which no target is below, so the counts are exact; on any bytes they
+// stay within 0..n. Each kind of page has one count of slots, so the loop
+// runs the same trips for every page of a kind, where a loop to n ends at a
+// different trip for each.
+func diskSlotRange(slots []byte, width, n int, target uint64) (int, int) {
+	if simd.Emulated() || len(slots) < 16 || uintptr(unsafe.Pointer(&slots[0]))%uintptr(width) != 0 {
+		return diskInlineRange(slots[:n*width], width, target)
+	}
+	var below, equal int
+	switch width {
+	case 2:
+		below, equal = diskSlotCount16(unsafe.Slice((*uint16)(unsafe.Pointer(&slots[0])), len(slots)/2), uint16(target))
+	case 4:
+		below, equal = diskSlotCount32(unsafe.Slice((*uint32)(unsafe.Pointer(&slots[0])), len(slots)/4), uint32(target))
+	case 8:
+		below, equal = diskSlotCount64(unsafe.Slice((*uint64)(unsafe.Pointer(&slots[0])), len(slots)/8), uint64(target))
+	default:
+		return diskInlineRange(slots[:n*width], width, target)
+	}
+	below = min(below, n)
+	return below, min(below+equal, n)
+}
+
+// Each count's last tile, where the slots end short of a whole one, is the
+// last whole tile of slots, which overlaps the one before: lanes the tiles
+// before counted are masked off, by their positions, which depend on the
+// slots' count alone.
+var (
+	laneIndexes16 = [8]uint16{0, 1, 2, 3, 4, 5, 6, 7}
+	laneIndexes32 = [4]uint32{0, 1, 2, 3}
+)
+
+func diskSlotCount16(slots []uint16, key uint16) (int, int) {
+	// Two counters each, added together once, so that half the tiles'
+	// adds don't wait on the other half's: the count is on each level's
+	// critical path, between the page's loads and its child's.
+	var lo0, lo1, eq0, eq1 archsimd.Int16x8
+	target := archsimd.BroadcastUint16x8(key)
+	whole := len(slots) &^ 7
+	i := 0
+	for ; i+16 <= whole; i += 16 {
+		v0 := archsimd.LoadUint16x8(slots[i : i+8])
+		v1 := archsimd.LoadUint16x8(slots[i+8 : i+16])
+		lo0 = lo0.Add(v0.Less(target).ToInt16x8())
+		lo1 = lo1.Add(v1.Less(target).ToInt16x8())
+		eq0 = eq0.Add(v0.Equal(target).ToInt16x8())
+		eq1 = eq1.Add(v1.Equal(target).ToInt16x8())
+	}
+	if i < whole {
+		v := archsimd.LoadUint16x8(slots[i : i+8])
+		lo0 = lo0.Add(v.Less(target).ToInt16x8())
+		eq0 = eq0.Add(v.Equal(target).ToInt16x8())
+	}
+	if whole < len(slots) {
+		first := len(slots) - 8
+		v := archsimd.LoadUint16x8(slots[first:])
+		positions := archsimd.LoadUint16x8(laneIndexes16[:]).Add(archsimd.BroadcastUint16x8(uint16(first)))
+		fresh := positions.Greater(archsimd.BroadcastUint16x8(uint16(whole - 1)))
+		lo1 = lo1.Add(v.Less(target).And(fresh).ToInt16x8())
+		eq1 = eq1.Add(v.Equal(target).And(fresh).ToInt16x8())
+	}
+	return -int(lo0.Add(lo1).ReduceSum()), -int(eq0.Add(eq1).ReduceSum())
+}
+
+func diskSlotCount32(slots []uint32, key uint32) (int, int) {
+	var lo, eq archsimd.Int32x4
+	target := archsimd.BroadcastUint32x4(key)
+	whole := len(slots) &^ 3
+	for i := 0; i < whole; i += 4 {
+		v := archsimd.LoadUint32x4(slots[i : i+4])
+		lo = lo.Add(v.Less(target).ToInt32x4())
+		eq = eq.Add(v.Equal(target).ToInt32x4())
+	}
+	if whole < len(slots) {
+		first := len(slots) - 4
+		v := archsimd.LoadUint32x4(slots[first:])
+		positions := archsimd.LoadUint32x4(laneIndexes32[:]).Add(archsimd.BroadcastUint32x4(uint32(first)))
+		fresh := positions.Greater(archsimd.BroadcastUint32x4(uint32(whole - 1)))
+		lo = lo.Add(v.Less(target).And(fresh).ToInt32x4())
+		eq = eq.Add(v.Equal(target).And(fresh).ToInt32x4())
+	}
+	return -int(lo.ReduceSum()), -int(eq.ReduceSum())
+}
+
+func diskSlotCount64(slots []uint64, key uint64) (int, int) {
+	var lo, eq archsimd.Int64x2
+	target := archsimd.BroadcastUint64x2(key)
+	whole := len(slots) &^ 1
+	for i := 0; i < whole; i += 2 {
+		v := archsimd.LoadUint64x2(slots[i : i+2])
+		lo = lo.Add(v.Less(target).ToInt64x2())
+		eq = eq.Add(v.Equal(target).ToInt64x2())
+	}
+	below := -int(lo.GetElem(0) + lo.GetElem(1))
+	equal := -int(eq.GetElem(0) + eq.GetElem(1))
+	if whole < len(slots) {
+		last := slots[len(slots)-1]
+		if last < key {
+			below++
+		} else if last == key {
+			equal++
+		}
+	}
+	return below, equal
 }

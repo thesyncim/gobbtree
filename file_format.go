@@ -78,21 +78,25 @@ func diskRead[T any](data []byte, slot int, d diskType) T {
 	return diskReadVariable[T](data, slot, d)
 }
 
+// diskReadPlain reads a plain T, of size bytes, from slot. Plain types hold
+// no pointers, which lets slot be unaligned.
 func diskReadPlain[T any](data []byte, slot, size int) (out T) {
 	if size != 0 {
-		copy(unsafe.Slice((*byte)(unsafe.Pointer(&out)), size), data[slot:slot+size])
+		out = *(*T)(unsafe.Pointer(unsafe.SliceData(data[slot : slot+size])))
 	}
 	return
 }
 
+// diskReadVariable reads a string or byte slice T, a copy of the bytes the
+// span in slot points to.
 func diskReadVariable[T any](data []byte, slot int, d diskType) (out T) {
 	n := int(binary.NativeEndian.Uint32(data[slot:]))
 	start := slot + int(binary.NativeEndian.Uint32(data[slot+4:]))
 	b := data[start : start+n]
 	if d.kind == reflect.String {
-		reflect.ValueOf(&out).Elem().SetString(string(b))
+		*(*string)(unsafe.Pointer(&out)) = string(b)
 	} else {
-		reflect.ValueOf(&out).Elem().SetBytes(append([]byte(nil), b...))
+		*(*[]byte)(unsafe.Pointer(&out)) = append([]byte(nil), b...)
 	}
 	return
 }

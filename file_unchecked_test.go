@@ -141,3 +141,69 @@ func exerciseUnchecked[K uint64 | string, V any](b []byte, key K) {
 		}
 	}
 }
+
+// A corrupt map whose internal pages all lead to the next one, and the last
+// to one leaf, reaches that leaf by fan-out to the depth's paths: iteration
+// stops at its second visit, which reaches no leaf past the first, instead
+// of visiting it again for each.
+func TestFileMapUncheckedSharedPagesEndIteration(t *testing.T) {
+	l, _ := newDiskLayout[uint64, uint64]()
+	in := l.internal
+	const levels = 21
+	root := l.rootAlign
+	pos := diskAlign(root+l.rootSize, in.align)
+	nodes := []int{root}
+	for range levels {
+		nodes = append(nodes, pos)
+		pos += in.size
+	}
+	leaf := diskAlign(pos, l.leaf.align)
+	total := leaf + l.leaf.size
+	b := make([]byte, total)
+	copy(b, "bbtreeIM")
+	binary.LittleEndian.PutUint32(b[8:], 1)
+	binary.LittleEndian.PutUint64(b[16:], l.fingerprint)
+	binary.LittleEndian.PutUint64(b[24:], 1)
+	binary.LittleEndian.PutUint64(b[32:], uint64(root))
+	binary.LittleEndian.PutUint64(b[40:], uint64(total))
+	for i, node := range nodes {
+		binary.NativeEndian.PutUint16(b[node:], uint16(in.capacity))
+		next := leaf | 1
+		if i+1 < len(nodes) {
+			next = nodes[i+1]
+		}
+		for e := 0; e <= in.capacity; e++ {
+			binary.NativeEndian.PutUint64(b[node+in.trailing+e*in.stride:], uint64(next-node))
+		}
+	}
+	if _, err := OpenFileMap[uint64, uint64](b); err == nil {
+		t.Fatal("checked open accepted pages shared by many edges")
+	}
+	m, err := OpenFileMapUnchecked[uint64, uint64](b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reverse := range []bool{false, true} {
+		done := make(chan any, 1)
+		go func() {
+			defer func() { done <- recover() }()
+			all := m.All()
+			if reverse {
+				all = m.Reverse()
+			}
+			for range all {
+			}
+		}()
+		select {
+		case r := <-done:
+			if r == nil {
+				t.Fatal("iteration over shared pages ended without a panic")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("iteration over shared pages did not end")
+		}
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -8,19 +8,30 @@ import (
 	"iter"
 	"os"
 	"runtime"
-	"sync"
+	"runtime/debug"
+	"sync/atomic"
+	"unsafe"
 )
 
 // FileMap reads a bbtree snapshot directly from its pages. It is immutable;
-// concurrent reads and Close are safe. Returned keys and values are owned
-// copies and remain valid after Close. A FileMap must not be copied.
+// concurrent reads and Close are safe, and reads take no lock. Returned keys
+// and values are owned copies and remain valid after Close. A FileMap must
+// not be copied.
 type FileMap[K cmp.Ordered, V any] struct {
-	mu           sync.RWMutex
+	image  atomic.Pointer[fileImage]
+	layout diskLayout
+}
+
+// fileImage is a snapshot's bytes, and where its tree starts. Each read holds
+// the image it loaded until it returns, as an iteration does until it ends:
+// a mapping's cleanup unmaps it once no read holds it, as upstream's file
+// map unmaps once nothing borrows it.
+type fileImage struct {
 	data         []byte
-	layout       diskLayout
 	root, length int
-	unmap        func() error
-	cleanup      runtime.Cleanup
+	// mapped tells a mapping, which a read reaches with faults made panics:
+	// a file truncated under it would otherwise end the program.
+	mapped bool
 }
 
 // OpenFileMap checks every page of a serialized snapshot and takes an owned
@@ -52,12 +63,13 @@ func openFileMap[K cmp.Ordered, V any](data []byte, checked bool, unmap func() e
 		return nil, err
 	}
 	n := int(binary.LittleEndian.Uint64(data[40:]))
-	m := &FileMap[K, V]{data: data[:n:n], layout: l, root: root, length: count, unmap: unmap}
+	img := &fileImage{data: data[:n:n], root: root, length: count, mapped: unmap != nil}
 	if unmap != nil {
-		// The cleanup argument holds the mapping, never m. Explicit Close
-		// releases it promptly; unreachable maps also release OS resources.
-		m.cleanup = runtime.AddCleanup(m, func(release func() error) { _ = release() }, unmap)
+		// The cleanup holds the mapping's release, never the image.
+		runtime.AddCleanup(img, func(release func() error) { _ = release() }, unmap)
 	}
+	m := &FileMap[K, V]{layout: l}
+	m.image.Store(img)
 	return m, nil
 }
 
@@ -173,61 +185,70 @@ func (o MmapOptions[K, V]) Open() (*FileMap[K, V], error) {
 	return m, nil
 }
 
-// Close releases the snapshot. Subsequent reads report an empty map.
+// Close releases the snapshot: later reads find the map empty. Reads in
+// progress, and iterations, finish on it; a mapping is unmapped once none
+// holds it, when the collector next finds it unreachable.
 func (m *FileMap[K, V]) Close() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.cleanup.Stop()
-	m.data = nil
-	m.root = 0
-	m.length = 0
-	if m.unmap != nil {
-		f := m.unmap
-		m.unmap = nil
-		return f()
-	}
+	m.image.Store(nil)
 	return nil
 }
 
-func (m *FileMap[K, V]) Len() int      { m.mu.RLock(); defer m.mu.RUnlock(); return m.length }
+func (m *FileMap[K, V]) Len() int {
+	if img := m.image.Load(); img != nil {
+		return img.length
+	}
+	return 0
+}
+
 func (m *FileMap[K, V]) IsEmpty() bool { return m.Len() == 0 }
-func (m *FileMap[K, V]) ByteLen() int  { m.mu.RLock(); defer m.mu.RUnlock(); return len(m.data) }
+
+func (m *FileMap[K, V]) ByteLen() int {
+	if img := m.image.Load(); img != nil {
+		return len(img.data)
+	}
+	return 0
+}
 
 // Alignment is what the snapshot's offset in a file must be a multiple of,
 // as upstream's FileMap::alignment: what WriteAt rounds up to.
 func (m *FileMap[K, V]) Alignment() int { return m.layout.rootAlign }
 
-func (m *FileMap[K, V]) child(node, index int) int {
-	l := m.layout.internal
-	return node + int(binary.NativeEndian.Uint64(m.data[node+l.trailing+index*l.stride:]))
+// child is the tagged offset of internal page node's child index.
+func (m *FileMap[K, V]) child(data []byte, node, index int) int {
+	l := &m.layout.internal
+	return node + int(binary.NativeEndian.Uint64(data[node+l.trailing+index*l.stride:]))
 }
 
-func (m *FileMap[K, V]) separatorSlot(node, index int) int {
-	l := m.layout.internal
+// separatorSlot is the slot of internal page node's separator index: in the
+// page, or, for keys with inline windows, the head key of the leftmost leaf
+// right of it (D49).
+func (m *FileMap[K, V]) separatorSlot(data []byte, node, index int) int {
+	l := &m.layout.internal
 	if l.width == 0 {
 		return node + l.keys + index*l.keyStride
 	}
-	tagged := m.child(node, index+1)
+	tagged := m.child(data, node, index+1)
 	for depth := 0; tagged&1 == 0; depth++ {
 		if depth == fileMaxDepth {
 			panic("gobbtree: corrupt file map: tree too deep")
 		}
-		tagged = m.child(tagged, 0)
+		tagged = m.child(data, tagged, 0)
 	}
 	return (tagged &^ 1) + m.layout.leaf.headKey
 }
 
-func (m *FileMap[K, V]) route(node int, key K) int {
-	l := m.layout.internal
-	lo, hi := 0, int(binary.NativeEndian.Uint16(m.data[node:]))
+// route is the edge of internal page node that key goes down.
+func (m *FileMap[K, V]) route(data []byte, node int, key K) int {
+	l := &m.layout.internal
+	lo, hi := 0, int(binary.NativeEndian.Uint16(data[node:]))
 	if l.width > 0 {
-		prefix := int(binary.NativeEndian.Uint16(m.data[node+4:]))
+		prefix := int(binary.NativeEndian.Uint16(data[node+4:]))
 		start := node + l.inline
-		lo, hi = diskInlineRange(m.data[start:start+hi*l.width], l.width, diskWindow(key, prefix, l.width))
+		lo, hi = diskSlotRange(data[start:start+l.capacity*l.width], l.width, hi, m.window(key, prefix, l.width))
 	}
 	for lo < hi {
 		mid := int(uint(lo+hi) >> 1)
-		if diskCompare(m.data, m.separatorSlot(node, mid), m.layout.key, key) > 0 {
+		if m.compareAt(data, m.separatorSlot(data, node, mid), key) > 0 {
 			hi = mid
 		} else {
 			lo = mid + 1
@@ -236,73 +257,132 @@ func (m *FileMap[K, V]) route(node int, key K) int {
 	return lo
 }
 
+// headSlot is the slot of the key of leaf's head entry, the first, which a
+// leaf right of another keeps (D49): in the leaf, or, for keys without
+// inline windows, the separator left of the path to it, internal page
+// left's separator leftIndex. -1 for a leaf without one.
+func (m *FileMap[K, V]) headSlot(data []byte, leaf, left, leftIndex int) int {
+	if data[leaf+2] == 0 {
+		return -1
+	}
+	if m.layout.leaf.headKey >= 0 {
+		return leaf + m.layout.leaf.headKey
+	}
+	if left < 0 {
+		panic("gobbtree: corrupt file map: leftmost leaf has a head")
+	}
+	return m.separatorSlot(data, left, leftIndex)
+}
+
+// leafKeySlot is the slot of leaf's key index; head is its head key's slot.
+func (m *FileMap[K, V]) leafKeySlot(data []byte, leaf, head, index int) int {
+	if index -= int(data[leaf+2]); index >= 0 {
+		return leaf + m.layout.leaf.keys + index*m.layout.leaf.keyStride
+	}
+	return head
+}
+
+// leafCount is how many entries leaf holds, its head's included.
+func leafCount(data []byte, leaf int) int {
+	return int(binary.NativeEndian.Uint16(data[leaf:])) + int(data[leaf+2])
+}
+
+// seekLeaf is the index of leaf's first entry whose key is at or above key;
+// head is its head key's slot.
+func (m *FileMap[K, V]) seekLeaf(data []byte, leaf, head int, key K) int {
+	l := &m.layout.leaf
+	n, h := leafCount(data, leaf), int(data[leaf+2])
+	lo, hi := 0, n
+	switch {
+	case h != 0 && m.compareAt(data, head, key) >= 0:
+		hi = 0
+	case l.width > 0:
+		start := leaf + l.inline
+		prefix := int(binary.NativeEndian.Uint16(data[leaf+4:]))
+		lo, hi = diskSlotRange(data[start:start+l.capacity*l.width], l.width, n-h, m.window(key, prefix, l.width))
+		lo += h
+		hi += h
+	}
+	for lo < hi {
+		mid := int(uint(lo+hi) >> 1)
+		if m.compareAt(data, m.leafKeySlot(data, leaf, head, mid), key) < 0 {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+// valueSlot is the slot of leaf's value index.
+func (m *FileMap[K, V]) valueSlot(data []byte, leaf, index int) int {
+	l := &m.layout.leaf
+	return leaf + l.trailing + (index+1-int(data[leaf+2]))*l.stride
+}
+
 type diskFrame struct{ node, index int }
 type fileCursor[K cmp.Ordered, V any] struct {
-	mapFile                *FileMap[K, V]
-	path                   [fileMaxDepth]diskFrame
-	depth, leaf, index     int
+	mapFile *FileMap[K, V]
+	// image is what the iteration reads, from its first entry to its last.
+	image              *fileImage
+	path               [fileMaxDepth]diskFrame
+	depth, leaf, index int
+	// last is the leaf visited before this one: leaves come in the order of
+	// their offsets, as a FileWriter lays them out, which bounds the leaves
+	// a corrupt snapshot's edges can lead an iteration through.
+	last                   int
 	started, done, reverse bool
 	bounds                 *Bounds[K]
 }
 
 func (c *fileCursor[K, V]) descend(tagged int, seek bool) {
-	m := c.mapFile
+	m, data := c.mapFile, c.image.data
 	key := c.bounds.lower
 	if c.reverse {
 		key = c.bounds.upper
 	}
 	outside := 0
 	if seek {
-		outside = m.compareShared(key)
+		outside = m.compareShared(data, c.image.root, key)
 	}
 	for tagged&1 == 0 {
+		if c.depth == fileMaxDepth {
+			panic("gobbtree: corrupt file map: tree too deep")
+		}
 		index := 0
 		if seek {
 			if outside > 0 {
-				index = int(binary.NativeEndian.Uint16(m.data[tagged:]))
+				index = int(binary.NativeEndian.Uint16(data[tagged:]))
 			} else if outside == 0 {
-				index = m.route(tagged, key)
+				index = m.route(data, tagged, key)
 			}
 		} else if c.reverse {
-			index = int(binary.NativeEndian.Uint16(m.data[tagged:]))
+			index = int(binary.NativeEndian.Uint16(data[tagged:]))
 		}
 		c.path[c.depth] = diskFrame{tagged, index}
 		c.depth++
-		tagged = m.child(tagged, index)
+		tagged = m.child(data, tagged, index)
 	}
 	c.leaf = tagged &^ 1
-	n := c.count()
+	if c.last >= 0 && (c.reverse && c.leaf >= c.last || !c.reverse && c.leaf <= c.last) {
+		panic("gobbtree: corrupt file map: leaves out of order")
+	}
+	c.last = c.leaf
+	n := leafCount(data, c.leaf)
 	c.index = 0
 	if seek {
-		lo, hi := 0, n
-		l := m.layout.leaf
+		lo := 0
 		switch {
 		case outside < 0:
-			hi = 0
 		case outside > 0:
 			lo = n
-		case int(m.data[c.leaf+2]) != 0 && diskCompare(m.data, c.keySlot(0), m.layout.key, key) >= 0:
-			hi = 0
-		case l.width > 0:
-			head := int(m.data[c.leaf+2])
-			start := c.leaf + l.inline
-			prefix := int(binary.NativeEndian.Uint16(m.data[c.leaf+4:]))
-			lo, hi = diskInlineRange(m.data[start:start+(n-head)*l.width], l.width, diskWindow(key, prefix, l.width))
-			lo += head
-			hi += head
-		}
-		for lo < hi {
-			mid := int(uint(lo+hi) >> 1)
-			if diskCompare(m.data, c.keySlot(mid), m.layout.key, key) < 0 {
-				lo = mid + 1
-			} else {
-				hi = mid
-			}
+		default:
+			lo = m.seekLeaf(data, c.leaf, c.head(), key)
 		}
 		// lo is the first key at or above key; step past an equal key the
 		// bounds exclude ascending, or include descending.
 		if lo < n && (c.reverse && c.bounds.upperKind == included || !c.reverse && c.bounds.lowerKind == excluded) &&
-			diskCompare(m.data, c.keySlot(lo), m.layout.key, key) == 0 {
+			m.compareAt(data, c.keySlot(lo), key) == 0 {
 			lo++
 		}
 		c.index = lo
@@ -314,45 +394,38 @@ func (c *fileCursor[K, V]) descend(tagged int, seek bool) {
 	}
 }
 
-func (c *fileCursor[K, V]) count() int {
-	m := c.mapFile
-	return int(binary.NativeEndian.Uint16(m.data[c.leaf:])) + int(m.data[c.leaf+2])
-}
-func (c *fileCursor[K, V]) keySlot(index int) int {
-	m := c.mapFile
-	l := m.layout.leaf
-	index -= int(m.data[c.leaf+2])
-	if index >= 0 {
-		return c.leaf + l.keys + index*l.keyStride
-	}
-	if l.headKey >= 0 {
-		return c.leaf + l.headKey
-	}
+// head is the slot of the leaf's head key, or -1 (headSlot).
+func (c *fileCursor[K, V]) head() int {
+	left, leftIndex := -1, 0
 	for i := c.depth - 1; i >= 0; i-- {
-		f := c.path[i]
-		if f.index > 0 {
-			return m.separatorSlot(f.node, f.index-1)
+		if f := c.path[i]; f.index > 0 {
+			left, leftIndex = f.node, f.index-1
+			break
 		}
 	}
-	panic("gobbtree: validated leaf has no head key")
+	return c.mapFile.headSlot(c.image.data, c.leaf, left, leftIndex)
 }
 
-func (c *fileCursor[K, V]) key(index int) K {
-	return diskRead[K](c.mapFile.data, c.keySlot(index), c.mapFile.layout.key)
+func (c *fileCursor[K, V]) keySlot(index int) int {
+	head := -1
+	if index < int(c.image.data[c.leaf+2]) {
+		head = c.head()
+	}
+	return c.mapFile.leafKeySlot(c.image.data, c.leaf, head, index)
 }
 
 func (c *fileCursor[K, V]) advanceLeaf() bool {
-	m := c.mapFile
+	m, data := c.mapFile, c.image.data
 	for c.depth > 0 {
 		f := &c.path[c.depth-1]
-		n := int(binary.NativeEndian.Uint16(m.data[f.node:]))
+		n := int(binary.NativeEndian.Uint16(data[f.node:]))
 		if (!c.reverse && f.index < n) || (c.reverse && f.index > 0) {
 			if c.reverse {
 				f.index--
 			} else {
 				f.index++
 			}
-			c.descend(m.child(f.node, f.index), false)
+			c.descend(m.child(data, f.node, f.index), false)
 			return true
 		}
 		c.depth--
@@ -362,29 +435,39 @@ func (c *fileCursor[K, V]) advanceLeaf() bool {
 
 func (c *fileCursor[K, V]) next() (key K, value V, ok bool) {
 	m := c.mapFile
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if c.done || m.root == 0 {
+	if c.done {
 		return
 	}
-	if !c.started {
+	first := !c.started
+	if first {
 		c.started = true
-		c.descend(m.root, c.reverse && c.bounds.upperKind != unbounded || !c.reverse && c.bounds.lowerKind != unbounded)
+		c.image, c.last = m.image.Load(), -1
+	} else if m.image.Load() != c.image {
+		// Closed since the iteration began.
+		c.image = nil
 	}
-	for c.index < 0 || c.index >= c.count() {
+	if c.image == nil || c.image.root == 0 {
+		c.done = true
+		return
+	}
+	if c.image.mapped {
+		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+	}
+	if first {
+		c.descend(c.image.root, c.reverse && c.bounds.upperKind != unbounded || !c.reverse && c.bounds.lowerKind != unbounded)
+	}
+	for c.index < 0 || c.index >= leafCount(c.image.data, c.leaf) {
 		if !c.advanceLeaf() {
 			c.done = true
 			return
 		}
 	}
-	key = c.key(c.index)
+	key = diskRead[K](c.image.data, c.keySlot(c.index), m.layout.key)
 	if !aboveLower[K, natural[K]](c.bounds, key) || !belowUpper[K, natural[K]](c.bounds, key) {
 		c.done = true
 		return key, value, false
 	}
-	l := m.layout.leaf
-	i := c.index + 1 - int(m.data[c.leaf+2])
-	value = diskRead[V](m.data, c.leaf+l.trailing+i*l.stride, m.layout.value)
+	value = diskRead[V](c.image.data, m.valueSlot(c.image.data, c.leaf, c.index), m.layout.value)
 	if c.reverse {
 		c.index--
 	} else {
@@ -393,49 +476,83 @@ func (c *fileCursor[K, V]) next() (key K, value V, ok bool) {
 	return key, value, true
 }
 
-func (m *FileMap[K, V]) find(key K) (keySlot, valueSlot int, ok bool) {
-	if m.root == 0 || m.compareShared(key) != 0 {
+// find is where key's entry is in img: the slots of its key and value, ok
+// if it holds key. It reads the pages a search reaches, from the root down.
+func (m *FileMap[K, V]) find(img *fileImage, key K) (keySlot, valueSlot int, ok bool) {
+	data := img.data
+	if unsafe.Sizeof(key) == 8 && m.layout.leaf.width == 2 && img.root != 0 {
+		return m.findWord(data, img.root, m.keyWord(key))
+	}
+	if img.root == 0 || m.compareShared(data, img.root, key) != 0 {
 		return
 	}
-	c := fileCursor[K, V]{mapFile: m, bounds: &Bounds[K]{lower: key, lowerKind: included}}
-	c.descend(m.root, true)
-	if c.index >= c.count() {
+	tagged, left, leftIndex := img.root, -1, 0
+	for depth := 0; tagged&1 == 0; depth++ {
+		if depth == fileMaxDepth {
+			panic("gobbtree: corrupt file map: tree too deep")
+		}
+		index := m.route(data, tagged, key)
+		if index > 0 {
+			left, leftIndex = tagged, index-1
+		}
+		tagged = m.child(data, tagged, index)
+	}
+	leaf := tagged &^ 1
+	head := m.headSlot(data, leaf, left, leftIndex)
+	i := m.seekLeaf(data, leaf, head, key)
+	if i >= leafCount(data, leaf) {
 		return
 	}
-	keySlot = c.keySlot(c.index)
-	if diskCompare(m.data, keySlot, m.layout.key, key) != 0 {
+	keySlot = m.leafKeySlot(data, leaf, head, i)
+	if m.compareAt(data, keySlot, key) != 0 {
 		return keySlot, 0, false
 	}
-	l := m.layout.leaf
-	i := c.index + 1 - int(m.data[c.leaf+2])
-	return keySlot, c.leaf + l.trailing + i*l.stride, true
+	return keySlot, m.valueSlot(data, leaf, i), true
 }
 
 func (m *FileMap[K, V]) Get(key K) (value V, ok bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	_, slot, ok := m.find(key)
-	if ok {
-		value = diskRead[V](m.data, slot, m.layout.value)
+	img := m.image.Load()
+	if img == nil {
+		return
 	}
+	if img.mapped {
+		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+	}
+	_, slot, ok := m.find(img, key)
+	if ok {
+		value = diskRead[V](img.data, slot, m.layout.value)
+	}
+	runtime.KeepAlive(img)
 	return
 }
 
 func (m *FileMap[K, V]) GetKeyValue(key K) (stored K, value V, ok bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	ks, vs, ok := m.find(key)
-	if ok {
-		stored = diskRead[K](m.data, ks, m.layout.key)
-		value = diskRead[V](m.data, vs, m.layout.value)
+	img := m.image.Load()
+	if img == nil {
+		return
 	}
+	if img.mapped {
+		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+	}
+	ks, vs, ok := m.find(img, key)
+	if ok {
+		stored = diskRead[K](img.data, ks, m.layout.key)
+		value = diskRead[V](img.data, vs, m.layout.value)
+	}
+	runtime.KeepAlive(img)
 	return
 }
 
 func (m *FileMap[K, V]) Contains(key K) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	_, _, ok := m.find(key)
+	img := m.image.Load()
+	if img == nil {
+		return false
+	}
+	if img.mapped {
+		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+	}
+	_, _, ok := m.find(img, key)
+	runtime.KeepAlive(img)
 	return ok
 }
 
@@ -473,16 +590,23 @@ func (m *FileMap[K, V]) GetMany(keys []K, dst []Result[V]) {
 	if len(dst) < len(keys) {
 		panic("gobbtree: GetMany destination too short")
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	img := m.image.Load()
+	if img == nil {
+		clear(dst[:len(keys)])
+		return
+	}
+	if img.mapped {
+		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+	}
 	for i, key := range keys {
-		_, slot, ok := m.find(key)
+		_, slot, ok := m.find(img, key)
 		var value V
 		if ok {
-			value = diskRead[V](m.data, slot, m.layout.value)
+			value = diskRead[V](img.data, slot, m.layout.value)
 		}
 		dst[i] = Result[V]{value, ok}
 	}
+	runtime.KeepAlive(img)
 }
 
 // scan visits the keys in b.
@@ -542,14 +666,17 @@ func (m *FileMap[K, V]) Reverse() iter.Seq2[K, V] {
 
 // WriteTo copies the validated image, preserving its Rust-compatible layout.
 func (m *FileMap[K, V]) WriteTo(w io.Writer) (int64, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.data == nil {
+	img := m.image.Load()
+	if img == nil {
 		return 0, os.ErrClosed
 	}
-	n, err := w.Write(m.data)
-	if err == nil && n != len(m.data) {
+	if img.mapped {
+		defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+	}
+	n, err := w.Write(img.data)
+	if err == nil && n != len(img.data) {
 		err = io.ErrShortWrite
 	}
+	runtime.KeepAlive(img)
 	return int64(n), err
 }

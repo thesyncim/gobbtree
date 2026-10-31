@@ -13,11 +13,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func fileEntries(n int) iter.Seq2[uint64, uint64] {
@@ -570,9 +572,52 @@ func TestFileMapOwnedResultsAndCleanup(t *testing.T) {
 	}
 	mock.Close()
 	mock.Close()
-	if releases.Load() != 1 {
-		t.Fatal("duplicate release")
+	// The mapping goes once the collector finds its image unreachable, once.
+	waitReleases(t, &releases, 1)
+}
+
+// waitReleases collects until releases reaches want, and checks that it
+// goes no further.
+func waitReleases(t *testing.T, releases *atomic.Int32, want int32) {
+	t.Helper()
+	for i := 0; releases.Load() < want && i < 200; i++ {
+		runtime.GC()
+		time.Sleep(time.Millisecond)
 	}
+	runtime.GC()
+	time.Sleep(10 * time.Millisecond)
+	if got := releases.Load(); got != want {
+		t.Fatalf("released %d times, want %d", got, want)
+	}
+}
+
+// Reads take no lock: a read in progress, as an iteration is, holds the
+// mapping it reads through Close until it ends.
+func TestFileMapCloseWaitsForReads(t *testing.T) {
+	w, _ := NewFileWriter(fileEntries(5000))
+	var releases atomic.Int32
+	m, err := openFileMap[uint64, uint64](w.Bytes(), false, func() error { releases.Add(1); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, stop := iter.Pull2(m.All())
+	first, _, ok := next()
+	if !ok {
+		t.Fatal("empty iteration")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Get(first); ok || m.Len() != 0 {
+		t.Fatal("a closed map still answers")
+	}
+	waitReleases(t, &releases, 0)
+	// The iteration began before Close, and ends at its next entry.
+	if _, _, ok := next(); ok {
+		t.Fatal("iteration went on past Close")
+	}
+	stop()
+	waitReleases(t, &releases, 1)
 }
 
 func TestFileMapStringReadAllocations(t *testing.T) {

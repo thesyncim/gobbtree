@@ -125,3 +125,8 @@ func diskCount64(values []uint64, key uint64) (int, int) {
 	}
 	return lo, lo + eq
 }
+
+// diskSlotRange is diskInlineRange over a page's slots, n of them live.
+func diskSlotRange(slots []byte, width, n int, target uint64) (int, int) {
+	return diskInlineRange(slots[:n*width], width, target)
+}
