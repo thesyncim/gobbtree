@@ -178,49 +178,54 @@ func (t *genericTree[K, V, O]) leafOfCodes(key K, code uint64) (*gheader, uint64
 // the leaf they reach (D37). False, holding nothing, where the descent
 // can't settle, or the leaf changed since it read it.
 func (t *genericTree[K, V, O]) writeLeafByCodes(key K, code uint64) (*gleaf[K, V], uint64, bool) {
+	n, version, _, _, _, ok := t.writeLeafRange(key, code)
+	return n, version, ok
+}
+
+// writeLeafRange is writeLeafByCodes that, where a hint named the leaf,
+// hands on [lo, hi), the keys whose codes are key's, which it read racing
+// at the version it then latched the leaf at, so still the leaf's: ranged.
+func (t *genericTree[K, V, O]) writeLeafRange(key K, code uint64) (n *gleaf[K, V], version uint64, lo, hi int, ranged, ok bool) {
 	if !seqlockPlainStores || t.sharesBytes() && t.sharedOrderOf(key) != 0 {
-		return nil, 0, false
+		return nil, 0, 0, 0, false, false
 	}
-	h, word, ok := t.hintedWriteLeaf(key, code)
-	if !ok {
+	h, word, lo, hi, ranged := t.hintedWriteLeaf(key, code)
+	if !ranged {
 		if h, word, ok = t.leafOfCodes(key, code); !ok {
-			return nil, 0, false
+			return nil, 0, 0, 0, false, false
 		}
 		t.noteLeaf(key, code, h)
 	}
-	n := asLeaf[K, V](h)
-	version := n.latch.lockExclusive()
-	if version != word&^latchSharedMask {
+	n = asLeaf[K, V](h)
+	if version = n.latch.lockExclusive(); version != word&^latchSharedMask {
 		n.latch.unlockExclusive(version)
-		return nil, 0, false
+		return nil, 0, 0, 0, false, false
 	}
-	return n, version, true
+	return n, version, lo, hi, ranged, true
 }
 
 // hintedWriteLeaf is the leaf key's hint names and the latch word it read
 // it at, where read racing at that word the leaf settles key as a lookup's
 // does (leafCandidates), its first and last codes strictly about key's:
 // the writer that latches it at that word holds key's leaf.
-func (t *genericTree[K, V, O]) hintedWriteLeaf(key K, code uint64) (*gheader, uint64, bool) {
-	h := t.hintedLeaf(key, code)
-	if h == nil {
-		return nil, 0, false
+func (t *genericTree[K, V, O]) hintedWriteLeaf(key K, code uint64) (h *gheader, word uint64, lo, hi int, ok bool) {
+	if h = t.hintedLeaf(key, code); h == nil {
+		return nil, 0, 0, 0, false
 	}
-	word := h.latch.Load()
-	if word&latchExclusive != 0 {
-		return nil, 0, false
+	if word = h.latch.Load(); word&latchExclusive != 0 {
+		return nil, 0, 0, 0, false
 	}
 	m := asLeaf[K, V](h)
 	count := int(*(*int32)(unsafe.Pointer(&m.count)))
 	p := int(*(*int32)(unsafe.Pointer(&m.prefix)))
 	if count < 2 || count > nodeSize || p < 0 || p > customPrefixMax {
-		return nil, 0, false
+		return nil, 0, 0, 0, false
 	}
 	if p <= 8 && !hasShortPrefix(h, code, p) || p > 8 && !t.hasLeafPrefix(m, key, code, p) {
-		return nil, 0, false
+		return nil, 0, 0, 0, false
 	}
-	lo, hi := leafCodeRange(h, count, narrowed(t.codeOf(key, code, p), t.inline.leafWidth))
-	return h, word, lo > 0 && hi < count
+	lo, hi = leafCodeRange(h, count, narrowed(t.codeOf(key, code, p), t.inline.leafWidth))
+	return h, word, lo, hi, lo > 0 && hi < count
 }
 
 // settleHeld is the candidate of [lo, hi), the keys of leaf n whose codes

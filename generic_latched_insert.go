@@ -1307,10 +1307,16 @@ func (t *genericTree[K, V, O]) holdWrite(key K) (n *gleaf[K, V], version, w0 uin
 		t.admit(key)
 	}
 	w0 = t.code(key)
-	if n, version, ok = t.writeLeafByCodes(key, w0); !ok {
+	n, version, lo, hi, ranged, ok := t.writeLeafRange(key, w0)
+	if !ok {
 		return nil, 0, 0, 0, false, false
 	}
-	if i, found = t.find(n, key, w0); !found && int(n.count.Load()) == nodeSize {
+	if ranged {
+		i, found = t.findAmong(n, key, lo, hi)
+	} else {
+		i, found = t.find(n, key, w0)
+	}
+	if !found && int(n.count.Load()) == nodeSize {
 		n.latch.unlockExclusive(version)
 		return nil, 0, 0, 0, false, false
 	}

@@ -1261,6 +1261,12 @@ func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K, code uint64) (int, bo
 	} else {
 		lo, hi = tieRange(&n.codes, count, code)
 	}
+	return t.findAmong(n, key, lo, hi)
+}
+
+// findAmong is find in leaf n, held or owned, given [lo, hi), the keys whose
+// codes are key's.
+func (t *genericTree[K, V, O]) findAmong(n *gleaf[K, V], key K, lo, hi int) (int, bool) {
 	equal := 0
 	if windowed[O, K]() && lo < hi {
 		equal = equalThrough(int(n.prefix.Load()), t.inline.leafWidth)
