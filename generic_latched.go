@@ -1454,6 +1454,19 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 			return value, found
 		}
 	}
+	if windowed[O, K]() {
+		switch n, lo, hi, state := t.leafByCodes(key, code); state {
+		case codesAbsent:
+			return value, false
+		case codesHeld:
+			i, ok := t.settleHeld(n, key, lo, hi)
+			if ok {
+				value, found = n.values[i], true
+			}
+			n.latch.unlockShared()
+			return value, found
+		}
+	}
 	if seqlockPlainStores && t.wordCodes() {
 		for try := 0; try < 4; try++ {
 			n, version := t.descend(key, code, seekKey, false, optimistic, nil)
@@ -1492,6 +1505,19 @@ func (t *genericTree[K, V, O]) read(key K, visit func(K, V)) bool {
 		return false
 	}
 	code := t.code(key)
+	if windowed[O, K]() {
+		switch n, lo, hi, state := t.leafByCodes(key, code); state {
+		case codesAbsent:
+			return false
+		case codesHeld:
+			defer n.latch.unlockShared()
+			i, ok := t.settleHeld(n, key, lo, hi)
+			if ok {
+				visit(t.key(n, i), n.values[i])
+			}
+			return ok
+		}
+	}
 	n, _ := t.leafLatched(key, code, seekKey, shared)
 	defer n.latch.unlockShared()
 	i, ok := t.find(n, key, code)
