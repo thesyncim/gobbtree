@@ -2,6 +2,8 @@
 
 package gobbtree
 
+import "unsafe"
+
 // descendText descends an owner's tree from h by text key s, with plain
 // loads, and searches s's leaf by its code: the node it stopped at, the
 // slot and what it found there, a text constant.
@@ -30,4 +32,19 @@ func hintedCode(r *codeHints, d *leafDir, code uint64, place bool) (*gheader, in
 // leaf, its slot for code, and whether code is there (seekCode).
 func descendCode(h *gheader, code uint64, place bool) (*gheader, int, bool) {
 	return descendCodeBy(h, code, place)
+}
+
+// descendCodes descends a racing reader's custom-key tree from h, read at
+// latch word word, by c, the key's code at prefix cp, narrowed to width
+// bytes where narrow, through the internal nodes that keep that prefix: the
+// node it stopped at, its word and depth, and what it reached (codesAtLeaf,
+// codesAtPrefix, codesRaced).
+func descendCodes(h *gheader, word uint64, depth int, c uint64, cp int, narrow bool, width int) (*gheader, uint64, int, int) {
+	return descendCodesBy(h, word, depth, c, cp, narrow, width)
+}
+
+// leafCodeRange is the range of the first count of a leaf's codes equal to
+// c, read racing.
+func leafCodeRange(h *gheader, count int, c uint64) (lo, hi int) {
+	return codeSpan(&(*leafRoute)(unsafe.Pointer(h)).codes, count, c)
 }

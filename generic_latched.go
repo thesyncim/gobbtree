@@ -1455,11 +1455,11 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 		}
 	}
 	if windowed[O, K]() {
-		switch n, lo, hi, state := t.leafByCodes(key, code); state {
+		switch n, lo, hi, tag, state := t.leafByCodes(key, code); state {
 		case codesAbsent:
 			return value, false
 		case codesHeld:
-			i, ok := t.settleHeld(n, key, lo, hi)
+			i, ok := t.settleHeld(n, key, lo, hi, tag)
 			if ok {
 				value, found = n.values[i], true
 			}
@@ -1496,35 +1496,46 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 }
 
 // read runs visit on key's entry, its stored key and value, with its leaf
-// latched shared.
+// latched shared; a panicking visit lets go of the leaf.
 func (t *genericTree[K, V, O]) read(key K, visit func(K, V)) bool {
 	if t.owner {
 		return t.ownerRead(key, visit)
 	}
-	if t.root.Load() == nil {
+	n, i, ok := t.hold(key)
+	if !ok {
 		return false
+	}
+	defer n.latch.unlockShared()
+	visit(t.key(n, i), n.values[i])
+	return true
+}
+
+// hold is key's entry, its leaf, latched shared, and its index there, for
+// the caller to let go of; false, holding nothing, without one. A shared
+// tree's.
+func (t *genericTree[K, V, O]) hold(key K) (*gleaf[K, V], int, bool) {
+	if t.root.Load() == nil {
+		return nil, 0, false
 	}
 	code := t.code(key)
 	if windowed[O, K]() {
-		switch n, lo, hi, state := t.leafByCodes(key, code); state {
+		switch n, lo, hi, tag, state := t.leafByCodes(key, code); state {
 		case codesAbsent:
-			return false
+			return nil, 0, false
 		case codesHeld:
-			defer n.latch.unlockShared()
-			i, ok := t.settleHeld(n, key, lo, hi)
-			if ok {
-				visit(t.key(n, i), n.values[i])
+			if i, ok := t.settleHeld(n, key, lo, hi, tag); ok {
+				return n, i, true
 			}
-			return ok
+			n.latch.unlockShared()
+			return nil, 0, false
 		}
 	}
 	n, _ := t.leafLatched(key, code, seekKey, shared)
-	defer n.latch.unlockShared()
-	i, ok := t.find(n, key, code)
-	if ok {
-		visit(t.key(n, i), n.values[i])
+	if i, ok := t.find(n, key, code); ok {
+		return n, i, true
 	}
-	return ok
+	n.latch.unlockShared()
+	return nil, 0, false
 }
 
 // update stores change's result as key's value, with its leaf latched

@@ -276,6 +276,112 @@ func descendTextOrdered(root **gheader, s string) (h *gheader, word uint64, lo, 
 	return h, word, lo, orderedAbsent, acc, true
 }
 
+// descendCodes descends a racing reader's custom-key tree from h, read at
+// latch word word, by c, the key's code at prefix cp, narrowed to width
+// bytes where narrow, through the internal nodes that keep that prefix: the
+// node it stopped at, its word and depth, and what it reached (codesAtLeaf,
+// codesAtPrefix, codesRaced). A node's separators below the key's and at
+// most it are counted in one pass, inline, as descendText counts them: the
+// route is the last child below, and a separator past it equal to the key's
+// is a tie, which only its key settles.
+func descendCodes(h *gheader, word uint64, depth int, c uint64, cp int, narrow bool, width int) (*gheader, uint64, int, int) {
+	if simd.Emulated() {
+		return descendCodesBy(h, word, depth, c, cp, narrow, width)
+	}
+	s := uint32(narrowed(c, width))
+	sums32, codes64 := archsimd.BroadcastUint32x4(s), archsimd.BroadcastUint64x2(c)
+	for ; ; depth++ {
+		if word&latchExclusive != 0 || depth == maxDepth {
+			return h, word, depth, codesRaced
+		}
+		if h.leaf {
+			return h, word, depth, codesAtLeaf
+		}
+		n := (*innerRoute)(unsafe.Pointer(h))
+		count := int(*(*int32)(unsafe.Pointer(&n.count)))
+		q := int(*(*int32)(unsafe.Pointer(&n.prefix)))
+		if count < 1 || count > nodeSize || q < 0 || q > customPrefixMax {
+			return h, word, depth, codesRaced
+		}
+		if q != cp {
+			return h, word, depth, codesAtPrefix
+		}
+		var lt, le int
+		if narrow {
+			sums := (*[nodeSize]uint32)(unsafe.Pointer(&n.codes))
+			la, ea := countBoth32((*[8]uint32)(sums[0:8]), sums32)
+			lb, eb := countBoth32((*[8]uint32)(sums[8:16]), sums32)
+			lc, ec := countBoth32((*[8]uint32)(sums[16:24]), sums32)
+			ld, ed := countBoth32((*[8]uint32)(sums[24:32]), sums32)
+			lt = min(-int(la.Add(lb).Add(lc.Add(ld)).ReduceSum()), count)
+			le = min(-int(ea.Add(eb).Add(ec.Add(ed)).ReduceSum()), count)
+		} else {
+			codes := (*[nodeSize]uint64)(unsafe.Pointer(&n.codes))
+			la, ea := countBoth((*[8]uint64)(codes[0:8]), codes64)
+			lb, eb := countBoth((*[8]uint64)(codes[8:16]), codes64)
+			lc, ec := countBoth((*[8]uint64)(codes[16:24]), codes64)
+			ld, ed := countBoth((*[8]uint64)(codes[24:32]), codes64)
+			l, e := la.Add(lb).Add(lc.Add(ld)), ea.Add(eb).Add(ec.Add(ed))
+			lt, le = min(-int(l.GetElem(0)+l.GetElem(1)), count), min(-int(e.GetElem(0)+e.GetElem(1)), count)
+		}
+		if le > max(lt, 1) {
+			return h, word, depth, codesRaced
+		}
+		i := max(lt-1, 0)
+		child := *(**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)]))
+		if child == nil {
+			return h, word, depth, codesRaced
+		}
+		childWord := child.latch.Load()
+		a := uint64(lt) ^ uint64(le)<<8 ^ uint64(count)<<16 ^ uint64(q)<<24
+		if *after((*uint64)(unsafe.Pointer(&h.latch)), a^childWord^uint64(uintptr(unsafe.Pointer(child))))&^latchSharedMask != word&^latchSharedMask {
+			return h, word, depth, codesRaced
+		}
+		h, word = child, childWord
+	}
+}
+
+// leafCodeRange is the range of the first count of a leaf's codes equal to
+// c, read racing, counted in one pass.
+func leafCodeRange(h *gheader, count int, c uint64) (lo, hi int) {
+	if simd.Emulated() {
+		return codeSpan(&(*leafRoute)(unsafe.Pointer(h)).codes, count, c)
+	}
+	return codeRangeOf(&(*leafRoute)(unsafe.Pointer(h)).codes, count, archsimd.BroadcastUint64x2(c))
+}
+
+// codeRangeOf is codeSpan by one pass over the codes: those below target
+// and those at most it.
+func codeRangeOf(codes *[nodeSize]uint64, count int, target archsimd.Uint64x2) (lo, hi int) {
+	la, ea := countBoth((*[8]uint64)(codes[0:8]), target)
+	lb, eb := countBoth((*[8]uint64)(codes[8:16]), target)
+	lc, ec := countBoth((*[8]uint64)(codes[16:24]), target)
+	ld, ed := countBoth((*[8]uint64)(codes[24:32]), target)
+	l, e := la.Add(lb).Add(lc.Add(ld)), ea.Add(eb).Add(ec.Add(ed))
+	return min(-int(l.GetElem(0)+l.GetElem(1)), count), min(-int(e.GetElem(0)+e.GetElem(1)), count)
+}
+
+// countBoth counts the keys below target and those at most it, from one
+// load of each pair.
+func countBoth(keys *[8]uint64, target archsimd.Uint64x2) (below, atMost archsimd.Int64x2) {
+	a := archsimd.LoadUint64x2Array((*[2]uint64)(keys[0:2]))
+	b := archsimd.LoadUint64x2Array((*[2]uint64)(keys[2:4]))
+	c := archsimd.LoadUint64x2Array((*[2]uint64)(keys[4:6]))
+	d := archsimd.LoadUint64x2Array((*[2]uint64)(keys[6:8]))
+	below = target.Greater(a).ToInt64x2().Add(target.Greater(b).ToInt64x2()).Add(target.Greater(c).ToInt64x2().Add(target.Greater(d).ToInt64x2()))
+	atMost = target.GreaterEqual(a).ToInt64x2().Add(target.GreaterEqual(b).ToInt64x2()).Add(target.GreaterEqual(c).ToInt64x2().Add(target.GreaterEqual(d).ToInt64x2()))
+	return below, atMost
+}
+
+// countBoth32 is countBoth for 4-byte summaries.
+func countBoth32(keys *[8]uint32, target archsimd.Uint32x4) (below, atMost archsimd.Int32x4) {
+	a := archsimd.LoadUint32x4Array((*[4]uint32)(keys[0:4]))
+	b := archsimd.LoadUint32x4Array((*[4]uint32)(keys[4:8]))
+	below = target.Greater(a).ToInt32x4().Add(target.Greater(b).ToInt32x4())
+	atMost = target.GreaterEqual(a).ToInt32x4().Add(target.GreaterEqual(b).ToInt32x4())
+	return below, atMost
+}
+
 // countEightAtMost is countEight counting keys no greater than target.
 func countEightAtMost(keys *[8]uint64, target archsimd.Uint64x2) archsimd.Int64x2 {
 	a := target.GreaterEqual(archsimd.LoadUint64x2Array((*[2]uint64)(keys[0:2]))).ToInt64x2()

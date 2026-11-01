@@ -102,6 +102,33 @@ func (m *AnnexedMapOf[K, V, A, PA]) DeleteWithLeaf(key K, f func(leaf AnnexedLea
 	return t.removeWithLeaf(key, func(n *gleaf[K, V], i int) { f(annexedLeafOf[A](t, n), t.key(n, i), n.values[i]) })
 }
 
+// Hold finds key's entry and holds its leaf shared, for a container that
+// copies what it needs of the entry, as a store's lookup copies its
+// record's value, with no callback: Read calls its callback through a
+// function value, under a deferred release. The caller must not use the map
+// while it holds the entry, and must Release it; a panic meanwhile leaves
+// the leaf held, as upstream's contract has it of code run on an entry. false,
+// holding nothing, without one.
+func (m *AnnexedMapOf[K, V, A, PA]) Hold(key K) (HeldEntry[K, V], bool) {
+	n, i, ok := m.generic.hold(key)
+	return HeldEntry[K, V]{n, i}, ok
+}
+
+// HeldEntry is an entry of an AnnexedMapOf whose leaf Hold holds shared.
+type HeldEntry[K any, V any] struct {
+	n *gleaf[K, V]
+	i int
+}
+
+// Key is the entry's stored key.
+func (e HeldEntry[K, V]) Key() K { return e.n.keyed()[e.i&(nodeSize-1)] }
+
+// Value is the entry's value.
+func (e HeldEntry[K, V]) Value() V { return e.n.values[e.i&(nodeSize-1)] }
+
+// Release lets go of the entry's leaf.
+func (e HeldEntry[K, V]) Release() { e.n.latch.unlockShared() }
+
 // WalkLeaves walks the map's leaves with entries in b, in key order or in
 // reverse, a leaf at a time: Next hands out each leaf's keys and values in
 // b, ascending, holding the leaf shared until the next call, or Close. It is

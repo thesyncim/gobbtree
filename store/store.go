@@ -110,10 +110,12 @@ func (s *Store) MaxValueLen() int { return int(min(math.MaxUint32, uint64(math.M
 // store holds key; buf unchanged without it.
 func (s *Store) GetInto(key, buf []byte) ([]byte, bool) {
 	var q pointQuery
-	found := s.m.Read(q.key(key), func(stored storeKey, _ struct{}) {
-		buf = s.heap.value(stored.record()).appendTo(&s.heap.g, buf)
-	})
+	e, found := s.m.Hold(q.key(key))
 	q.release()
+	if found {
+		buf = s.heap.value(e.Key().record()).appendTo(&s.heap.g, buf)
+		e.Release()
+	}
 	return buf, found
 }
 

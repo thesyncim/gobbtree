@@ -85,6 +85,72 @@ const (
 	orderedOutside
 )
 
+// What descendCodes reached.
+const (
+	codesAtLeaf = iota
+	codesAtPrefix
+	codesRaced
+)
+
+// descendCodesBy is descendCodes by calls to the search kernels.
+func descendCodesBy(h *gheader, word uint64, depth int, c uint64, cp int, narrow bool, width int) (*gheader, uint64, int, int) {
+	s := uint32(narrowed(c, width))
+	for ; ; depth++ {
+		if word&latchExclusive != 0 || depth == maxDepth {
+			return h, word, depth, codesRaced
+		}
+		if h.leaf {
+			return h, word, depth, codesAtLeaf
+		}
+		n := (*innerRoute)(unsafe.Pointer(h))
+		count := int(*(*int32)(unsafe.Pointer(&n.count)))
+		q := int(*(*int32)(unsafe.Pointer(&n.prefix)))
+		if count < 1 || count > nodeSize || q < 0 || q > customPrefixMax {
+			return h, word, depth, codesRaced
+		}
+		if q != cp {
+			return h, word, depth, codesAtPrefix
+		}
+		var lt, le int
+		if narrow {
+			sums := (*[nodeSize]uint32)(unsafe.Pointer(&n.codes))
+			lt = lowerSummary(sums, count, s)
+			le = count
+			if s != ^uint32(0) {
+				le = lowerSummary(sums, count, s+1)
+			}
+		} else {
+			lt, le = codeSpan((*[nodeSize]uint64)(unsafe.Pointer(&n.codes)), count, c)
+		}
+		if le > max(lt, 1) {
+			// The separator after the route ties: only its key settles.
+			return h, word, depth, codesRaced
+		}
+		i := max(lt-1, 0)
+		child := *(**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)]))
+		if child == nil {
+			return h, word, depth, codesRaced
+		}
+		childWord := child.latch.Load()
+		a := uint64(lt) ^ uint64(le)<<8 ^ uint64(count)<<16 ^ uint64(q)<<24
+		if *after((*uint64)(unsafe.Pointer(&h.latch)), a^childWord^uint64(uintptr(unsafe.Pointer(child))))&^latchSharedMask != word&^latchSharedMask {
+			return h, word, depth, codesRaced
+		}
+		h, word = child, childWord
+	}
+}
+
+// codeSpan is the range of codes[:count] equal to c, by the count of those
+// below it and of those at most it: codes are sorted, and the slots past
+// count hold codePad.
+func codeSpan(codes *[nodeSize]uint64, count int, c uint64) (lo, hi int) {
+	lo, hi = lowerCode(codes, count, c), count
+	if c != codePad {
+		hi = lowerCode(codes, count, c+1)
+	}
+	return lo, hi
+}
+
 // descendTextOrderedBy is descendTextOrdered by calls to the search
 // kernels.
 func descendTextOrderedBy(root **gheader, s string) (h *gheader, word uint64, lo, state int, acc uint64, ok bool) {
