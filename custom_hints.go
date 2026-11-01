@@ -19,29 +19,97 @@ import (
 // (freed), so a stale cell costs only a descent.
 //
 // A table holds four to eight cells a leaf, a power of two, and doubles as
-// the tree grows past it, its cells starting with the old cells' leaves. It starts once
-// the tree has customHintLeaves leaves: below that the descent is short.
+// the tree grows past it, its cells starting with the old cells' leaves. It
+// starts once the tree has customHintLeaves leaves: below that the descent
+// is short.
+//
+// A table judges the one before it as it grows: where the old cells named
+// fewer than a quarter of the tree's leaves then, its keys' codes spread
+// too little past the shared prefix for their top bits to tell the leaves
+// apart, and nearly every hint named a leaf that didn't settle its key, at
+// the cost of a check before the descent. Text is so, its bytes taking few
+// values: the ten digits of a number, the sixteen of hex. A table after one
+// of codes' own bits whose misses' codes held few bytes, at most half of
+// all, indexes its cells by the codes' bytes ranked among those, as the
+// digits of a number in the base of their count, which keeps the codes'
+// order and spreads them over every cell; one after a poor table is off, unread and unfilled, as is
+// every table after it until the tree is cleared, as a tenant's number
+// followed by a constant name is: a lookup then costs what it did without
+// hints.
 type customHints struct {
 	shift uint
 	cells []atomic.Pointer[gheader]
-	// leaves is the tree's when the table was made, and off whether its
-	// hints go unread: where the old table's cells named fewer than a
-	// quarter of the tree's leaves then, its keys' codes spread too little
-	// past the shared prefix for the top bits to tell their leaves apart,
-	// as a tenant's number followed by a constant name, or text, whose bytes
-	// spread over few values: nearly every hint would name a leaf that
-	// doesn't settle its key, and cost a check before the descent. A table
-	// off stays so, unread and unfilled, as does every table after it, until
-	// the tree is cleared: a lookup then costs what it did without hints.
+	// rank, where set, ranks a byte among the bytes keys used, and weight
+	// is a rank's weight at each of a code's bytes, 2^64 over the count of
+	// those bytes to the power of its place, from 1: the ranks so weighted
+	// sum to the code's place among codes of those bytes, as a 64-bit
+	// fraction. nil indexes by the codes' own bits.
+	rank   *[256]uint8
+	weight [8]uint64
+	// seen are the bytes the codes of keys that missed the table held, the
+	// first four of each, for the ranks of the table after it, and misses
+	// how many missed: it judges no table on fewer than customHintSamples,
+	// as a few random keys' codes hold few bytes too.
+	seen   [4]atomic.Uint64
+	misses atomic.Int64
+	// leaves is the tree's when the table was made.
 	leaves int64
 	off    bool
 }
 
-const customHintLeaves = 64
+const (
+	customHintLeaves  = 64
+	customHintSamples = 256
+)
 
 // cell is hint code hc's cell.
 func (r *customHints) cell(hc uint64) *atomic.Pointer[gheader] {
+	if r.rank != nil {
+		hc = r.ranked(hc)
+	}
 	return &r.cells[(hc>>r.shift)&uint64(len(r.cells)-1)]
+}
+
+// ranked is hc's place among codes of the ranked bytes, its bytes the
+// digits of a 64-bit fraction in their base: in order as hc is.
+func (r *customHints) ranked(hc uint64) uint64 {
+	var v uint64
+	for i := 0; i < len(r.weight) && r.weight[i] != 0; i++ {
+		v += uint64(r.rank[byte(hc>>56)]) * r.weight[i]
+		hc <<= 8
+	}
+	return v
+}
+
+// ranksOf ranks the bytes seen, each to how many seen bytes lie below it,
+// one not seen to the rank of the last below it, and weighs a rank at each
+// place of a code: false where the bytes are more than half of all, which
+// a code's own bits spread near as well.
+func ranksOf(seen *[4]atomic.Uint64) (*[256]uint8, [8]uint64, bool) {
+	var rank [256]uint8
+	n := -1
+	for b := range 256 {
+		if seen[b>>6].Load()&(1<<(b&63)) != 0 {
+			n++
+		}
+		rank[b] = uint8(max(n, 0))
+	}
+	var weight [8]uint64
+	base := uint64(n + 1)
+	if base < 2 || base > 128 {
+		return nil, weight, false
+	}
+	// 2^64 / base^(i+1), dividing what is left of 2^64 a place at a time.
+	hi, lo := uint64(1), uint64(0)
+	for i := range weight {
+		q, rem := bits.Div64(hi, lo, base)
+		if q == 0 {
+			break
+		}
+		weight[i], hi, lo = q, 0, q
+		_ = rem
+	}
+	return &rank, weight, true
 }
 
 // hintCode is custom key key's code at the shared prefix, given code, its
@@ -96,10 +164,8 @@ func (t *genericTree[K, V, O]) noteLeaf(key K, code uint64, h *gheader) {
 		}
 		next := &customHints{cells: make([]atomic.Pointer[gheader], 1<<bits.Len64(uint64(4*leaves-1))), leaves: leaves}
 		next.shift = uint(64 - bits.Len64(uint64(len(next.cells)-1)))
-		// Each new cell is a slice of an old one, and starts with its
-		// leaf: a grown table hints as well as the old did. The old cells
-		// are in key order, so a leaf they name is a run of them: the runs
-		// count the leaves named.
+		// The old cells are in key order, so a leaf they name is a run of
+		// them: the runs count the leaves named.
 		if r != nil {
 			named := 0
 			var last *gheader
@@ -108,9 +174,23 @@ func (t *genericTree[K, V, O]) noteLeaf(key K, code uint64, h *gheader) {
 					named, last = named+1, h
 				}
 			}
-			next.off = int64(4*named) < r.leaves
-			for j := range next.cells {
-				next.cells[j].Store(r.cells[j>>(r.shift-next.shift)].Load())
+			// Codes of few bytes, as text's, rank them, as soon as a table of
+			// their own bits has seen them: ranks spread them better however
+			// that table did.
+			rank, weight, few := ranksOf(&r.seen)
+			sampled := r.misses.Load() >= customHintSamples
+			switch poor := int64(4*named) < r.leaves; {
+			case r.rank == nil && few && sampled:
+				next.rank, next.weight = rank, weight
+			case poor && sampled:
+				next.off = true
+			default:
+				// Each new cell is a slice of an old one, and starts with its
+				// leaf: a grown table hints as well as the old did.
+				next.rank, next.weight = r.rank, r.weight
+				for j := range next.cells {
+					next.cells[j].Store(r.cells[j>>(r.shift-next.shift)].Load())
+				}
 			}
 		}
 		if !t.customHints.CompareAndSwap(r, next) {
@@ -118,8 +198,21 @@ func (t *genericTree[K, V, O]) noteLeaf(key K, code uint64, h *gheader) {
 		}
 		r = next
 	}
-	if c := r.cell(t.hintCode(key, code)); c.Load() != h {
+	hc := t.hintCode(key, code)
+	if c := r.cell(hc); c.Load() != h {
 		c.Store(h)
+	}
+	// The bytes of a code that missed, for the next table's ranks.
+	r.misses.Add(1)
+	var seen [4]uint64
+	for i := range 4 {
+		b := byte(hc >> (56 - 8*i))
+		seen[b>>6] |= 1 << (b & 63)
+	}
+	for i, m := range seen {
+		if m != 0 && r.seen[i].Load()&m != m {
+			r.seen[i].Or(m)
+		}
 	}
 }
 

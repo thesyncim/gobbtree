@@ -36,7 +36,7 @@ func TestCustomKeyHintsSurviveMerges(t *testing.T) {
 	}
 	// Keys of binary bytes, whose codes spread and whose hints serve: short,
 	// past a 13-byte prefix, past 25 bytes of one; and keys of hex text,
-	// whose bytes spread over few values, and whose tables turn off.
+	// whose bytes spread over few values, and whose tables rank them.
 	binary := func(prefix string, i int) string {
 		return prefix + string(be.BigEndian.AppendUint64(nil, uint64(i)*0x9e3779b97f4a7c15))
 	}
@@ -60,8 +60,8 @@ func TestCustomKeyHintsSurviveMerges(t *testing.T) {
 					model[key(i)] = true
 				}
 				// Hints are racing reads', which only plain-store builds take.
-				if r := m.hints(); seqlockPlainStores && !strings.HasPrefix(fname, "hex") && (r == nil || r.off) {
-					t.Fatal("a tree of 20000 binary keys keeps no hints")
+				if r := m.hints(); seqlockPlainStores && (r == nil || r.off || strings.HasPrefix(fname, "hex") && r.rank == nil) {
+					t.Fatal("a tree of 20000 keys keeps no hints, or its text's are unranked")
 				}
 				verify := func(when string) {
 					for i := range 2 * n {
