@@ -435,7 +435,7 @@ How the comparison is kept fair:
 - **Fresh processes.** Every backend runs in a fresh process, in rotated order. Serial cases are pinned to one OS thread, and parallel timings exclude starting workers and reducing checksums.
 - **Public APIs.** Batches go through each library's public batch API, and the Rust code is unmodified upstream. The store cells run upstream's own `bbtree-store` benchmark against its line-for-line port.
 - **Equal guarantees.** Both concurrent maps omit `len()`, and both read payloads with plain loads validated by node versions.
-- **Interference retaken, both sides.** Where one backend's three runs of a segment differ by more than 1.3×, as when another process takes the machine's memory bandwidth, the whole segment runs again, both languages; the report's limitations list each retake.
+- **Interference retaken, both sides.** Where one backend's three runs of a timing segment, CPU or store, differ by more than 1.3× in their serial timings summed, as when another process takes the machine's memory bandwidth, the whole segment runs again, both languages (`internal/spread.py`); the report's limitations list each retake. Builds are single timings, reported as measured.
 
 <details>
 <summary>Commands, from source checkpoint `8215927`</summary>
@@ -471,8 +471,10 @@ git clone https://github.com/XiangpengHao/bbtree && git -C bbtree checkout 8ef59
 RUSTFLAGS='-C target-cpu=native' CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
   cargo build --release --locked --manifest-path bbtree/Cargo.toml -p bbtree-store --example bench
 python3 internal/store_compare.py --go ./storebench-go --rust bbtree/target/release/examples/bench \
-  --size 1000000 --repeat 3
+  --size 1000000 --repeat 3   # and again with --size 32768 and --size 10000000
 ```
+
+`internal/matrix.sh <dir>` runs every segment above in turn, with the retakes, from the six drivers gathered in `<dir>`; `internal/assemble_report.py` gathers its records into a report, and `internal/report_drift.py` compares two reports cell by cell, Go's change beside Rust's.
 
 `cpu_compare.py` and `rss_compare.py` take `--keys mixed` (the default), `--keys sequential` or `--keys clustered`. `cpu_compare.py --text --mutations` runs the string-key cells, which the report has at 262K and 5M entries. `python3 internal/render_benchmarks.py` redraws the cards and tables above from the saved report.
 
