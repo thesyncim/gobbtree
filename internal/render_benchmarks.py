@@ -13,7 +13,7 @@ from pathlib import Path
 from statistics import median
 
 ROOT = Path(__file__).resolve().parent.parent
-REPORT = ROOT / "benchmarks/arm64-2026-10-30.json"
+REPORT = ROOT / "benchmarks/arm64-2026-11-01.json"
 SIZES = [4096, 262144, 5000000, 50000000]
 LABELS = ["4K", "262K", "5M", "50M"]
 CASES = [
@@ -195,7 +195,7 @@ def main():
     text += ["</details>", ""]
     if texts:
         text += string_key_section(texts)
-    text += ["Small gaps are inconclusive: desktop apps used about one core throughout the run. "
+    text += ["Small gaps are inconclusive: other processes shared the machine, as the report's limitations say. "
              f"The [raw report]({report_link}) holds every run, with Go's built-in `map` and `sync.Map` at 4K to 5M mixed keys; "
              "amd64 results are [CI artifacts](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml).", ""]
     readme = ROOT / "README.md"
