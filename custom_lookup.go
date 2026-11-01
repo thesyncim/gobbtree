@@ -72,7 +72,7 @@ func (t *genericTree[K, V, O]) leafCandidates(key K, code uint64, h *gheader, wo
 		return nil, 0, 0, 0, codesUnsettled
 	}
 	acc := uint64(count)<<16 ^ uint64(p)<<24
-	if hinted && !t.hasLeafPrefix(m, key, code, p) {
+	if hinted && (p <= 8 && !hasShortPrefix(h, code, p) || p > 8 && !t.hasLeafPrefix(m, key, code, p)) {
 		return nil, 0, 0, 0, codesUnsettled
 	}
 	lo, hi = leafCodeRange(h, count, narrowed(t.codeOf(key, code, p), t.inline.leafWidth))
@@ -216,7 +216,7 @@ func (t *genericTree[K, V, O]) hintedWriteLeaf(key K, code uint64) (*gheader, ui
 	if count < 2 || count > nodeSize || p < 0 || p > customPrefixMax {
 		return nil, 0, false
 	}
-	if !t.hasLeafPrefix(m, key, code, p) {
+	if p <= 8 && !hasShortPrefix(h, code, p) || p > 8 && !t.hasLeafPrefix(m, key, code, p) {
 		return nil, 0, false
 	}
 	lo, hi := leafCodeRange(h, count, narrowed(t.codeOf(key, code, p), t.inline.leafWidth))

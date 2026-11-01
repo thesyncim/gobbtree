@@ -79,13 +79,8 @@ func (t *genericTree[K, V, O]) noteLeaf(key K, code uint64, h *gheader) {
 // leftmost, is no hinted leaf past 16 bytes.
 func (t *genericTree[K, V, O]) hasLeafPrefix(n *gleaf[K, V], key K, w0 uint64, p int) bool {
 	if p <= 8 {
-		return p == 0 || w0&headMask(p) == *(*uint64)(unsafe.Pointer(&n.head[0]))
+		return hasShortPrefix(&n.gheader, w0, p)
 	}
-	return t.hasLongLeafPrefix(n, key, w0, p)
-}
-
-// hasLongLeafPrefix is hasLeafPrefix past 8 bytes of prefix.
-func (t *genericTree[K, V, O]) hasLongLeafPrefix(n *gleaf[K, V], key K, w0 uint64, p int) bool {
 	for off := 0; off < p; off += 8 {
 		m := headMask(p - off)
 		var h uint64
@@ -105,4 +100,10 @@ func (t *genericTree[K, V, O]) hasLongLeafPrefix(n *gleaf[K, V], key K, w0 uint6
 		}
 	}
 	return true
+}
+
+// hasShortPrefix is hasLeafPrefix for a prefix of at most 8 bytes, which
+// the header's first word holds: the callers' own check, inlined.
+func hasShortPrefix(h *gheader, w0 uint64, p int) bool {
+	return p == 0 || w0&headMask(p) == *(*uint64)(unsafe.Pointer(&h.head[0]))
 }
