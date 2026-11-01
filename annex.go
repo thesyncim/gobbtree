@@ -295,9 +295,27 @@ func (t *genericTree[K, V, O]) walkHeld(b *Bounds[K], reverse bool, visit func(K
 	lower, upper := b.lowerKind != unbounded, b.upperKind != unbounded
 	for {
 		count := int(n.count.Load())
-		if !reverse {
+		// A custom key is read in place, from the leaf's keys.
+		var keys *[nodeSize]K
+		if windowed[O, K]() {
+			keys = n.keyed()
+		}
+		key := func(i int) K {
+			if windowed[O, K]() {
+				return keys[i&(nodeSize-1)]
+			}
+			return t.key(n, i)
+		}
+		if windowed[O, K]() && !lower && !upper && !reverse {
+			// A whole forward walk.
 			for i := 0; i < count; i++ {
-				k := t.key(n, i)
+				if !visit(keys[i&(nodeSize-1)], n.values[i&(nodeSize-1)]) {
+					return
+				}
+			}
+		} else if !reverse {
+			for i := 0; i < count; i++ {
+				k := key(i)
 				if lower && !aboveLower[K, O](b, k) {
 					continue
 				}
@@ -307,7 +325,7 @@ func (t *genericTree[K, V, O]) walkHeld(b *Bounds[K], reverse bool, visit func(K
 			}
 		} else {
 			for i := count - 1; i >= 0; i-- {
-				k := t.key(n, i)
+				k := key(i)
 				if upper && !belowUpper[K, O](b, k) {
 					continue
 				}

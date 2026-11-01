@@ -229,8 +229,7 @@ func (s *Store) scan(b Bounds, reverse bool, yield func(key, value []byte) bool)
 	}
 	var gathered []byte
 	for stored := range entries {
-		r := stored.record()
-		if !yield(r.key(), s.heap.value(r).gather(&s.heap.g, &gathered)) {
+		if !yield(s.heap.entry(stored.record(), &gathered)) {
 			return
 		}
 	}
