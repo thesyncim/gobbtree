@@ -35,6 +35,32 @@ PATTERN_NOTES = {
     "sequential": "consecutive even keys; misses and fresh keys fill the gaps",
     "clustered": "runs of 1,024 consecutive even keys at scattered bases",
 }
+# A store's cells: the report's field, the row's label, and its decimals.
+STORE_TIMES = [
+    ("insert_ns", "Insert", 0), ("get_ns", "Get", 0), ("scan_ns", "Scan", 1),
+    ("churn_ns", "Churn · a get, then a removal or a resized insert", 0),
+    ("threads8_insert_ns", "8 threads · insert", 0), ("threads8_get_ns", "8 threads · get", 0),
+    ("long_insert_ns", "Long values · insert", 0), ("long_get_ns", "Long values · get", 0),
+]
+STORE_SPACE = [
+    ("bytes", "Bytes an entry, nodes and heap", 1),
+    ("churn_heap", "Churn · heap bytes a live record byte, after it", 2),
+    ("long_heap_per_value_byte", "Long values · heap bytes a value byte", 3),
+]
+
+
+def store_value(row, field):
+    """A store record's field: churn's are after its four rounds, its time
+    their average, as upstream's last line reports."""
+    if field == "churn_ns":
+        return row["churn"][-1]["ns_per_op"]
+    if field == "churn_heap":
+        return row["churn"][-1]["heap_per_live_byte"]
+    if field == "bytes":
+        return row["node_bytes"] + row["heap_bytes"]
+    return row[field]
+
+
 # The cards' workloads: 5M mixed uint64 keys, as upstream's 10M UUIDs.
 CARD_SIZE = 5000000
 
@@ -68,6 +94,10 @@ def main():
     for row in report["rss"]:
         if row["language"] in ("go", "rust"):
             rss[row.get("keys", "mixed"), row["stages"][0]["entries"], row["kind"], row["language"]].append(row)
+    stores = defaultdict(list)
+    for row in report.get("store", []):
+        stores[row["entries"], row["language"]].append(row)
+    assert all(len(rows) == 3 for rows in stores.values())
     patterns = [p for p in PATTERNS if any(key[0] == p[0] for key in cpu)]
     available = {key[4] for key in cpu}
     cases = {kind: [(case, label) for case, label in CASES
@@ -171,6 +201,86 @@ def main():
             lines += ["", f"With byte-string keys, Go `Bytes` against Rust `String`, Go wins {won} of {len(cells)} cells."]
         return lines
 
+    def store(size, language, field):
+        return median(store_value(row, field) for row in stores[size, language])
+
+    store_sizes = sorted({size for size, _ in stores})
+    store_labels = {32768: "32K", 1000000: "1M", 10000000: "10M"}
+
+    def span(values):
+        lo, hi = f"{min(values):.1f}", f"{max(values):.1f}"
+        return lo if lo == hi else f"{lo}–{hi}"
+
+    def store_summary():
+        """The store cells each side wins, and the port's insert and get
+        times against upstream's."""
+        cells = [(size, field) for size in store_sizes for field, _, _ in STORE_TIMES]
+        won = sum(1 for size, field in cells if store(size, "go", field) < store(size, "rust", field))
+        ratio = {field: [store(size, "go", field) / store(size, "rust", field) for size in store_sizes]
+                 for field in ("insert_ns", "get_ns")}
+        return won, len(cells), ratio
+
+    def intro():
+        """The introduction's first three items, counted from the report."""
+        times = [(p, size, kind, case) for p, _, _ in patterns for size in SIZES
+                 for kind in ("tree", "map") for case, _ in cases[kind]]
+        won = sum(1 for p, size, kind, case in times
+                  if time(p, size, kind, "go", case) < time(p, size, kind, "rust", case))
+        single = mops("go", "tree_hit") / mops("rust", "tree_hit")
+        four = mops("go", "map_parallel4_hit") / mops("rust", "map_parallel4_hit")
+        builds = [(p, size, kind) for p, _, _ in patterns for size in SIZES for kind in ("tree", "map")]
+        rust_builds = sum(1 for p, size, kind in builds
+                          if memory(p, size, kind, "rust", "build") < memory(p, size, kind, "go", "build"))
+        text_cells = [(size, name) for size, language, name in texts if language == "go" and (size, "rust", name) in texts]
+        rust_texts = sum(1 for size, name in text_cells if median(texts[size, "rust", name]) < median(texts[size, "go", name]))
+        first = (f"1. Faster than the Rust original in {won} of the {len(times)} `uint64` timings of the "
+                 f"[benchmarks](#benchmarks): {single:.1f}× its lookup throughput on one thread (`Tree`) and "
+                 f"{four:.1f}× on four (`Map`), on 5M keys. Rust still builds faster in {rust_builds} of the "
+                 f"{len(builds)} build cells, and wins {rust_texts} of the {len(text_cells)} byte-string cells")
+        first += "."
+        if stores:
+            _, _, ratio = store_summary()
+            first += (f" Upstream's [store](#store-and-wal) is faster than the port: Go's inserts take "
+                      f"{span(ratio['insert_ns'])}× as long, and its lookups {span(ratio['get_ns'])}×.")
+        sync = mops("go", "map_parallel4_hit") / mops("go", "syncmap_parallel4_hit")
+        second = ("2. `Map` is concurrent, with upstream's optimistic latching: lookups descend without locking, "
+                  "checking node versions, and writers latch only the leaf they change. "
+                  f"On four threads it serves {sync:.1f}× the lookups of `sync.Map`, with its keys in order.")
+        # Peaks from 5M entries up, each pattern's range over both containers.
+        parts = []
+        for p, heading, _ in patterns:
+            changes = [100 * (memory(p, size, kind, "go", "peak") / memory(p, size, kind, "rust", "peak") - 1)
+                       for size in SIZES if size >= 5000000 for kind in ("tree", "map")]
+            lo, hi = min(changes), max(changes)
+            if hi < 0:
+                parts.append((lo, f"{round(-hi)}–{round(-lo)}% below the Rust original's on {p} keys"))
+            elif lo > 0:
+                parts.append((lo, f"{round(lo)}–{round(hi)}% above it on {p} keys"))
+            else:
+                parts.append((lo, f"within {round(max(-lo, hi))}% of it on {p} keys"))
+        parts = [text for _, text in sorted(parts)]
+        if not parts[0].count("Rust original"):
+            parts[0] = parts[0].replace(" it ", " the Rust original's ", 1)
+        third = "3. From 5M entries up, peak memory " + ", ".join(parts[:-1]) + ", and " + parts[-1] + "."
+        return [first, second, third]
+
+    def store_section():
+        head = ["| Workload | " + " | ".join(store_labels.get(s, f"{s:,}") for s in store_sizes) + " |",
+                "|---|" + "---:|" * len(store_sizes)]
+        rows = ["<details>", "<summary>Store — Go / Rust</summary>", "",
+                "Upstream's own benchmark, `bbtree-store/examples/bench.rs`, unmodified and built with the same "
+                "tuning, against "
+                "`store/cmd/storebench`, its port: 20-byte keys and 32-byte values, a fresh process a run, "
+                "the two alternating, medians of three. Each time is one pass over every entry, in ns an "
+                "entry, and churn's four passes, in ns an operation; eight threads' are wall time. Long "
+                "values are 4,000 bytes, for one entry in 16. Go's node bytes are its heap's, once collected, past the "
+                "budget's pages, where upstream counts what its allocator gives its nodes.", "", *head]
+        for field, label, precision in STORE_TIMES + STORE_SPACE:
+            cells = [" / ".join(f"{store(size, language, field):,.{precision}f}" for language in ("go", "rust"))
+                     for size in store_sizes]
+            rows.append(f"| {label} | " + " | ".join(cells) + " |")
+        return rows + ["", "</details>", ""]
+
     described = [f"{heading.lower()} ({PATTERN_NOTES[pattern]})" for pattern, heading, _ in patterns]
     described = ", ".join(described[:-1]) + " and " + described[-1] if len(described) > 1 else described[0]
     text = ["## Benchmarks", "",
@@ -195,6 +305,13 @@ def main():
     text += ["</details>", ""]
     if texts:
         text += string_key_section(texts)
+    if stores:
+        won, cells, _ = store_summary()
+        sizes = [store_labels.get(s, f"{s:,}") for s in store_sizes]
+        sizes = ", ".join(sizes[:-1]) + " and " + sizes[-1] if len(sizes) > 1 else sizes[0]
+        lost = f"every one of the {cells}" if won == 0 else f"{cells - won} of the {cells}"
+        text += [f"Upstream's `bbtree-store` is faster than the port in {lost} timed store cells, at {sizes} entries.", ""]
+        text += store_section()
     text += ["Small gaps are inconclusive: other processes shared the machine, as the report's limitations say. "
              f"The [raw report]({report_link}) holds every run, with Go's built-in `map` and `sync.Map` at 4K to 5M mixed keys; "
              "amd64 results are [CI artifacts](https://github.com/thesyncim/gobbtree/actions/workflows/amd64-simd.yml).", ""]
@@ -203,6 +320,8 @@ def main():
     start = old.index("## Benchmarks")
     end = old.index("## Reproducing the benchmarks", start)
     updated = old[:start] + "\n".join(text) + "\n" + old[end:]
+    updated, items = re.subn(r"^1\. .*\n2\. .*\n3\. .*\n", lambda _: "\n".join(intro()) + "\n", updated, count=1, flags=re.M)
+    assert items == 1
     # The concurrent card leads, after the introduction's list, as upstream's.
     hero = "![gobbtree's Map against Rust bbtree's and sync.Map, get throughput at 4 threads](benchmarks/race-concurrent-arm64.svg)\n\n"
     updated = re.sub(r"!\[[^\]]*\]\(benchmarks/race-concurrent-arm64\.svg\)\n\n", "", updated)
@@ -313,7 +432,8 @@ def string_key_section(texts):
                     cells.append("—")
                     continue
                 g, r = median(go), median(rust)
-                cells.append(f"{g:.1f} / {r:.1f} ({100*(g/r-1):+.0f}%)")
+                change = round(100 * (g / r - 1))
+                cells.append(f"{g:.1f} / {r:.1f} ({change:+d}%)" if change else f"{g:.1f} / {r:.1f} (0%)")
             rows.append(f"| {kind.title()} · {label} | " + " | ".join(cells) + " |")
     return rows + ["", "</details>", ""]
 

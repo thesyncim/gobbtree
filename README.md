@@ -5,12 +5,12 @@
 
 **Fast ordered maps and sets for Go, ported from Rust's [bbtree](https://github.com/XiangpengHao/bbtree).** It is a B+ tree whose nodes keep compact summaries of their keys and search them with SIMD, so most lookups never touch a full key.
 
-1. Faster than the Rust original in 190 of the 192 `uint64` timings of the [benchmarks](#benchmarks): 1.8× its lookup throughput on one thread and 1.5× on four, on 5M keys. Rust still builds faster in 17 of the 24 build cells, ascending keys 1.2–2.9× as fast, and wins 10 of the 22 byte-string cells.
-2. `Map` is concurrent, with upstream's optimistic latching: lookups descend without locking, checking node versions, and writers latch only the leaf they change. On four threads it serves 2.3× the lookups of `sync.Map`, with its keys in order.
-3. From 5M entries up, peak memory 21–33% below the Rust original's on clustered keys, within 3% of it on mixed keys, and 4–8% above it on sequential ones.
+1. Faster than the Rust original in 189 of the 192 `uint64` timings of the [benchmarks](#benchmarks): 1.9× its lookup throughput on one thread (`Tree`) and 1.5× on four (`Map`), on 5M keys. Rust still builds faster in 7 of the 24 build cells, and wins 11 of the 22 byte-string cells. Upstream's [store](#store-and-wal) is faster than the port: Go's inserts take 1.1–1.6× as long, and its lookups 1.8–2.1×.
+2. `Map` is concurrent, with upstream's optimistic latching: lookups descend without locking, checking node versions, and writers latch only the leaf they change. On four threads it serves 2.2× the lookups of `sync.Map`, with its keys in order.
+3. From 5M entries up, peak memory 20–33% below the Rust original's on clustered keys, within 3% of it on mixed keys, and 4–8% above it on sequential keys.
 4. Any `cmp.Ordered` key, your own orders through a two-method `Key` interface, and `[]byte` keys.
 5. File maps in upstream's format: write a snapshot, then query it in place through `mmap`. Go and Rust read each other's files.
-6. Pure Go: no assembly, cgo or dependencies. The SIMD comes from Go 1.27's `simd` package.
+6. Pure Go, with no cgo or dependencies: the SIMD comes from Go 1.27's `simd` package. The one piece of assembly is the store's, an identity function on amd64 and arm64 that keeps a lookup's key on the stack.
 7. Checked against upstream itself: CI compares containers and files with a live Rust oracle, besides the race detector and fuzzing.
 
 ![gobbtree's Map against Rust bbtree's and sync.Map, get throughput at 4 threads](benchmarks/race-concurrent-arm64.svg)
@@ -157,7 +157,7 @@ A file map searches the image in place, with no rebuild, and supports `Get`, `Ge
 s := store.New() // or store.NewIn(budget)
 replaced, err := s.Insert([]byte("user:42"), []byte("Ada"))
 v, ok := s.Get([]byte("user:42"))
-for k, v := range s.Scan(store.AtLeast([]byte("user:"))) { // holding each leaf: don't use s here
+for k, v := range s.Scan(store.AtLeast([]byte("user:"))) { // holding each leaf: don't use s or panic here
     fmt.Printf("%s=%s\n", k, v)
 }
 ```
@@ -166,7 +166,7 @@ for k, v := range s.Scan(store.AtLeast([]byte("user:"))) { // holding each leaf:
 
 ## Concurrency
 
-`Map` ports the protocol of upstream's `BBTreeMap` ([design](https://github.com/XiangpengHao/bbtree/blob/8ef597b5b8d957531d88871bdb566f391206f860/design/09-concurrency.md)). Every node carries a latch word with a version. Lookups descend optimistically, checking each node's version, and write nothing. Writers latch only the leaf they change; a split or merge takes only the nodes it changes, without waiting, and starts over if another goroutine holds one. No lock or counter is shared by all writers, so writes scale with cores. Lookups of custom keys, and of string keys a leaf's summaries don't settle, read the leaf under its shared latch, as upstream's do for keys it can't read inline. A lookup whose leaf keeps changing takes that latch too, which lets readers progress behind a hot leaf.
+`Map` ports the protocol of upstream's `BBTreeMap` ([design](https://github.com/XiangpengHao/bbtree/blob/8ef597b5b8d957531d88871bdb566f391206f860/design/09-concurrency.md)). Every node carries a latch word with a version. Lookups descend optimistically, checking each node's version, and write nothing. Writers latch only the leaf they change; a split or merge takes only the nodes it changes, without waiting, and starts over if another goroutine holds one. No lock or counter is shared by all writers, so writes scale with cores. String keys' lookups read their leaf without latching it too, where its summaries leave one candidate, whose bytes never change. Custom keys' lookups descend by their windows and rule out a miss without latching, as upstream's do, and compare a hit's candidates holding the leaf shared, since a key's `Compare` may read what a writer moves. A lookup whose leaf keeps changing, or whose summaries leave several candidates, takes the shared latch, which lets readers progress behind a hot leaf.
 
 Beyond upstream, every node keeps its fences, the bounds of the keys under it, and a table of hints jumps from a key straight to its leaf. A hint is checked against the leaf's version and fences before it is used, so a stale one costs only a descent from the root.
 
@@ -234,11 +234,11 @@ Not carried over, because Go has no counterpart:
 
 ![gobbtree's Tree against Rust bbtree's and Go's map, get throughput on one thread](benchmarks/race-single-arm64.svg)
 
-gobbtree's `Tree` and `Map` against Rust bbtree's `unsync::BBTreeMap` and `BBTreeMap` on an Apple M4 Max: Go 1.27.3 with `GOEXPERIMENT=simd` at [`50a7b3e`](https://github.com/thesyncim/gobbtree/commit/50a7b3ec486f17216f732d3081f0480fc3e60917), Rust 1.99.1 with native CPU tuning, full LTO and mimalloc at [`8ef597b`](https://github.com/XiangpengHao/bbtree/tree/8ef597b5b8d957531d88871bdb566f391206f860). Each cell is the median of three fresh-process runs over identical keys, with checked results.
+gobbtree's `Tree` and `Map` against Rust bbtree's `unsync::BBTreeMap` and `BBTreeMap` on an Apple M4 Max: Go 1.27.3 with `GOEXPERIMENT=simd` at [`8215927`](https://github.com/thesyncim/gobbtree/commit/8215927f0be1487a27b80d8fdecd699ba167c7eb), Rust 1.99.1 with native CPU tuning, full LTO and mimalloc at [`8ef597b`](https://github.com/XiangpengHao/bbtree/tree/8ef597b5b8d957531d88871bdb566f391206f860). Each cell is the median of three fresh-process runs over identical keys, with checked results.
 
-gobbtree is faster in 190 of the 192 `uint64` timings below; Rust wins Map 4 workers · 10% writes at 4K sequential keys; Map delete + insert new key at 50M sequential keys. Go builds faster in 15 of 24 build cells, at 0.59× to 2.86× Rust's speed. Go's process peaks 3.3–3.4 MB higher at 4K, 1.8–4.1 MB higher at 262K, from 38.6 MB lower to 9.4 MB higher at 5M, from 613.4 MB lower to 46.0 MB higher at 50M entries, against Rust's.
+gobbtree is faster in 189 of the 192 `uint64` timings below; Rust wins Map 4 workers · 10% writes at 4K sequential keys; Tree delete + insert new key at 50M sequential keys; Map delete + insert new key at 50M sequential keys. Go builds faster in 17 of 24 build cells, at 0.65× to 2.09× Rust's speed. Go's process peaks 3.3–3.5 MB higher at 4K, 1.7–4.1 MB higher at 262K, from 38.6 MB lower to 9.3 MB higher at 5M, from 613.4 MB lower to 46.1 MB higher at 50M entries, against Rust's.
 
-With byte-string keys, Go `Bytes` against Rust `String`, Go wins 9 of 22 cells.
+With byte-string keys, Go `Bytes` against Rust `String`, Go wins 11 of 22 cells.
 
 The tables cover `uint64` keys and values from 4K to 50M entries, with mixed keys (hashed keys spread over the full 64-bit range), sequential keys (consecutive even keys; misses and fresh keys fill the gaps) and clustered keys (runs of 1,024 consecutive even keys at scattered bases). Batch cells are per key, churn cells per delete-and-insert pair, and parallel cells use four workers.
 
@@ -249,27 +249,27 @@ The tables cover `uint64` keys and values from 4K to 50M entries, with mixed key
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 7.63 / 12.41 | 10.93 / 23.26 | 46.70 / 90.17 | 69.81 / 121.00 |
-| Read miss | 8.39 / 11.36 | 10.56 / 22.20 | 31.75 / 75.34 | 57.80 / 115.44 |
-| Batch hit · 8 keys | 7.34 / 11.97 | 10.87 / 23.12 | 35.77 / 55.48 | 55.41 / 75.49 |
-| Batch miss · 8 keys | 7.96 / 11.41 | 10.53 / 20.66 | 28.76 / 45.48 | 46.16 / 63.98 |
-| Replace value | 7.94 / 12.38 | 14.78 / 25.60 | 63.06 / 92.57 | 92.24 / 128.01 |
-| Delete + reinsert same key | 47.86 / 69.81 | 67.50 / 109.95 | 212.38 / 253.38 | 304.13 / 364.07 |
-| Delete + insert new key | 56.18 / 91.87 | 91.58 / 144.33 | 287.86 / 368.23 | 408.53 / 569.34 |
+| Read hit | 7.76 / 12.76 | 11.00 / 23.89 | 48.73 / 92.82 | 65.08 / 111.84 |
+| Read miss | 8.35 / 11.68 | 11.05 / 22.84 | 33.00 / 82.44 | 56.23 / 105.67 |
+| Batch hit · 8 keys | 7.54 / 12.21 | 10.80 / 23.19 | 37.58 / 57.13 | 49.52 / 69.28 |
+| Batch miss · 8 keys | 8.21 / 11.87 | 10.56 / 20.92 | 30.26 / 46.12 | 44.17 / 57.57 |
+| Replace value | 8.04 / 12.61 | 14.93 / 26.39 | 68.02 / 93.52 | 89.52 / 113.13 |
+| Delete + reinsert same key | 48.58 / 71.51 | 68.26 / 112.38 | 227.25 / 265.30 | 289.74 / 319.43 |
+| Delete + insert new key | 57.49 / 95.23 | 94.18 / 149.28 | 303.75 / 395.64 | 398.25 / 494.68 |
 
 **Map**
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 8.35 / 13.14 | 14.61 / 27.80 | 59.07 / 104.10 | 85.21 / 128.72 |
-| Read miss | 9.23 / 12.05 | 14.07 / 24.72 | 42.98 / 75.23 | 73.82 / 117.55 |
-| Batch hit · 8 keys | 8.63 / 13.41 | 11.94 / 23.31 | 38.10 / 57.87 | 54.97 / 78.67 |
-| Batch miss · 8 keys | 9.23 / 12.46 | 11.80 / 20.71 | 30.99 / 46.91 | 47.05 / 67.06 |
-| Replace value | 12.09 / 15.66 | 18.80 / 31.10 | 73.74 / 127.49 | 107.59 / 160.26 |
-| Delete + reinsert same key | 52.30 / 71.08 | 73.43 / 107.14 | 220.36 / 251.05 | 320.87 / 369.67 |
-| Delete + insert new key | 60.53 / 95.98 | 95.72 / 137.28 | 301.12 / 360.63 | 479.29 / 563.74 |
-| 4 workers · reads | 2.29 / 4.22 | 3.98 / 7.58 | 17.78 / 26.07 | 22.54 / 37.36 |
-| 4 workers · 10% writes | 7.08 / 7.50 | 6.66 / 9.90 | 19.20 / 27.10 | 23.89 / 39.41 |
+| Read hit | 8.40 / 13.53 | 14.84 / 28.07 | 64.02 / 107.79 | 82.42 / 116.99 |
+| Read miss | 9.38 / 12.65 | 14.13 / 25.41 | 46.66 / 79.67 | 72.09 / 103.18 |
+| Batch hit · 8 keys | 8.73 / 13.84 | 11.99 / 23.55 | 40.40 / 60.20 | 50.25 / 72.05 |
+| Batch miss · 8 keys | 9.33 / 12.88 | 11.72 / 20.75 | 32.80 / 49.17 | 44.40 / 58.75 |
+| Replace value | 11.37 / 16.41 | 18.84 / 31.32 | 77.34 / 132.86 | 105.63 / 149.94 |
+| Delete + reinsert same key | 53.10 / 72.58 | 74.10 / 110.02 | 232.47 / 266.11 | 294.08 / 320.90 |
+| Delete + insert new key | 61.42 / 99.34 | 98.17 / 140.96 | 316.17 / 380.31 | 435.30 / 490.01 |
+| 4 workers · reads | 2.28 / 4.42 | 3.99 / 7.56 | 17.82 / 26.61 | 26.86 / 39.43 |
+| 4 workers · 10% writes | 6.88 / 7.08 | 6.97 / 9.73 | 19.38 / 28.19 | 25.59 / 43.14 |
 
 </details>
 
@@ -280,27 +280,27 @@ The tables cover `uint64` keys and values from 4K to 50M entries, with mixed key
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 6.28 / 11.64 | 9.62 / 24.00 | 43.51 / 84.11 | 102.32 / 233.47 |
-| Read miss | 6.50 / 10.85 | 8.37 / 21.93 | 26.01 / 59.71 | 57.18 / 189.58 |
-| Batch hit · 8 keys | 6.71 / 11.68 | 9.70 / 22.45 | 35.93 / 52.25 | 62.89 / 111.12 |
-| Batch miss · 8 keys | 6.82 / 10.95 | 8.64 / 20.32 | 24.66 / 38.45 | 47.94 / 83.56 |
-| Replace value | 6.76 / 12.26 | 14.77 / 25.45 | 67.67 / 92.32 | 120.84 / 183.05 |
-| Delete + reinsert same key | 47.22 / 74.58 | 65.86 / 117.09 | 208.39 / 244.69 | 503.33 / 662.65 |
-| Delete + insert new key | 43.60 / 61.96 | 65.51 / 111.24 | 232.16 / 255.84 | 320.35 / 601.73 |
+| Read hit | 6.59 / 11.95 | 9.85 / 24.73 | 45.16 / 85.79 | 63.63 / 106.54 |
+| Read miss | 6.89 / 11.00 | 8.57 / 22.54 | 26.17 / 61.25 | 46.50 / 98.71 |
+| Batch hit · 8 keys | 6.71 / 11.88 | 9.71 / 22.88 | 37.08 / 53.20 | 50.96 / 71.06 |
+| Batch miss · 8 keys | 6.84 / 11.00 | 8.59 / 20.44 | 25.12 / 39.19 | 39.34 / 59.59 |
+| Replace value | 6.87 / 12.49 | 15.09 / 25.51 | 69.13 / 95.18 | 96.42 / 125.25 |
+| Delete + reinsert same key | 48.96 / 76.72 | 67.37 / 120.94 | 217.74 / 252.20 | 289.61 / 311.11 |
+| Delete + insert new key | 45.24 / 63.80 | 67.54 / 115.30 | 238.57 / 265.87 | 308.32 / 296.65 |
 
 **Map**
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 7.75 / 13.01 | 13.00 / 28.04 | 55.12 / 101.73 | 81.33 / 137.14 |
-| Read miss | 7.62 / 12.29 | 10.85 / 26.18 | 37.18 / 63.91 | 62.89 / 114.34 |
-| Batch hit · 8 keys | 8.16 / 13.50 | 10.62 / 23.63 | 37.04 / 55.20 | 52.27 / 84.06 |
-| Batch miss · 8 keys | 8.10 / 12.75 | 9.52 / 21.25 | 26.10 / 40.85 | 41.03 / 67.07 |
-| Replace value | 9.87 / 16.41 | 16.88 / 32.83 | 74.35 / 124.04 | 109.77 / 165.47 |
-| Delete + reinsert same key | 50.99 / 75.77 | 70.65 / 117.65 | 217.09 / 250.54 | 325.10 / 351.84 |
-| Delete + insert new key | 46.92 / 82.64 | 69.30 / 110.72 | 233.54 / 260.00 | 343.31 / 334.57 |
-| 4 workers · reads | 2.10 / 3.35 | 3.75 / 7.32 | 16.52 / 24.72 | 20.97 / 36.31 |
-| 4 workers · 10% writes | 7.58 / 6.42 | 5.64 / 9.46 | 19.36 / 26.99 | 24.50 / 38.47 |
+| Read hit | 7.65 / 13.20 | 13.03 / 28.86 | 56.26 / 104.02 | 78.75 / 118.05 |
+| Read miss | 7.32 / 12.49 | 10.83 / 26.53 | 39.27 / 67.40 | 60.53 / 97.81 |
+| Batch hit · 8 keys | 8.11 / 13.73 | 10.55 / 23.80 | 38.34 / 56.09 | 50.89 / 74.23 |
+| Batch miss · 8 keys | 8.04 / 13.03 | 9.40 / 21.19 | 29.02 / 40.83 | 41.84 / 61.62 |
+| Replace value | 9.71 / 16.59 | 17.15 / 34.16 | 78.74 / 126.24 | 108.44 / 171.85 |
+| Delete + reinsert same key | 51.85 / 77.53 | 71.96 / 120.87 | 226.33 / 256.59 | 299.98 / 306.51 |
+| Delete + insert new key | 48.00 / 84.80 | 70.28 / 113.78 | 238.88 / 270.90 | 345.26 / 304.58 |
+| 4 workers · reads | 2.09 / 3.39 | 3.66 / 7.37 | 16.64 / 25.26 | 23.44 / 37.37 |
+| 4 workers · 10% writes | 6.71 / 6.65 | 6.23 / 10.13 | 19.61 / 27.04 | 26.07 / 41.59 |
 
 </details>
 
@@ -311,27 +311,27 @@ The tables cover `uint64` keys and values from 4K to 50M entries, with mixed key
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 8.89 / 25.70 | 15.80 / 47.33 | 68.94 / 191.13 | 129.76 / 362.55 |
-| Read miss | 8.86 / 25.11 | 15.52 / 44.44 | 48.77 / 168.06 | 94.78 / 349.76 |
-| Batch hit · 8 keys | 7.04 / 24.17 | 14.53 / 44.01 | 58.95 / 148.61 | 100.06 / 216.35 |
-| Batch miss · 8 keys | 7.01 / 22.63 | 13.12 / 42.39 | 44.08 / 140.44 | 88.08 / 206.44 |
-| Replace value | 8.80 / 27.51 | 19.87 / 51.18 | 85.84 / 251.07 | 136.68 / 416.54 |
-| Delete + reinsert same key | 50.03 / 112.41 | 74.74 / 169.47 | 266.11 / 498.23 | 363.75 / 802.17 |
-| Delete + insert new key | 47.79 / 98.61 | 79.82 / 167.94 | 290.44 / 537.64 | 392.11 / 804.85 |
+| Read hit | 9.18 / 25.97 | 15.67 / 49.15 | 69.55 / 193.08 | 131.73 / 362.60 |
+| Read miss | 9.65 / 24.97 | 15.24 / 45.73 | 48.54 / 174.60 | 95.37 / 356.08 |
+| Batch hit · 8 keys | 7.01 / 24.67 | 14.69 / 44.30 | 60.24 / 150.91 | 100.88 / 219.00 |
+| Batch miss · 8 keys | 7.07 / 23.70 | 13.27 / 42.64 | 45.43 / 140.10 | 89.56 / 211.03 |
+| Replace value | 8.97 / 27.87 | 20.09 / 52.88 | 87.49 / 255.18 | 137.63 / 414.78 |
+| Delete + reinsert same key | 51.58 / 118.27 | 77.40 / 179.10 | 272.51 / 509.38 | 364.58 / 793.64 |
+| Delete + insert new key | 49.45 / 103.16 | 82.54 / 174.21 | 295.11 / 548.52 | 398.30 / 793.22 |
 
 **Map**
 
 | Workload | 4K | 262K | 5M | 50M |
 |---|---:|---:|---:|---:|
-| Read hit | 8.09 / 35.74 | 19.77 / 61.12 | 87.79 / 231.22 | 163.81 / 381.14 |
-| Read miss | 7.73 / 35.01 | 17.25 / 59.09 | 68.04 / 211.75 | 133.57 / 356.77 |
-| Batch hit · 8 keys | 8.32 / 29.86 | 16.61 / 53.66 | 66.00 / 177.45 | 114.74 / 273.54 |
-| Batch miss · 8 keys | 8.28 / 28.11 | 14.89 / 51.37 | 51.19 / 168.38 | 98.75 / 262.45 |
-| Replace value | 12.53 / 40.53 | 24.95 / 64.76 | 110.52 / 243.09 | 171.23 / 405.86 |
-| Delete + reinsert same key | 53.53 / 125.49 | 79.30 / 172.07 | 279.46 / 433.08 | 373.58 / 684.26 |
-| Delete + insert new key | 50.48 / 119.91 | 85.53 / 171.74 | 300.19 / 465.18 | 406.87 / 691.81 |
-| 4 workers · reads | 2.22 / 9.12 | 5.26 / 14.32 | 25.01 / 59.91 | 39.84 / 93.58 |
-| 4 workers · 10% writes | 7.53 / 12.66 | 8.21 / 17.17 | 27.74 / 62.53 | 41.44 / 96.87 |
+| Read hit | 8.20 / 39.15 | 19.83 / 63.09 | 88.63 / 231.42 | 162.32 / 387.49 |
+| Read miss | 7.82 / 36.58 | 17.48 / 59.12 | 68.50 / 215.30 | 124.93 / 359.64 |
+| Batch hit · 8 keys | 8.42 / 28.42 | 16.45 / 56.19 | 65.37 / 179.49 | 115.46 / 275.10 |
+| Batch miss · 8 keys | 8.46 / 27.16 | 14.70 / 56.06 | 53.60 / 168.23 | 99.94 / 266.15 |
+| Replace value | 12.68 / 43.41 | 25.33 / 65.85 | 112.83 / 244.29 | 171.43 / 412.40 |
+| Delete + reinsert same key | 55.21 / 128.42 | 81.64 / 176.09 | 284.15 / 442.44 | 383.73 / 687.90 |
+| Delete + insert new key | 51.81 / 123.62 | 88.95 / 174.04 | 303.94 / 476.69 | 410.43 / 707.95 |
+| 4 workers · reads | 2.23 / 9.53 | 5.22 / 14.30 | 24.98 / 60.29 | 39.71 / 94.74 |
+| 4 workers · 10% writes | 7.90 / 12.40 | 7.85 / 17.43 | 27.99 / 63.48 | 41.14 / 97.76 |
 
 </details>
 
@@ -344,40 +344,40 @@ Whole-process RSS, the Go runtime included, under Go's default GC settings: at i
 
 | Container | Entries | Peak, MB | After reads, MB | Final, MB | Build, s |
 |---|---:|---:|---:|---:|---:|
-| Tree | 4K | 5.47 / 2.18 | 4.78 / 2.16 | 5.47 / 2.16 | 0.0005 / 0.0004 |
-| Tree | 262K | 13.01 / 9.08 | 12.88 / 9.06 | 13.01 / 9.06 | 0.0270 / 0.0280 |
-| Tree | 5M | 140.38 / 136.50 | 140.13 / 136.48 | 140.38 / 136.48 | 0.6505 / 0.6743 |
-| Tree | 50M | 1,318.55 / 1,347.83 | 1,318.32 / 1,347.81 | 1,318.55 / 1,347.81 | 11.0649 / 10.6504 |
-| Map | 4K | 5.59 / 2.18 | 4.80 / 2.16 | 5.59 / 2.16 | 0.0005 / 0.0004 |
-| Map | 262K | 12.96 / 9.08 | 12.88 / 9.06 | 12.96 / 9.06 | 0.0283 / 0.0285 |
-| Map | 5M | 140.49 / 136.53 | 140.21 / 136.51 | 140.49 / 136.51 | 0.7169 / 0.6946 |
-| Map | 50M | 1,334.74 / 1,348.22 | 1,334.48 / 1,348.21 | 1,334.74 / 1,348.21 | 11.6082 / 10.7004 |
+| Tree | 4K | 5.57 / 2.18 | 4.80 / 2.16 | 5.57 / 2.16 | 0.0003 / 0.0004 |
+| Tree | 262K | 12.75 / 9.08 | 12.68 / 9.06 | 12.75 / 9.06 | 0.0199 / 0.0274 |
+| Tree | 5M | 140.44 / 136.50 | 140.00 / 136.48 | 140.44 / 136.48 | 0.7302 / 0.7173 |
+| Tree | 50M | 1,318.11 / 1,347.83 | 1,317.98 / 1,347.81 | 1,318.11 / 1,347.81 | 11.9247 / 12.0952 |
+| Map | 4K | 5.57 / 2.18 | 4.72 / 2.16 | 5.57 / 2.16 | 0.0005 / 0.0003 |
+| Map | 262K | 13.09 / 9.08 | 12.89 / 9.06 | 13.09 / 9.06 | 0.0291 / 0.0273 |
+| Map | 5M | 140.77 / 136.53 | 140.12 / 136.51 | 140.77 / 136.51 | 0.7746 / 0.7195 |
+| Map | 50M | 1,318.58 / 1,348.22 | 1,318.34 / 1,348.21 | 1,318.58 / 1,348.21 | 12.7517 / 12.4582 |
 
 **Sequential keys**
 
 | Container | Entries | Peak, MB | After reads, MB | Final, MB | Build, s |
 |---|---:|---:|---:|---:|---:|
-| Tree | 4K | 5.54 / 2.18 | 4.73 / 2.16 | 5.54 / 2.16 | 0.0001 / 0.0001 |
-| Tree | 262K | 12.39 / 8.27 | 12.08 / 8.26 | 12.39 / 8.26 | 0.0039 / 0.0023 |
-| Tree | 5M | 129.63 / 120.26 | 129.34 / 120.24 | 129.63 / 120.24 | 0.0495 / 0.0546 |
-| Tree | 50M | 1,230.03 / 1,184.06 | 1,229.70 / 1,184.04 | 1,230.03 / 1,184.04 | 0.3958 / 0.5212 |
-| Map | 4K | 5.57 / 2.18 | 4.77 / 2.16 | 5.57 / 2.16 | 0.0001 / 0.0001 |
-| Map | 262K | 12.22 / 8.27 | 11.91 / 8.26 | 12.22 / 8.26 | 0.0045 / 0.0056 |
-| Map | 5M | 129.48 / 120.31 | 129.20 / 120.29 | 129.48 / 120.29 | 0.0556 / 0.0704 |
-| Map | 50M | 1,230.05 / 1,184.50 | 1,229.68 / 1,184.48 | 1,230.05 / 1,184.48 | 0.4793 / 0.6196 |
+| Tree | 4K | 5.57 / 2.18 | 4.83 / 2.16 | 5.57 / 2.16 | 0.0001 / 0.0001 |
+| Tree | 262K | 12.35 / 8.27 | 11.93 / 8.26 | 12.35 / 8.26 | 0.0023 / 0.0040 |
+| Tree | 5M | 129.55 / 120.26 | 129.35 / 120.24 | 129.55 / 120.24 | 0.0493 / 0.0556 |
+| Tree | 50M | 1,230.13 / 1,184.06 | 1,229.83 / 1,184.04 | 1,230.13 / 1,184.04 | 0.4141 / 0.5274 |
+| Map | 4K | 5.55 / 2.18 | 4.70 / 2.16 | 5.55 / 2.16 | 0.0001 / 0.0001 |
+| Map | 262K | 12.42 / 8.27 | 12.01 / 8.26 | 12.42 / 8.26 | 0.0048 / 0.0053 |
+| Map | 5M | 129.53 / 120.31 | 129.42 / 120.29 | 129.53 / 120.29 | 0.0579 / 0.0733 |
+| Map | 50M | 1,230.11 / 1,184.50 | 1,229.83 / 1,184.48 | 1,230.11 / 1,184.48 | 0.5032 / 0.6280 |
 
 **Clustered keys**
 
 | Container | Entries | Peak, MB | After reads, MB | Final, MB | Build, s |
 |---|---:|---:|---:|---:|---:|
-| Tree | 4K | 5.60 / 2.20 | 4.82 / 2.18 | 5.60 / 2.18 | 0.0002 / 0.0002 |
-| Tree | 262K | 13.48 / 11.71 | 13.37 / 11.70 | 13.48 / 11.70 | 0.0098 / 0.0282 |
-| Tree | 5M | 148.59 / 187.11 | 148.31 / 187.09 | 148.59 / 187.09 | 0.1799 / 0.3948 |
-| Tree | 50M | 1,239.92 / 1,853.29 | 1,239.61 / 1,853.28 | 1,239.92 / 1,853.28 | 2.0665 / 4.1574 |
-| Map | 4K | 5.55 / 2.20 | 4.78 / 2.18 | 5.55 / 2.18 | 0.0002 / 0.0002 |
-| Map | 262K | 13.50 / 11.71 | 13.42 / 11.70 | 13.50 / 11.70 | 0.0167 / 0.0260 |
-| Map | 5M | 148.54 / 187.12 | 148.34 / 187.11 | 148.54 / 187.11 | 0.2041 / 0.3699 |
-| Map | 50M | 1,240.06 / 1,853.34 | 1,239.70 / 1,853.33 | 1,240.06 / 1,853.33 | 2.3158 / 3.9527 |
+| Tree | 4K | 5.69 / 2.20 | 4.83 / 2.18 | 5.69 / 2.18 | 0.0002 / 0.0002 |
+| Tree | 262K | 13.43 / 11.71 | 13.37 / 11.70 | 13.43 / 11.70 | 0.0150 / 0.0275 |
+| Tree | 5M | 148.57 / 187.12 | 148.46 / 187.11 | 148.57 / 187.11 | 0.1944 / 0.4057 |
+| Tree | 50M | 1,239.94 / 1,853.31 | 1,239.63 / 1,853.29 | 1,239.94 / 1,853.29 | 2.1504 / 4.4183 |
+| Map | 4K | 5.52 / 2.20 | 4.78 / 2.18 | 5.52 / 2.18 | 0.0002 / 0.0002 |
+| Map | 262K | 13.45 / 11.71 | 13.34 / 11.70 | 13.45 / 11.70 | 0.0170 / 0.0212 |
+| Map | 5M | 148.75 / 187.11 | 148.34 / 187.09 | 148.75 / 187.09 | 0.2112 / 0.3823 |
+| Map | 50M | 1,240.01 / 1,853.34 | 1,239.66 / 1,853.33 | 1,240.01 / 1,853.33 | 2.3930 / 4.1704 |
 
 </details>
 
@@ -388,17 +388,40 @@ Go `Bytes` keys, byte slices a program can reuse, against Rust `String`s, each a
 
 | Workload | 262K | 5M |
 |---|---:|---:|
-| Tree · Build, per insert | 116.5 / 97.8 (+19%) | 287.7 / 217.8 (+32%) |
-| Tree · Read hit | 37.1 / 40.0 (-7%) | 114.7 / 190.6 (-40%) |
-| Tree · Read miss | 34.1 / 32.9 (+3%) | 92.7 / 134.5 (-31%) |
-| Tree · Replace value | 43.8 / 40.4 (+8%) | 175.3 / 189.9 (-8%) |
-| Tree · Delete + reinsert same key | 146.6 / 148.5 (-1%) | 390.8 / 421.6 (-7%) |
-| Map · Build, per insert | 123.6 / 107.6 (+15%) | 291.9 / 241.8 (+21%) |
-| Map · Read hit | 45.0 / 44.5 (+1%) | 142.4 / 176.1 (-19%) |
-| Map · Read miss | 38.7 / 35.4 (+9%) | 109.9 / 103.5 (+6%) |
-| Map · Replace value | 51.7 / 50.7 (+2%) | 200.0 / 187.3 (+7%) |
-| Map · Delete + reinsert same key | 173.6 / 152.9 (+14%) | 440.9 / 435.3 (+1%) |
-| Map · 4 workers · reads | 11.8 / 14.8 (-21%) | 39.7 / 55.7 (-29%) |
+| Tree · Build, per insert | 124.4 / 100.8 (+23%) | 292.7 / 224.0 (+31%) |
+| Tree · Read hit | 37.6 / 41.3 (-9%) | 123.0 / 192.4 (-36%) |
+| Tree · Read miss | 34.8 / 33.7 (+4%) | 96.7 / 136.6 (-29%) |
+| Tree · Replace value | 44.6 / 42.0 (+6%) | 184.1 / 193.1 (-5%) |
+| Tree · Delete + reinsert same key | 148.4 / 155.3 (-4%) | 409.4 / 429.8 (-5%) |
+| Map · Build, per insert | 126.2 / 112.0 (+13%) | 295.4 / 243.2 (+21%) |
+| Map · Read hit | 45.6 / 45.3 (+1%) | 144.8 / 177.0 (-18%) |
+| Map · Read miss | 39.4 / 35.7 (+11%) | 110.5 / 104.8 (+5%) |
+| Map · Replace value | 52.5 / 53.3 (-1%) | 203.0 / 189.0 (+7%) |
+| Map · Delete + reinsert same key | 179.5 / 160.4 (+12%) | 445.1 / 447.1 (0%) |
+| Map · 4 workers · reads | 11.8 / 15.3 (-23%) | 40.2 / 56.2 (-29%) |
+
+</details>
+
+Upstream's `bbtree-store` is faster than the port in 20 of the 24 timed store cells, at 32K, 1M and 10M entries.
+
+<details>
+<summary>Store — Go / Rust</summary>
+
+Upstream's own benchmark, `bbtree-store/examples/bench.rs`, unmodified and built with the same tuning, against `store/cmd/storebench`, its port: 20-byte keys and 32-byte values, a fresh process a run, the two alternating, medians of three. Each time is one pass over every entry, in ns an entry, and churn's four passes, in ns an operation; eight threads' are wall time. Long values are 4,000 bytes, for one entry in 16. Go's node bytes are its heap's, once collected, past the budget's pages, where upstream counts what its allocator gives its nodes.
+
+| Workload | 32K | 1M | 10M |
+|---|---:|---:|---:|
+| Insert | 166 / 106 | 264 / 193 | 341 / 308 |
+| Get | 88 / 42 | 313 / 154 | 432 / 244 |
+| Scan | 2.4 / 2.0 | 7.8 / 8.2 | 8.5 / 9.1 |
+| Churn · a get, then a removal or a resized insert | 303 / 208 | 573 / 471 | 743 / 643 |
+| 8 threads · insert | 130 / 53 | 68 / 35 | 71 / 45 |
+| 8 threads · get | 22 / 14 | 40 / 21 | 61 / 36 |
+| Long values · insert | 1,710 / 778 | 1,677 / 1,951 | 1,763 / 4,356 |
+| Long values · get | 244 / 145 | 692 / 559 | 868 / 755 |
+| Bytes an entry, nodes and heap | 127.4 / 110.3 | 123.0 / 103.7 | 131.1 / 107.9 |
+| Churn · heap bytes a live record byte, after it | 1.84 / 1.55 | 1.81 / 1.52 | 1.85 / 1.54 |
+| Long values · heap bytes a value byte | 1.038 / 1.049 | 1.039 / 1.032 | 1.042 / 1.029 |
 
 </details>
 
@@ -410,11 +433,12 @@ How the comparison is kept fair:
 
 - **Identical work.** Both languages get the same keys, queries and operation counts. Checksums are verified, including every bit of replaced values; new-key churn uses disjoint key sets and checks that every delete and insert succeeds.
 - **Fresh processes.** Every backend runs in a fresh process, in rotated order. Serial cases are pinned to one OS thread, and parallel timings exclude starting workers and reducing checksums.
-- **Public APIs.** Batches go through each library's public batch API, and the Rust code is unmodified upstream.
+- **Public APIs.** Batches go through each library's public batch API, and the Rust code is unmodified upstream. The store cells run upstream's own `bbtree-store` benchmark against its line-for-line port.
 - **Equal guarantees.** Both concurrent maps omit `len()`, and both read payloads with plain loads validated by node versions.
+- **Interference retaken, both sides.** Where one backend's three runs of a segment differ by more than 1.3×, as when another process takes the machine's memory bandwidth, the whole segment runs again, both languages; the report's limitations list each retake.
 
 <details>
-<summary>Commands, from source checkpoint `50a7b3e`</summary>
+<summary>Commands, from source checkpoint `8215927`</summary>
 
 Build the drivers:
 
@@ -439,7 +463,18 @@ python3 internal/rss_compare.py --go ./memory-go --rust internal/oracle/target/r
   --size 50000000 --repeat 3 --kinds tree map
 ```
 
-Both scripts take `--keys mixed` (the default), `--keys sequential` or `--keys clustered`. `cpu_compare.py --text --mutations` runs the string-key cells, which the report has at 262K and 5M entries. `python3 internal/render_benchmarks.py` redraws the cards and tables above from the saved report.
+Time the stores, upstream's benchmark built from its checkout at `8ef597b`, at 32K, 1M and 10M entries:
+
+```sh
+GOEXPERIMENT=simd go build -o storebench-go ./store/cmd/storebench
+git clone https://github.com/XiangpengHao/bbtree && git -C bbtree checkout 8ef597b
+RUSTFLAGS='-C target-cpu=native' CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+  cargo build --release --locked --manifest-path bbtree/Cargo.toml -p bbtree-store --example bench
+python3 internal/store_compare.py --go ./storebench-go --rust bbtree/target/release/examples/bench \
+  --size 1000000 --repeat 3
+```
+
+`cpu_compare.py` and `rss_compare.py` take `--keys mixed` (the default), `--keys sequential` or `--keys clustered`. `cpu_compare.py --text --mutations` runs the string-key cells, which the report has at 262K and 5M entries. `python3 internal/render_benchmarks.py` redraws the cards and tables above from the saved report.
 
 </details>
 
