@@ -65,6 +65,9 @@ type inlineOptions[K any] struct {
 	hashTag               func(K) uint8
 	compareFrom           func(K, K, int) int
 	comparePrefix         func(K, []byte) int
+	// clone is the key's Clone, which a map stores each new key through,
+	// found once rather than asserted at every insert.
+	clone func(K) K
 }
 
 // inlineOptionsOf finds custom key type K's optional methods. A method of
@@ -93,6 +96,11 @@ func inlineOptionsOf[K any]() inlineOptions[K] {
 	}
 	if f := find("ComparePrefix", reflect.TypeFor[func(K, []byte) int]()); f.IsValid() {
 		o.comparePrefix = f.Interface().(func(K, []byte) int)
+	}
+	// A Clone of another signature is no Key's Clone, as before: not a
+	// mistake.
+	if m, ok := kt.MethodByName("Clone"); ok && m.Type == reflect.TypeFor[func(K) K]() {
+		o.clone = m.Func.Interface().(func(K) K)
 	}
 	if f := find("InlineWidth", reflect.TypeFor[func(K) InlineWidth]()); f.IsValid() {
 		var zero K

@@ -397,7 +397,7 @@ func (t *genericTree[K, V, O]) insertInto(n *gleaf[K, V], key K, code uint64, va
 	if int(n.count.Load()) == nodeSize {
 		return old, false, false
 	}
-	t.insertEntry(n, i, key, value)
+	t.insertKeyed(n, i, key, value, code)
 	return old, false, true
 }
 
@@ -728,6 +728,17 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 // between the leaf's fences, so begins with its prefix; an empty leaf, the
 // root, takes the tree's shared prefix, its fences' (D50).
 func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V) {
+	var w0 uint64
+	if windowed[O, K]() {
+		w0 = windowKey[O](key, 0)
+	}
+	t.insertKeyed(n, i, key, value, w0)
+}
+
+// insertKeyed is insertEntry given the key's code, its window at 0 for a
+// custom key, which its insert has read: a custom key's code at the leaf's
+// prefix follows from it below 8 bytes.
+func (t *genericTree[K, V, O]) insertKeyed(n *gleaf[K, V], i int, key K, value V, w0 uint64) {
 	p := 0
 	count := int(n.count.Load())
 	if prefixed[O, K]() {
@@ -768,10 +779,14 @@ func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V
 	} else {
 		keys := n.keyed()
 		copy(keys[i+1:count+1], keys[i:count])
-		keys[i] = ownKey[O](key)
 		if windowed[O, K]() {
-			n.codes[i] = narrowed(t.codeOf(key, windowKey[O](key, 0), p), t.inline.leafWidth)
+			keys[i] = key
+			if clone := t.inline.clone; clone != nil {
+				keys[i] = clone(key)
+			}
+			n.codes[i] = narrowed(t.codeOf(key, w0, p), t.inline.leafWidth)
 		} else {
+			keys[i] = ownKey[O](key)
 			n.codes[i] = windowKey[O](key, p)
 		}
 		if exactCodes[O, K]() {
@@ -1293,7 +1308,7 @@ func (t *genericTree[K, V, O]) insertIntoWithLeaf(n *gleaf[K, V], version uint64
 	if key, ok = vacant(n, key); !ok {
 		return true, false, false
 	}
-	t.insertEntry(n, i, key, value)
+	t.insertKeyed(n, i, key, value, code)
 	return true, false, true
 }
 

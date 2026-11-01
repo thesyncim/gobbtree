@@ -243,7 +243,7 @@ func (t *genericTree[K, V, O]) ownerPlace(key K, code uint64, value V, n *gleaf[
 		}
 	}
 	if owned(&n.count) < nodeSize {
-		t.insertEntry(n, i, key, value)
+		t.insertKeyed(n, i, key, value, code)
 	} else {
 		t.ownerSplit(n, i, key, code, value)
 	}
@@ -268,7 +268,7 @@ func (t *genericTree[K, V, O]) ownerAppend(key K, code uint64, value V) bool {
 	case t.wholeCodes():
 		n.pushCode(count, code, value)
 	default:
-		t.insertEntry(n, count, key, value)
+		t.insertKeyed(n, count, key, value, code)
 	}
 	return true
 }

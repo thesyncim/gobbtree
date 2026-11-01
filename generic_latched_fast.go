@@ -338,7 +338,7 @@ func (t *genericTree[K, V, O]) appendTail(key K, code uint64, value V) (done boo
 	if t.wholeCodes() {
 		n.pushCode(count, code, value)
 	} else {
-		t.insertEntry(n, count, key, value)
+		t.insertKeyed(n, count, key, value, code)
 	}
 	h.latch.unlockExclusive(word)
 	return true, nil
