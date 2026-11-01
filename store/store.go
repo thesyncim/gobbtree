@@ -157,7 +157,29 @@ func (s *Store) Insert(key, value []byte) (replaced bool, err error) {
 		return false, ErrAlloc
 	}
 	var q pointQuery
-	found, ok := s.m.UpdateOrInsertWithLeaf(q.key(key), struct{}{},
+	query := q.key(key)
+	// The leaf held, the record goes in with no callback; a leaf that
+	// splits takes the map's.
+	if w, held := s.m.HoldWrite(query); held {
+		q.release()
+		leaf := w.Leaf()
+		if w.Found() {
+			ok = h.overwrite(leaf, w.Index(), key, value, link)
+			w.Release()
+		} else if r, wrote := h.write(leaf, key, value, link); wrote {
+			w.Insert(storeKey{r.at}, struct{}{})
+			ok = true
+		} else {
+			w.Release()
+			ok = false
+		}
+		if !ok {
+			h.freeOverflow(link)
+			return false, ErrAlloc
+		}
+		return w.Found(), nil
+	}
+	found, ok := s.m.UpdateOrInsertWithLeaf(query, struct{}{},
 		func(leaf storeLeaf, i int, _ storeKey, _ *struct{}) bool {
 			return h.overwrite(leaf, i, key, value, link)
 		},

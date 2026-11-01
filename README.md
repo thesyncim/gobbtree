@@ -210,7 +210,7 @@ Beyond upstream:
 - **`Map`:** `First`, `Last`, `PopFirst`, `PopLast`, `LoadOrStoreFunc`, `UpdateAll` and `UpdateRange`.
 - **`Tree`:** `LowerBound`, `UpperBound`, `LoadOrStore`, `LoadOrStoreFunc` and `UpdateOrInsert`.
 - **`FileMap`:** `ByteLen`, `WriteTo` and `Close`.
-- **`AnnexedMapOf`:** `WalkLeaves` walks the leaves a leaf at a time, each held shared until the next, for a container that runs its own loop over a leaf's entries in an iterator the compiler inlines into its caller's range loop, as a store's scans do: Go otherwise calls a scan's loop body through a function value at every entry, where Rust inlines upstream's closure. `Hold` holds one entry's leaf shared, for a container that copies what it needs of the entry, as a store's lookups copy a value, with no callback.
+- **`AnnexedMapOf`:** `WalkLeaves` walks the leaves a leaf at a time, each held shared until the next, for a container that runs its own loop over a leaf's entries in an iterator the compiler inlines into its caller's range loop, as a store's scans do: Go otherwise calls a scan's loop body through a function value at every entry, where Rust inlines upstream's closure. `Hold` holds one entry's leaf shared, for a container that copies what it needs of the entry, as a store's lookups copy a value, and `HoldWrite` holds a key's leaf exclusively, for one that writes its entry itself, as a store's inserts write a record, with no callbacks.
 - **Everywhere:** `Range(lo, hi)` and `RangeReverse` as shorthands for scanning `Between(lo, hi)`, and `Ascend(from)` and `Descend(from)` for scanning from a key.
 
 Not carried over, because Go has no counterpart:

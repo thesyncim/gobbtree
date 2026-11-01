@@ -1293,6 +1293,30 @@ func (t *genericTree[K, V, O]) insertWithLeaf(key K, value V, occupied func(*gle
 	}
 }
 
+// holdWrite is custom key key's leaf, latched exclusively from version, by
+// the racing descent writers take (writeLeafByCodes), key's window at 0,
+// and key's index there, its entry's or the one it goes in at, and whether
+// its entry is there; false, holding nothing, where the descent can't
+// settle, or key is absent and the leaf full, which only a split makes
+// room in. A shared tree's, started.
+func (t *genericTree[K, V, O]) holdWrite(key K) (n *gleaf[K, V], version, w0 uint64, i int, found, ok bool) {
+	if !windowed[O, K]() || t.root.Load() == nil {
+		return nil, 0, 0, 0, false, false
+	}
+	if t.sharesBytes() {
+		t.admit(key)
+	}
+	w0 = t.code(key)
+	if n, version, ok = t.writeLeafByCodes(key, w0); !ok {
+		return nil, 0, 0, 0, false, false
+	}
+	if i, found = t.find(n, key, w0); !found && int(n.count.Load()) == nodeSize {
+		n.latch.unlockExclusive(version)
+		return nil, 0, 0, 0, false, false
+	}
+	return n, version, w0, i, found, true
+}
+
 // insertIntoWithLeaf is insertInto for insertWithLeaf, on leaf n, held at
 // version: done unless the leaf is full and key isn't in it, in which case
 // n stays held. Otherwise it lets go of n, also where a callback panics.

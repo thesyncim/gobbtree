@@ -133,6 +133,54 @@ func (e HeldEntry[K, V]) Value() V { return e.n.values[e.i&(nodeSize-1)] }
 // Release lets go of the entry's leaf.
 func (e HeldEntry[K, V]) Release() { e.n.latch.unlockShared() }
 
+// HoldWrite holds key's leaf exclusively, found as a write finds it, with
+// the index of key's entry there, or of where it goes in, for a container
+// that writes what it keeps of an entry itself, as a store writes its
+// record, with no callbacks: UpdateOrInsertWithLeaf calls its own through
+// function values. false, holding nothing, where the write needs more than
+// the leaf, a new key in a full leaf, which splits, or the leaf can't be
+// found racing: the caller then writes through UpdateOrInsertWithLeaf. The
+// caller must not use the map while it holds the leaf, and must Insert or
+// Release; a panic meanwhile leaves the leaf held, as upstream's contract
+// has it of code run on an entry.
+func (m *AnnexedMapOf[K, V, A, PA]) HoldWrite(key K) (LeafWrite[K, V, A, PA], bool) {
+	n, version, w0, i, found, ok := m.generic.holdWrite(key)
+	return LeafWrite[K, V, A, PA]{&m.generic, n, version, w0, i, found}, ok
+}
+
+// LeafWrite is a leaf of an AnnexedMapOf that HoldWrite holds exclusively.
+type LeafWrite[K Key[K], V any, A any, PA LeafAnnex[A]] struct {
+	t       *genericTree[K, V, annexOrder[K, A, PA]]
+	n       *gleaf[K, V]
+	version uint64
+	w0      uint64
+	i       int
+	found   bool
+}
+
+// Leaf is the held leaf.
+func (w LeafWrite[K, V, A, PA]) Leaf() AnnexedLeaf[K, A] { return annexedLeafOf[A](w.t, w.n) }
+
+// Found reports whether the leaf holds the key's entry.
+func (w LeafWrite[K, V, A, PA]) Found() bool { return w.found }
+
+// Index is the index among the leaf's Keys of the key's entry, or of where
+// it goes in.
+func (w LeafWrite[K, V, A, PA]) Index() int { return w.i }
+
+// Value is the key's entry's value, to change; the leaf must hold it.
+func (w LeafWrite[K, V, A, PA]) Value() *V { return &w.n.values[w.i&(nodeSize-1)] }
+
+// Insert puts key, equal to the key held for, with value in at Index, the
+// leaf not holding it, and lets go of the leaf.
+func (w LeafWrite[K, V, A, PA]) Insert(key K, value V) {
+	w.t.insertKeyed(w.n, w.i, key, value, w.w0)
+	w.n.latch.unlockExclusive(w.version)
+}
+
+// Release lets go of the leaf.
+func (w LeafWrite[K, V, A, PA]) Release() { w.n.latch.unlockExclusive(w.version) }
+
 // WalkLeaves walks the map's leaves with entries in b, in key order or in
 // reverse, a leaf at a time: Next hands out each leaf's keys and values in
 // b, ascending, holding the leaf shared until the next call, or Close. It is
