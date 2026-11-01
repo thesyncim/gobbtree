@@ -343,6 +343,9 @@ func (t *genericTree[K, V, O]) fixUnderfullChild(path *gpath[K], level int, leav
 			t.fitLeaf(asLeaf[K, V](l), t.leafLow(asLeaf[K, V](l)), high)
 			t.clearHead(asLeaf[K, V](r))
 			t.leaves.remove(r)
+			if windowed[O, K]() {
+				t.customLeaves.Add(-1)
+			}
 		} else {
 			// r's first child takes the separator between them.
 			at, sep := int(l.count.Load()), parent.codes[right].Load()

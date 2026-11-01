@@ -48,7 +48,11 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	// Such a tree names its leaves by ID, for its hint table.
 	leaves leafDir
 	hints  atomic.Pointer[codeHints]
-	making atomic.Bool
+	// A custom-key tree's hints, and the leaves it holds, for their table's
+	// size (custom_hints.go).
+	customHints  atomic.Pointer[customHints]
+	customLeaves atomic.Int64
+	making       atomic.Bool
 	// reshaped is the lowest first code of a leaf a move of entries
 	// changed since its hint table was filled, past every key where none:
 	// a new table keeps the old one's cells below it (refreshCodeHints).
@@ -493,6 +497,9 @@ func (t *genericTree[K, V, O]) newLeaf() (*gleaf[K, V], uint64) {
 		n.codes[i] = codePad
 	}
 	n.latch.Store(latchExclusive)
+	if windowed[O, K]() {
+		t.customLeaves.Add(1)
+	}
 	return n, 0
 }
 
@@ -1483,6 +1490,10 @@ func (t *genericTree[K, V, O]) get(key K) (value V, found bool) {
 			}
 			n.latch.unlockShared()
 			return value, found
+		case codesFound:
+			value = n.values[lo&(nodeSize-1)]
+			n.latch.unlockShared()
+			return value, true
 		}
 	}
 	if seqlockPlainStores && t.wordCodes() {
@@ -1546,6 +1557,8 @@ func (t *genericTree[K, V, O]) hold(key K) (*gleaf[K, V], int, bool) {
 			}
 			n.latch.unlockShared()
 			return nil, 0, false
+		case codesFound:
+			return n, lo, true
 		}
 	}
 	n, _ := t.leafLatched(key, code, seekKey, shared)
@@ -1607,4 +1620,6 @@ func (t *genericTree[K, V, O]) clear() {
 	t.shared.Store(nil)
 	t.hints.Store(nil)
 	t.leaves.reset()
+	t.customHints.Store(nil)
+	t.customLeaves.Store(0)
 }

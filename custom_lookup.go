@@ -2,11 +2,14 @@ package gobbtree
 
 import "unsafe"
 
-// What a racing read of a custom key's leaf settled (leafByCodes).
+// What a racing read of a custom key's leaf settled (leafByCodes): nothing,
+// the key absent, its leaf held with candidates to compare, or its leaf
+// held with its entry found.
 const (
 	codesUnsettled = iota
 	codesAbsent
 	codesHeld
+	codesFound
 )
 
 // leafByCodes looks custom key key up as upstream's latched tree does a key
@@ -35,21 +38,49 @@ func (t *genericTree[K, V, O]) leafByCodes(key K, code uint64) (n *gleaf[K, V], 
 	if t.sharesBytes() && t.sharedOrderOf(key) != 0 {
 		return nil, 0, 0, 0, codesAbsent
 	}
+	// The leaf its hint names, where it settles key; else the descent's.
+	if h := t.hintedLeaf(key, code); h != nil {
+		if n, lo, hi, tag, state = t.leafCandidates(key, code, h, h.latch.Load(), true); state != codesUnsettled {
+			return n, lo, hi, tag, state
+		}
+	}
 	h, word, ok := t.leafOfCodes(key, code)
 	if !ok {
 		return nil, 0, 0, 0, codesUnsettled
 	}
-	// Key lies between the leaf's fences, so begins with its prefix (D26):
-	// its candidates are the keys whose codes are its own, and of several,
-	// as upstream reads them, those whose tags are its.
+	t.noteLeaf(key, code, h)
+	return t.leafCandidates(key, code, h, word, false)
+}
+
+// leafCandidates is leafByCodes's read of leaf h, at latch word word: the
+// leaf key's descent reached, or, where hinted, one a hint named, which
+// settles key only where key has its prefix and its code lies strictly
+// between the leaf's first and last, or where key is found there: a key
+// whose code is the leaf's first or last may be the leaf's, or a
+// neighbor's.
+func (t *genericTree[K, V, O]) leafCandidates(key K, code uint64, h *gheader, word uint64, hinted bool) (n *gleaf[K, V], lo, hi int, tag uint8, state int) {
+	if word&latchExclusive != 0 {
+		return nil, 0, 0, 0, codesUnsettled
+	}
+	// Key lies between a reached leaf's fences, so begins with its prefix
+	// (D26): its candidates are the keys whose codes are its own, and of
+	// several, as upstream reads them, those whose tags are its.
 	m := asLeaf[K, V](h)
 	count := int(*(*int32)(unsafe.Pointer(&m.count)))
 	p := int(*(*int32)(unsafe.Pointer(&m.prefix)))
 	if count < 0 || count > nodeSize || p < 0 || p > customPrefixMax {
 		return nil, 0, 0, 0, codesUnsettled
 	}
+	acc := uint64(count)<<16 ^ uint64(p)<<24
+	if hinted && !t.hasLeafPrefix(m, key, code, p) {
+		return nil, 0, 0, 0, codesUnsettled
+	}
 	lo, hi = leafCodeRange(h, count, narrowed(t.codeOf(key, code, p), t.inline.leafWidth))
-	acc := uint64(lo) ^ uint64(hi)<<8 ^ uint64(count)<<16 ^ uint64(p)<<24
+	edge := hinted && (lo == 0 || hi >= count)
+	if edge && lo == hi {
+		return nil, 0, 0, 0, codesUnsettled
+	}
+	acc ^= uint64(lo) ^ uint64(hi)<<8
 	if hi-lo > 1 && t.tagged() {
 		tag = t.inline.hashTag(key)
 		seen := false
@@ -63,13 +94,21 @@ func (t *genericTree[K, V, O]) leafByCodes(key K, code uint64) (n *gleaf[K, V], 
 		}
 	}
 	if lo == hi {
-		if *after((*uint64)(unsafe.Pointer(&h.latch)), acc)&^latchSharedMask == word&^latchSharedMask {
+		if !edge && *after((*uint64)(unsafe.Pointer(&h.latch)), acc)&^latchSharedMask == word&^latchSharedMask {
 			return nil, 0, 0, 0, codesAbsent
 		}
 		return nil, 0, 0, 0, codesUnsettled
 	}
 	m.latch.lockShared()
 	if m.latch.Load()&^latchSharedMask != word&^latchSharedMask {
+		m.latch.unlockShared()
+		return nil, 0, 0, 0, codesUnsettled
+	}
+	if edge {
+		// Found there, key is the leaf's; else the descent settles it.
+		if i, ok := t.settleHeld(m, key, lo, hi, tag); ok {
+			return m, i, i + 1, tag, codesFound
+		}
 		m.latch.unlockShared()
 		return nil, 0, 0, 0, codesUnsettled
 	}
@@ -142,9 +181,12 @@ func (t *genericTree[K, V, O]) writeLeafByCodes(key K, code uint64) (*gleaf[K, V
 	if !seqlockPlainStores || t.sharesBytes() && t.sharedOrderOf(key) != 0 {
 		return nil, 0, false
 	}
-	h, word, ok := t.leafOfCodes(key, code)
+	h, word, ok := t.hintedWriteLeaf(key, code)
 	if !ok {
-		return nil, 0, false
+		if h, word, ok = t.leafOfCodes(key, code); !ok {
+			return nil, 0, false
+		}
+		t.noteLeaf(key, code, h)
 	}
 	n := asLeaf[K, V](h)
 	version := n.latch.lockExclusive()
@@ -153,6 +195,32 @@ func (t *genericTree[K, V, O]) writeLeafByCodes(key K, code uint64) (*gleaf[K, V
 		return nil, 0, false
 	}
 	return n, version, true
+}
+
+// hintedWriteLeaf is the leaf key's hint names and the latch word it read
+// it at, where read racing at that word the leaf settles key as a lookup's
+// does (leafCandidates), its first and last codes strictly about key's:
+// the writer that latches it at that word holds key's leaf.
+func (t *genericTree[K, V, O]) hintedWriteLeaf(key K, code uint64) (*gheader, uint64, bool) {
+	h := t.hintedLeaf(key, code)
+	if h == nil {
+		return nil, 0, false
+	}
+	word := h.latch.Load()
+	if word&latchExclusive != 0 {
+		return nil, 0, false
+	}
+	m := asLeaf[K, V](h)
+	count := int(*(*int32)(unsafe.Pointer(&m.count)))
+	p := int(*(*int32)(unsafe.Pointer(&m.prefix)))
+	if count < 2 || count > nodeSize || p < 0 || p > customPrefixMax {
+		return nil, 0, false
+	}
+	if !t.hasLeafPrefix(m, key, code, p) {
+		return nil, 0, false
+	}
+	lo, hi := leafCodeRange(h, count, narrowed(t.codeOf(key, code, p), t.inline.leafWidth))
+	return h, word, lo > 0 && hi < count
 }
 
 // settleHeld is the candidate of [lo, hi), the keys of leaf n whose codes
