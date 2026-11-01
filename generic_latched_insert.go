@@ -1048,7 +1048,7 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 			keys := dst.keyed()
 			for j := at; j < at+count; j++ {
 				k := keys[j&(nodeSize-1)]
-				dst.codes[j&(nodeSize-1)] = narrowed(t.codeOf(k, windowKey[O](k, 0), p), t.inline.leafWidth)
+				dst.codes[j&(nodeSize-1)] = narrowed(t.window(k, p), t.inline.leafWidth)
 			}
 		}
 	}

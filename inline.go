@@ -129,11 +129,5 @@ func inlineOptionsOf[K any]() inlineOptions[K] {
 func narrowed(code uint64, w int) uint64 { return code >> (64 - 8*uint(w&15)) }
 
 // equalThrough is how many leading bytes keys whose codes, at prefix p and
-// w bytes wide, are equal share: windows below 8 bytes of prefix are a
-// key's first, past the prefix (windowIn).
-func equalThrough(p, w int) int {
-	if p < 8 {
-		return min(p+w, 8)
-	}
-	return p + w
-}
+// w bytes wide, are equal share: the prefix and the bytes the code keeps.
+func equalThrough(p, w int) int { return p + w }

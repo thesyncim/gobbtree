@@ -203,7 +203,7 @@ The API follows upstream's operations with Go names. Results are multiple return
 
 Different from upstream:
 
-- **Custom keys' nodes:** prefixes stop at 56 bytes; below 8 bytes of prefix a node's windows are its keys' first, past it, so a lookup takes no other; and narrower widths keep leaves' windows in 8-byte slots and internal nodes' in 4-byte ones, as Go's nodes hold 32 entries whatever their windows' width.
+- **Custom keys' nodes:** prefixes stop at 56 bytes; and narrower widths keep leaves' windows in 8-byte slots and internal nodes' in 4-byte ones, as Go's nodes hold 32 entries whatever their windows' width.
 
 Beyond upstream:
 

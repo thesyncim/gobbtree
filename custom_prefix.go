@@ -45,20 +45,14 @@ type fence[K any] struct {
 // fenceOfKey is text key k as a fence.
 func fenceOfKey[K any](k K) fence[K] { return fence[K]{key: &k} }
 
-// A custom key's code at a node's prefix p is its window there, upstream's
-// inline key (D26), but for a prefix of fewer than 8 bytes, where it is its
-// first window, at 0, past the prefix's bytes: what they share leaves the
-// rest of that window to tell keys apart, as a code at 0 did, and a lookup,
-// which takes its key's first window once, takes none for nodes whose
-// prefixes are that short, as random keys' are below the borders. A prefix
-// of 8 bytes or more strips them all.
+// A custom key's code at a node's prefix p is its window there, the 8 bytes
+// past the prefix, upstream's inline key (D26): keys that share the prefix
+// differ in those bytes, as keys of text whose first 8 bytes all share
+// most of do.
 
 // windowIn is the code at prefix p, at most customPrefixMax, of the
 // encoding whose first 64 bytes w holds.
 func windowIn(w *[headWindows]uint64, p int) uint64 {
-	if p < 8 {
-		return w[0] << (8 * uint(p&7))
-	}
 	j, r := (p>>3)&(headWindows-1), uint(p&7)*8
 	if r == 0 {
 		return w[j]
@@ -68,8 +62,8 @@ func windowIn(w *[headWindows]uint64, p int) uint64 {
 
 // codeOf is custom key key's code at prefix p, given w0, its window at 0.
 func (t *genericTree[K, V, O]) codeOf(key K, w0 uint64, p int) uint64 {
-	if p < 8 {
-		return w0 << (8 * uint(p&7))
+	if p == 0 {
+		return w0
 	}
 	return t.window(key, p)
 }
@@ -201,25 +195,9 @@ func (t *genericTree[K, V, O]) refitLeafOf(n *gleaf[K, V], p int) {
 		n.setPrefixOf(0, 0, 0)
 		return
 	}
-	if q := int(n.prefix.Load()); q <= p && p < 8 && t.inline.leafWidth == 8 {
-		// A prefix that grows below 8 bytes, as a split's halves' do: each
-		// code, its key's first window past the prefix, shifts past the
-		// bytes the prefix takes, as upstream's windows move
-		// (05-fence-key.md), and only the first key's window, for the head,
-		// is read.
-		for i := 0; i < count; i++ {
-			n.codes[i] <<= 8 * uint(p-q)
-		}
-		n.setPrefixOf(windowKey[O](keys[0], 0), 0, p)
-		return
-	}
-	n.setPrefixOf(windowKey[O](keys[0], 0), windowKey[O](keys[0], 8), p)
+	n.setPrefixOf(t.window(keys[0], 0), t.window(keys[0], 8), p)
 	for i := 0; i < count; i++ {
-		w0 := uint64(0)
-		if p < 8 {
-			w0 = windowKey[O](keys[i], 0)
-		}
-		n.codes[i] = narrowed(t.codeOf(keys[i], w0, p), t.inline.leafWidth)
+		n.codes[i] = narrowed(t.window(keys[i], p), t.inline.leafWidth)
 	}
 }
 

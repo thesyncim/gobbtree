@@ -185,7 +185,8 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				}
 				want := windowKey[O](key, p)
 				if windowed[O, K]() {
-					want = narrowed(tree.codeOf(key, windowKey[O](key, 0), p), tree.inline.leafWidth)
+					// The window past the prefix, upstream's inline key.
+					want = narrowed(windowKey[O](key, p), tree.inline.leafWidth)
 				}
 				if n.codes[i] != want {
 					t.Fatalf("leaf code %d is stale", i)
@@ -280,7 +281,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 				case i == 0:
 					want = 0
 				case i < count:
-					want = tree.codeOf(seps[i], windowKey[O](seps[i], 0), p)
+					want = windowKey[O](seps[i], p)
 				}
 				got := n.codes[i].Load()
 				if tree.narrowInner() {
@@ -290,7 +291,7 @@ func checkGenericTree[K any, V any, O keyOrder[K]](t testing.TB, tree *genericTr
 					case i == 0:
 						want = 0
 					case i < count:
-						want = narrowed(tree.codeOf(seps[i], windowKey[O](seps[i], 0), p), tree.inline.innerWidth)
+						want = narrowed(windowKey[O](seps[i], p), tree.inline.innerWidth)
 					}
 				}
 				if got != want {
