@@ -18,8 +18,8 @@ import (
 // the leaf it found in the key's cell. A leaf merged away holds nothing
 // (freed), so a stale cell costs only a descent.
 //
-// A table holds a cell for every half a leaf the tree has made, rounded up
-// to a power of two, and doubles as the tree grows past it. It starts once
+// A table holds four to eight cells a leaf, a power of two, and doubles as
+// the tree grows past it, its cells starting with the old cells' leaves. It starts once
 // the tree has customHintLeaves leaves: below that the descent is short.
 type customHints struct {
 	shift uint
@@ -62,6 +62,13 @@ func (t *genericTree[K, V, O]) noteLeaf(key K, code uint64, h *gheader) {
 		}
 		next := &customHints{cells: make([]atomic.Pointer[gheader], 1<<bits.Len64(uint64(4*leaves-1)))}
 		next.shift = uint(64 - bits.Len64(uint64(len(next.cells)-1)))
+		// Each new cell is a slice of an old one, and starts with its
+		// leaf: a grown table hints as well as the old did.
+		if r != nil {
+			for j := range next.cells {
+				next.cells[j].Store(r.cells[j>>(r.shift-next.shift)].Load())
+			}
+		}
 		if !t.customHints.CompareAndSwap(r, next) {
 			next = t.customHints.Load()
 		}
