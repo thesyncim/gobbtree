@@ -1367,10 +1367,16 @@ func (t *genericTree[K, V, O]) holdRemove(key K) (n *gleaf[K, V], version uint64
 		return nil, 0, 0, false, true
 	}
 	code := t.code(key)
-	if n, version, ok = t.writeLeafByCodes(key, code); !ok {
+	n, version, lo, hi, ranged, ok := t.writeLeafRange(key, code)
+	if !ok {
 		return nil, 0, 0, false, false
 	}
-	if i, found = t.find(n, key, code); !found {
+	if ranged {
+		i, found = t.findAmong(n, key, lo, hi)
+	} else {
+		i, found = t.find(n, key, code)
+	}
+	if !found {
 		n.latch.unlockExclusive(version)
 		return nil, 0, 0, false, true
 	}
