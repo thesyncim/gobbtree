@@ -4,17 +4,30 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
 
-// stressKey is key n of the stress test: a 16-byte prefix every key shares,
-// then n, so that every separator's window ties and each descent compares
-// separators' keys, which their leaves' first records hold.
+// stressKey is key n of the stress test: stressPrefix, which every key
+// shares, then n.
 func stressKey(n int) []byte {
-	return binary.BigEndian.AppendUint32([]byte("0123456789abcdef"), uint32(n))
+	return binary.BigEndian.AppendUint32([]byte(stressPrefix), uint32(n))
 }
+
+// stressPrefixes are the stress test's prefixes: one the nodes strip, so
+// that their windows past it tell keys apart and their prefixes refit from
+// heads whose records move; and one longer than nodes keep of custom keys'
+// prefixes, 56 bytes, so that every separator's window ties and each descent
+// compares separators' keys, which their leaves' first records hold.
+var (
+	stressPrefixes = map[string]string{
+		"stripped": "0123456789abcdef",
+		"tied":     strings.Repeat("0123456789abcdef", 4),
+	}
+	stressPrefix = stressPrefixes["stripped"]
+)
 
 // stableValue is stable key i's value, which no writer changes: every 16th
 // one takes overflow pages, which records carry their link to as they move.
@@ -34,6 +47,16 @@ func stableValue(i int) []byte {
 // or died, or a page after it went back, reads 0xA5 (scribble), not the
 // stable value.
 func TestReadersAcrossLeavesWhileCompactionsMove(t *testing.T) {
+	for name, prefix := range stressPrefixes {
+		t.Run(name, func(t *testing.T) {
+			stressPrefix = prefix
+			defer func() { stressPrefix = stressPrefixes["stripped"] }()
+			readAcrossCompactions(t)
+		})
+	}
+}
+
+func readAcrossCompactions(t *testing.T) {
 	const stable, writers, readers = 3000, 3, 4
 	ops := 60000
 	if testing.Short() {
@@ -112,7 +135,7 @@ func scanRun(t *testing.T, s *Store, i, stable int, forwards bool) bool {
 	}
 	seen := 0
 	for k, v := range seq {
-		n := int(binary.BigEndian.Uint32(k[16:]))
+		n := int(binary.BigEndian.Uint32(k[len(stressPrefix):]))
 		if n%4 == 0 {
 			if n/4 != next || !bytes.Equal(v, stableValue(next)) {
 				t.Errorf("a scan from stable key %d met stable key %d, want %d", i, n/4, next)

@@ -201,6 +201,18 @@ func (t *genericTree[K, V, O]) refitLeafOf(n *gleaf[K, V], p int) {
 		n.setPrefixOf(0, 0, 0)
 		return
 	}
+	if q := int(n.prefix.Load()); q <= p && p < 8 && t.inline.leafWidth == 8 {
+		// A prefix that grows below 8 bytes, as a split's halves' do: each
+		// code, its key's first window past the prefix, shifts past the
+		// bytes the prefix takes, as upstream's windows move
+		// (05-fence-key.md), and only the first key's window, for the head,
+		// is read.
+		for i := 0; i < count; i++ {
+			n.codes[i] <<= 8 * uint(p-q)
+		}
+		n.setPrefixOf(windowKey[O](keys[0], 0), 0, p)
+		return
+	}
 	n.setPrefixOf(windowKey[O](keys[0], 0), windowKey[O](keys[0], 8), p)
 	for i := 0; i < count; i++ {
 		w0 := uint64(0)

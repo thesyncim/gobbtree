@@ -8,6 +8,8 @@ import (
 	"math/rand/v2"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -281,5 +283,110 @@ func TestCustomKeysStripTheSharedPrefix(t *testing.T) {
 	}
 	if p := h.prefix.Load(); p < int32(len("tenant:00042/")) {
 		t.Fatalf("leaf keeps a prefix of %d bytes", p)
+	}
+}
+
+// raceKey has all of upstream's optional InlineKey methods, its CompareFrom
+// a whole compare: a racing descent may pass it a stale equalLen, whose
+// answer its version check discards.
+type raceKey struct{ s string }
+
+func (k raceKey) Compare(o raceKey) int            { return strings.Compare(k.s, o.s) }
+func (k raceKey) Window(offset int) uint64         { return StringWindow(k.s, offset) }
+func (k raceKey) HashTag() uint8                   { return uint8(min(len(k.s), 255)) }
+func (k raceKey) CompareFrom(o raceKey, _ int) int { return strings.Compare(k.s, o.s) }
+func (k raceKey) ComparePrefix(prefix []byte) int  { return fromKey(k).ComparePrefix(prefix) }
+
+// TestCustomKeyPrefixesUnderWriters reads a set of keys that stays while
+// writers churn others of their family around them, for maps of custom keys
+// with and without upstream's optional methods: their prefixes refit, and a
+// late family's shared prefix shrinks, as readers descend.
+func TestCustomKeyPrefixesUnderWriters(t *testing.T) {
+	type tree struct {
+		insert, delete func(string)
+		get            func(string) bool
+		check          func(t *testing.T) int
+	}
+	kinds := map[string]func() tree{
+		"plain/map": func() tree {
+			m := NewMapOf[textKey, int]()
+			return tree{func(k string) { m.Insert(textKey{k}, 1) }, func(k string) { m.Delete(textKey{k}) },
+				func(k string) bool { _, ok := m.Get(textKey{k}); return ok }, func(t *testing.T) int { return checkGenericTree(t, &m.generic) }}
+		},
+		"options/map": func() tree {
+			m := NewMapOf[raceKey, int]()
+			return tree{func(k string) { m.Insert(raceKey{k}, 1) }, func(k string) { m.Delete(raceKey{k}) },
+				func(k string) bool { _, ok := m.Get(raceKey{k}); return ok }, func(t *testing.T) int { return checkGenericTree(t, &m.generic) }}
+		},
+		"options/annexed": func() tree {
+			m := NewAnnexedMapOf[raceKey, int, noAnnex]()
+			return tree{func(k string) { m.Insert(raceKey{k}, 1) }, func(k string) { m.Delete(raceKey{k}) },
+				func(k string) bool { _, ok := m.Get(raceKey{k}); return ok }, func(t *testing.T) int { return checkGenericTree(t, &m.generic) }}
+		},
+	}
+	ops := 20000
+	if testing.Short() {
+		ops = 4000
+	}
+	for _, family := range []string{"constant", "tenants", "paths", "late", "padded"} {
+		for kind, build := range kinds {
+			t.Run(family+"/"+kind, func(t *testing.T) {
+				m, gen := build(), prefixFamilies[family]
+				// Stable keys end in "|s", churned ones in "|w" and probes, never
+				// inserted, in "|x": the first half's keys, as the late family's
+				// then share their prefix.
+				r := rand.New(rand.NewPCG(3, 4))
+				stable := map[string]bool{}
+				for range 3000 {
+					// A family of few keys, as padded's, gives fewer.
+					stable[gen(r, 0, 2)+"|s"] = true
+				}
+				keys := slices.Sorted(maps.Keys(stable))
+				for _, k := range keys {
+					m.insert(k)
+				}
+				var wg sync.WaitGroup
+				var done atomic.Bool
+				for w := range 3 {
+					wg.Go(func() {
+						r := rand.New(rand.NewPCG(uint64(w), 9))
+						for i := range ops {
+							k := gen(r, i, ops) + "|w"
+							if r.IntN(3) == 0 {
+								m.delete(k)
+							} else {
+								m.insert(k)
+							}
+						}
+					})
+				}
+				var readers sync.WaitGroup
+				for rd := range 3 {
+					readers.Go(func() {
+						r := rand.New(rand.NewPCG(uint64(rd), 10))
+						for !done.Load() {
+							k := keys[r.IntN(len(keys))]
+							if !m.get(k) {
+								t.Errorf("stable key %q missing", k)
+								return
+							}
+							if probe := strings.TrimSuffix(k, "|s") + "|x"; m.get(probe) {
+								t.Errorf("probe %q present", probe)
+								return
+							}
+						}
+					})
+				}
+				wg.Wait()
+				done.Store(true)
+				readers.Wait()
+				m.check(t)
+				for _, k := range keys {
+					if !m.get(k) {
+						t.Fatalf("stable key %q missing at rest", k)
+					}
+				}
+			})
+		}
 	}
 }

@@ -201,6 +201,10 @@ The API follows upstream's operations with Go names. Results are multiple return
 | bbtree-store `BBTreeStore` · `get` · `get_into` · `contains_key` · `insert` · `remove` · `scan` · `scan_rev` · `range` | `store.Store` · `Get` · `GetInto` · `Contains` · `Insert` · `Remove` · `Scan` · `ScanReverse` · `Range`; Go has no `Drop`, so `Clear` gives the pages back |
 | bbtree-store `wal::WalWriter::open` · `append` · `RecordAddress::read_value` · `WalStorage` | `wal.Open` · `Writer.Append` · `Address.ReadValue` · `wal.Storage`, blocking with a `context.Context` where upstream's are async |
 
+Different from upstream:
+
+- **Custom keys' nodes:** prefixes stop at 56 bytes; below 8 bytes of prefix a node's windows are its keys' first, past it, so a lookup takes no other; and narrower widths keep leaves' windows in 8-byte slots and internal nodes' in 4-byte ones, as Go's nodes hold 32 entries whatever their windows' width.
+
 Beyond upstream:
 
 - **`Map`:** `First`, `Last`, `PopFirst`, `PopLast`, `LoadOrStoreFunc`, `UpdateAll` and `UpdateRange`.
@@ -213,7 +217,6 @@ Not carried over, because Go has no counterpart:
 - **Rust-only traits:** no operator overloading for `Index` (use `Get`), and no `Hash`.
 - **Allocators and `InsertError`:** Go's allocation failure is fatal, so `Insert` has no error path.
 - **`NodeConfig` page sizes, not ported for now:** nodes hold a fixed 32 entries. One copy of the node code could serve several sizes, but measured with 64-entry nodes, every `Tree` and `Map` cell was slower (4–26% at 262K entries, churn up to 38%): the searches compare 8-byte codes, so a wider node costs a level's work twice over and shifts twice the entries. A store ran its lookups no faster and its inserts 5–20% slower, in 15% less memory.
-- **Custom keys' nodes,** where they differ from upstream's: prefixes stop at 56 bytes; below 8 bytes of prefix a node's windows are its keys' first, past it, so a lookup takes no other; and narrower widths keep leaves' windows in 8-byte slots and internal nodes' in 4-byte ones, as Go's nodes hold 32 entries whatever their windows' width.
 - **The `inspect` and `check_invariants` debugging helpers.**
 
 ## SIMD

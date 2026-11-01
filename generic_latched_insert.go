@@ -998,6 +998,17 @@ func (t *genericTree[K, V, O]) moveLeafEntries(dst *gleaf[K, V], at int, src *gl
 		src.codes[j] = codePad
 	}
 	clear(src.values[srcCount-count : srcCount])
+	if windowed[O, K]() {
+		// A custom key's code is its window at its leaf's prefix: keys
+		// moving between leaves of different prefixes take their new one's.
+		if p := int(dst.prefix.Load()); p != int(src.prefix.Load()) {
+			keys := dst.keyed()
+			for j := at; j < at+count; j++ {
+				k := keys[j&(nodeSize-1)]
+				dst.codes[j&(nodeSize-1)] = narrowed(t.codeOf(k, windowKey[O](k, 0), p), t.inline.leafWidth)
+			}
+		}
+	}
 	if t.wordCodes() {
 		// The leaves' cells from the first's first key on go stale.
 		low := src.codes[0]
@@ -1039,6 +1050,13 @@ func (t *genericTree[K, V, O]) splitEntries(dst, src *gleaf[K, V], from, count i
 			dk, sk := dst.keyed(), src.keyed()
 			dk[d], sk[k] = sk[k], zk
 		}
+	}
+	if windowed[O, K]() {
+		// The new half's codes are its keys' windows at src's prefix, which
+		// it takes, until it refits to its fences.
+		dst.prefix.Store(src.prefix.Load())
+		dst.head[0].Store(src.head[0].Load())
+		dst.head[1].Store(src.head[1].Load())
 	}
 	if t.wordCodes() {
 		// The leaves' cells from src's first key on go stale.

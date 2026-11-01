@@ -39,7 +39,10 @@ type (
 	// it where their windows tie, with what the node's keys share and the
 	// bytes of the windows it keeps, so that a key reads its bytes from
 	// where keys can differ. Internal nodes then keep 4 bytes of 8-byte
-	// windows, as for strings: their extra ties cost little.
+	// windows, as for strings: their extra ties cost little. A lookup that
+	// races a writer may pass an equalLen that a change makes untrue, and
+	// discard the answer: CompareFrom must return without panicking, or
+	// reading past either key, whatever equalLen is.
 	CompareFromKey[K any] interface {
 		CompareFrom(other K, equalLen int) int
 	}
