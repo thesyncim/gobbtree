@@ -1351,6 +1351,36 @@ func (t *genericTree[K, V, O]) holdWrite(key K) (n *gleaf[K, V], version, w0 uin
 	return n, version, w0, i, found, true
 }
 
+// holdRemove is custom key key's leaf, latched exclusively from version, by
+// the racing descent writers take (writeLeafByCodes), and key's index
+// there, where the leaf holds key and its removal needs only the leaf, as
+// removeLatched removes: the entry is not the leaf's first, whose key may
+// be a separator, and the leaf keeps its minimum, or is the root. found is
+// false, holding nothing, where the leaf doesn't hold key; ok false,
+// holding nothing, where the descent can't settle, or the removal needs
+// more. A shared tree's, started.
+func (t *genericTree[K, V, O]) holdRemove(key K) (n *gleaf[K, V], version uint64, i int, found, ok bool) {
+	if !windowed[O, K]() {
+		return nil, 0, 0, false, false
+	}
+	if t.root.Load() == nil {
+		return nil, 0, 0, false, true
+	}
+	code := t.code(key)
+	if n, version, ok = t.writeLeafByCodes(key, code); !ok {
+		return nil, 0, 0, false, false
+	}
+	if i, found = t.find(n, key, code); !found {
+		n.latch.unlockExclusive(version)
+		return nil, 0, 0, false, true
+	}
+	if t.root.Load() != &n.gheader && (int(n.count.Load()) <= leafMinLen || i == 0 && !t.whole) {
+		n.latch.unlockExclusive(version)
+		return nil, 0, 0, true, false
+	}
+	return n, version, i, true, true
+}
+
 // insertIntoWithLeaf is insertInto for insertWithLeaf, on leaf n, held at
 // version: done unless the leaf is full and key isn't in it, in which case
 // n stays held. Otherwise it lets go of n, also where a callback panics.

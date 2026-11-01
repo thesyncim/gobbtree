@@ -214,9 +214,24 @@ func (s *Store) Insert(key, value []byte) (replaced bool, err error) {
 
 // Remove removes key, and reports whether the store held it.
 func (s *Store) Remove(key []byte) bool {
+	h := &s.heap
 	var q pointQuery
-	stored, _, ok := s.m.DeleteWithLeaf(q.key(key), func(leaf storeLeaf, stored storeKey, _ struct{}) {
-		s.heap.beforeRemoval(leaf, stored)
+	query := q.key(key)
+	// The leaf held, the key comes out with no callback; a removal that
+	// rebalances the map takes the map's.
+	if w, found, held := s.m.HoldRemove(query); held {
+		q.release()
+		if !found {
+			return false
+		}
+		stored := w.Key()
+		h.beforeRemoval(w.Leaf(), stored)
+		w.Remove()
+		h.killRecord(stored.record())
+		return true
+	}
+	stored, _, ok := s.m.DeleteWithLeaf(query, func(leaf storeLeaf, stored storeKey, _ struct{}) {
+		h.beforeRemoval(leaf, stored)
 	})
 	q.release()
 	if !ok {
@@ -224,7 +239,7 @@ func (s *Store) Remove(key []byte) bool {
 	}
 	// The map reads the key until the removal returns: its record dies only
 	// now.
-	s.heap.killRecord(stored.record())
+	h.killRecord(stored.record())
 	return true
 }
 

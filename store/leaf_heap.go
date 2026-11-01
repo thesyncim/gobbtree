@@ -1,9 +1,6 @@
 package store
 
 import (
-	"cmp"
-	"encoding/binary"
-	"slices"
 	"sync/atomic"
 	"unsafe"
 
@@ -150,6 +147,19 @@ func (a *leafHeap) holds(page *heapPage) bool {
 	return false
 }
 
+// holdsAt reports whether the chain holds the page the record at p lies
+// in, by its address against the pages', each a heap object of
+// g.heapObject bytes: as upstream rounds a record's address down to its
+// page, it reads nothing of the record.
+func (a *leafHeap) holdsAt(g *geometry, p unsafe.Pointer) bool {
+	for page := a.head; page != nil; page = page.next {
+		if uintptr(p)-uintptr(unsafe.Pointer(page)) < uintptr(g.heapObject) {
+			return true
+		}
+	}
+	return false
+}
+
 // recordHeap is where a store's records go: its leaves' heaps, whose pages
 // its budget counts, upstream's RecordHeap.
 type recordHeap struct {
@@ -271,16 +281,15 @@ func (h *recordHeap) write(leaf storeLeaf, key, value []byte, link overflowLink)
 // be had, the leaf as it was.
 func (h *recordHeap) overwrite(leaf storeLeaf, i int, key, value []byte, link overflowLink) bool {
 	r := leaf.Keys()[i].record()
-	// A record keeps its value whole where it fits its page's room, as
-	// entry reads it: then a value no longer goes in its place, by one read
-	// of the header, its shortened tail dying in its page.
+	// Its header once: a record keeps its value whole, with no link, where
+	// the whole fits a page's room (keptLen).
 	w := r.headWord()
 	keyLen, valueLen := int(uint16(w)), int(w>>32)
 	if recordHeader+keyLen+valueLen <= h.g.room && len(value) <= valueLen {
-		binary.LittleEndian.PutUint32(r.header()[valueLenAt:], uint32(len(value)))
-		copy(bytesAt(r.at, recordHeader+keyLen, len(value)), value)
-		if dead := valueLen - len(value); dead > 0 {
-			h.killIn(r.page(), unsafe.Add(r.at, recordHeader+keyLen+len(value)), dead)
+		r.overwriteValue(keyLen, valueLen, value)
+		if len(value) < valueLen {
+			// The bytes past the new value are a hole.
+			h.killIn(r.page(), unsafe.Add(r.at, recordHeader+keyLen+len(value)), valueLen-len(value))
 		}
 		return true
 	}
@@ -304,7 +313,16 @@ func (h *recordHeap) overwrite(leaf storeLeaf, i int, key, value []byte, link ov
 func (h *recordHeap) beforeRemoval(leaf storeLeaf, removed storeKey) {
 	a := h.adopt(leaf)
 	r := removed.record()
-	page, size := r.page(), r.size(&h.g)
+	// Its header once: its page and its size.
+	w := r.headWord()
+	page, size := (*heapPage)(unsafe.Add(r.at, -int(uint16(w>>16)))), h.g.sizeOf(int(uint16(w)), int(w>>32))
+	// A page more than half live once the record dies is not half holes,
+	// whichever chain holds it: its live bytes, an atomic, tell before the
+	// chain is walked for whether it is this leaf's, whose top only its
+	// holder reads.
+	if (page.liveBytes()-size)*2 > h.g.room {
+		return
+	}
 	if !a.holds(page) || (page.liveBytes()-size)*2 > page.used() {
 		return
 	}
@@ -320,8 +338,17 @@ func (h *recordHeap) beforeRemoval(leaf storeLeaf, removed storeKey) {
 // its bytes die in its page, which may be any leaf's then, or an orphan;
 // whether that was an orphan they emptied, which went back too.
 func (h *recordHeap) killRecord(r record) bool {
-	page, size := r.page(), r.size(&h.g)
-	h.freeOverflow(r.link(&h.g))
+	g := &h.g
+	// Its header once: its page, its size, and its link, if it has one.
+	w := r.headWord()
+	keyLen, offset, valueLen := int(uint16(w)), int(uint16(w>>16)), int(w>>32)
+	page := (*heapPage)(unsafe.Add(r.at, -offset))
+	kept := g.keptLen(keyLen, valueLen)
+	size := recordHeader + keyLen + kept
+	if kept < valueLen {
+		size += linkSize
+		h.freeOverflow(overflowLink{id: r.linkID(keyLen), ok: true})
+	}
 	return h.killIn(page, r.at, size)
 }
 
@@ -380,11 +407,47 @@ func (h *recordHeap) roomFor(leaf storeLeaf, size int) (*heapPage, int, bool) {
 	return a.room(&h.g, size)
 }
 
-// ownRecord is a record of a compacting leaf's key, in its chain.
-type ownRecord struct {
-	at    unsafe.Pointer
-	index int
-	size  int
+// ownRecord is a record of a compacting leaf's key, in its chain, packed
+// to sort as a word: its page's place in the chain, then its offset in the
+// page, so that sorted, the records lie page by page, each page's by
+// address, as upstream sorts them by address; then its key's index and its
+// size, which the slide needs. A page's offsets and a record's size are
+// below 64 KiB (maxHeapPageSize).
+type ownRecord uint64
+
+func packOwn(page, offset, index, size int) ownRecord {
+	return ownRecord(uint64(page)<<48 | uint64(offset)<<32 | uint64(index)<<16 | uint64(size))
+}
+
+func (o ownRecord) page() int   { return int(o >> 48) }
+func (o ownRecord) offset() int { return int(uint16(o >> 32)) }
+func (o ownRecord) index() int  { return int(uint16(o >> 16)) }
+func (o ownRecord) size() int   { return int(uint16(o)) }
+
+// sortOwn sorts own, a leaf's records, at most a leaf's keys of them, by
+// insertion, in place: as upstream's sort_unstable_by_key inlines its
+// comparisons, where slices.Sort runs pdqsort through a dictionary.
+func sortOwn(own []ownRecord) {
+	for i := 1; i < len(own); i++ {
+		o, j := own[i], i
+		for ; j > 0 && own[j-1] > o; j-- {
+			own[j] = own[j-1]
+		}
+		own[j] = o
+	}
+}
+
+// placeIn is where the record at p lies in chain, its page's index and its
+// offset in the page, or -1 if it lies in none of them: by its address
+// against the pages', each a heap object of size bytes, as upstream rounds
+// a record's address down to its page, reading nothing of the record.
+func placeIn(chain []*heapPage, p unsafe.Pointer, size int) (int, int) {
+	for j, page := range chain {
+		if d := uintptr(p) - uintptr(unsafe.Pointer(page)); d < uintptr(size) {
+			return j, int(d)
+		}
+	}
+	return -1, 0
 }
 
 // compact slides the records of leaf's keys, but gone's, which stays where
@@ -402,90 +465,105 @@ type ownRecord struct {
 func (h *recordHeap) compact(leaf storeLeaf, gone unsafe.Pointer) {
 	g := &h.g
 	a := leaf.Annex()
-	var chainBuf, runBuf, keptBuf [8]*heapPage
+	var chainBuf [8]*heapPage
 	chain := chainBuf[:0]
 	for page := a.head; page != nil; page = page.next {
 		chain = append(chain, page)
 	}
-	// The leaf's records in its chain, by address: each page's together.
+	// The leaf's records in its chain, by address, each page's together,
+	// and the keys whose records lie elsewhere, which stay where they are
+	// through the slide. A record's address tells its page; its header is
+	// read once, for its size.
 	var ownBuf [64]ownRecord
-	own := ownBuf[:0]
+	var awayBuf [64]uint16
+	own, away := ownBuf[:0], awayBuf[:0]
 	for i, k := range leaf.Keys() {
 		if k.p == gone {
 			continue
 		}
-		if r := k.record(); slices.Contains(chain, r.page()) {
-			own = append(own, ownRecord{at: r.at, index: i, size: r.size(g)})
+		j, offset := placeIn(chain, k.p, g.heapObject)
+		if j < 0 {
+			away = append(away, uint16(i))
+			continue
 		}
+		own = append(own, packOwn(j, offset, i, record{k.p}.size(g)))
 	}
-	slices.SortFunc(own, func(x, y ownRecord) int { return cmp.Compare(uintptr(x.at), uintptr(y.at)) })
-	recordsIn := func(page *heapPage) []ownRecord {
-		start, end := uintptr(page.at(recordsOffset)), uintptr(unsafe.Pointer(page))+uintptr(g.heapObject)
-		first, _ := slices.BinarySearchFunc(own, start, func(o ownRecord, at uintptr) int { return cmp.Compare(uintptr(o.at), at) })
-		last := first
-		for last < len(own) && uintptr(own[last].at) < end {
-			last++
+	sortOwn(own)
+	// Page j's records are own[seg[j]:seg[j+1]].
+	var segBuf [9]int
+	seg := append(segBuf[:0], 0)
+	for j := range chain {
+		next := seg[j]
+		for next < len(own) && own[next].page() == j {
+			next++
 		}
-		return own[first:last]
+		seg = append(seg, next)
 	}
-	// The pages the run slides over, and those others' records keep.
+	// The pages the run slides over, and those others' records keep, by
+	// their places in the chain.
+	var runBuf, keptBuf [8]int
 	run, kept := runBuf[:0], keptBuf[:0]
-	for _, page := range chain {
+	for j, page := range chain {
 		ownBytes := 0
-		for _, o := range recordsIn(page) {
-			ownBytes += o.size
+		for _, o := range own[seg[j]:seg[j+1]] {
+			ownBytes += o.size()
 		}
 		switch {
 		case ownBytes == 0:
 			h.letGo(page)
 		case page.liveBytes() == ownBytes:
-			run = append(run, page)
+			run = append(run, j)
 		default:
-			kept = append(kept, page)
+			kept = append(kept, j)
 		}
 	}
 	// The writer, a page of the run and where in it, never passes the
 	// record it moves next: a record that doesn't fit after the writer in
 	// its page lies in a later page.
 	to, used := 0, 0
-	for _, from := range run {
-		for _, o := range recordsIn(from) {
-			if used+o.size > g.room {
-				run[to].setUsed(used)
+	for _, j := range run {
+		from := chain[j]
+		for _, o := range own[seg[j]:seg[j+1]] {
+			size := o.size()
+			if used+size > g.room {
+				chain[run[to]].setUsed(used)
 				to, used = to+1, 0
 			}
 			// The record, and its new place, which only records moved
 			// already held, lie in pages where only the leaf's records
 			// live; the map holds the leaf exclusively, so no goroutine
 			// reads them.
-			moved := record{o.at}.moveTo(g, run[to], recordsOffset+used, record{o.at}.generation())
-			leaf.ReplaceKey(o.index, storeKey{moved.at})
-			if scribble && o.index == 0 && moved.at != o.at {
+			dst, at := chain[run[to]], from.at(o.offset())
+			moved := record{at}.slideTo(dst, recordsOffset+used, size)
+			leaf.ReplaceKey(o.index(), storeKey{moved.at})
+			if scribble && o.index() == 0 && moved.at != at {
 				slidFirst.Add(1)
 			}
-			from.moveLive(run[to], o.size)
-			used += o.size
+			from.moveLive(dst, size)
+			used += size
 		}
 	}
 	a.head = nil
 	for i := len(kept) - 1; i >= 0; i-- {
-		kept[i].next = a.head
-		a.head = kept[i]
+		page := chain[kept[i]]
+		page.next = a.head
+		a.head = page
 	}
 	if to < len(run) {
-		run[to].setUsed(used)
-		for _, empty := range run[to+1:] {
+		chain[run[to]].setUsed(used)
+		for _, j := range run[to+1:] {
 			// Every record of the page moved out, and no chain holds it
 			// any more.
-			h.freePage(empty)
+			h.freePage(chain[j])
 		}
-		for _, page := range run[:to+1] {
+		for _, j := range run[:to+1] {
+			page := chain[j]
 			page.next = a.head
 			a.head = page
 		}
 	}
-	for i, k := range leaf.Keys() {
-		if k.p != gone && !slices.Contains(chain, k.record().page()) && !h.pull(leaf, i) {
+	for _, i := range away {
+		if !h.pull(leaf, int(i)) {
 			return
 		}
 	}
@@ -515,10 +593,9 @@ func (h *recordHeap) pullStale(leaf storeLeaf) {
 		return
 	}
 	for i, k := range leaf.Keys() {
-		// The chain first, from the record's page: only a record elsewhere
-		// is read.
-		r := k.record()
-		if a.holds(r.page()) || generation-r.generation() < 2 {
+		// The chain first, from the record's address: only a record
+		// elsewhere is read.
+		if a.holdsAt(&h.g, k.p) || generation-k.record().generation() < 2 {
 			continue
 		}
 		if !h.pull(leaf, i) {
@@ -542,7 +619,7 @@ func (h *recordHeap) pull(leaf storeLeaf, i int) bool {
 		}
 	}
 	from := r.page()
-	moved := r.moveTo(&h.g, page, offset, a.generation)
+	moved := r.moveTo(page, offset, size, a.generation)
 	leaf.ReplaceKey(i, storeKey{moved.at})
 	// Its bytes die where they were; its overflow pages are the copy's.
 	h.killIn(from, r.at, size)

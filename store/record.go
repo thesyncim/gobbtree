@@ -122,8 +122,12 @@ func (g *geometry) writeRecord(page *heapPage, offset int, key, value []byte, li
 	if link.ok != (kept < len(value)) {
 		panic("store: overflow pages hold what a record doesn't keep of its value")
 	}
+	size := recordHeader + len(key) + kept
+	if link.ok {
+		size += linkSize
+	}
 	r := record{page.at(offset)}
-	b := unsafe.Slice((*byte)(r.at), g.sizeOf(len(key), len(value)))
+	b := unsafe.Slice((*byte)(r.at), size)
 	binary.LittleEndian.PutUint16(b[keyLenAt:], uint16(len(key)))
 	binary.LittleEndian.PutUint16(b[offsetAt:], uint16(offset))
 	binary.LittleEndian.PutUint32(b[valueLenAt:], uint32(len(value)))
@@ -144,33 +148,45 @@ func (r record) link(g *geometry) overflowLink {
 	if g.keptLen(keyLen, valueLen) == valueLen {
 		return overflowLink{}
 	}
-	id := binary.LittleEndian.Uint32(unsafe.Slice((*byte)(unsafe.Add(r.at, recordHeader+keyLen)), linkSize))
-	return overflowLink{id: id, ok: true}
+	return overflowLink{id: r.linkID(keyLen), ok: true}
 }
 
-// moveTo copies the record to offset in page, with generation, and returns
-// the copy, which links the record's overflow pages, its then. The bytes
-// there may overlap the record's, as a compaction slides it down its page.
-func (r record) moveTo(g *geometry, page *heapPage, offset int, generation uint8) record {
-	size := r.size(g)
+// linkID is the id of the record's overflow pages, past its key of keyLen
+// bytes; the record has one.
+func (r record) linkID(keyLen int) uint32 {
+	return binary.LittleEndian.Uint32(unsafe.Slice((*byte)(unsafe.Add(r.at, recordHeader+keyLen)), linkSize))
+}
+
+// slideTo copies the record, of size bytes, to offset in page, as a
+// compaction slides it along its leaf's chain, and returns the copy, which
+// keeps the record's generation and links its overflow pages, its then. The
+// bytes there may overlap the record's, as a slide down its own page does.
+func (r record) slideTo(page *heapPage, offset, size int) record {
 	to := record{page.at(offset)}
 	copy(unsafe.Slice((*byte)(to.at), size), unsafe.Slice((*byte)(r.at), size))
-	h := to.header()
-	binary.LittleEndian.PutUint16(h[offsetAt:], uint16(offset))
-	h[generationAt] = generation
+	binary.LittleEndian.PutUint16(to.header()[offsetAt:], uint16(offset))
 	return to
 }
 
-// overwriteValue gives the record value in place of its own, which it
-// keeps whole, and which is no shorter: the bytes past the new value are a
-// hole. The caller holds the record's leaf exclusively: no goroutine reads
-// it.
-func (r record) overwriteValue(g *geometry, value []byte) {
-	if r.link(g).ok || len(value) > r.valueLen() {
-		panic("store: a value overwrites one kept whole, no shorter")
+// moveTo copies the record, of size bytes, to offset in page, with
+// generation, as a pull moves it into its own leaf's chain, and returns the
+// copy, which links the record's overflow pages, its then.
+func (r record) moveTo(page *heapPage, offset, size int, generation uint8) record {
+	to := r.slideTo(page, offset, size)
+	to.header()[generationAt] = generation
+	return to
+}
+
+// overwriteValue gives the record, whose key is keyLen bytes and whose
+// value, of valueLen, it keeps whole, value in place of its own, which is
+// no shorter: the bytes past the new value are a hole. The caller holds
+// the record's leaf exclusively: no goroutine reads it.
+func (r record) overwriteValue(keyLen, valueLen int, value []byte) {
+	if len(value) > valueLen {
+		panic("store: a value overwrites one no shorter")
 	}
 	binary.LittleEndian.PutUint32(r.header()[valueLenAt:], uint32(len(value)))
-	copy(bytesAt(r.at, recordHeader+r.keyLen(), len(value)), value)
+	copy(bytesAt(r.at, recordHeader+keyLen, len(value)), value)
 }
 
 // recordValue is a record's value: the bytes its record keeps, then its
@@ -219,11 +235,9 @@ func (h *recordHeap) valueOf(r record, keyLen, valueLen int) recordValue {
 	if kept == valueLen {
 		return recordValue{start: bytesAt(r.at, recordHeader+keyLen, valueLen)}
 	}
-	link := unsafe.Add(r.at, recordHeader+keyLen)
-	id := binary.LittleEndian.Uint32(unsafe.Slice((*byte)(link), linkSize))
 	return recordValue{
-		start: bytesAt(link, linkSize, kept),
-		first: h.table.page(id),
+		start: bytesAt(r.at, recordHeader+keyLen+linkSize, kept),
+		first: h.table.page(r.linkID(keyLen)),
 		rest:  valueLen - kept,
 	}
 }

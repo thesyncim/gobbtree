@@ -2,6 +2,7 @@ package gobbtree
 
 import (
 	"reflect"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -56,21 +57,37 @@ func NewAnnexedMapOf[K Key[K], V any, A any, PA LeafAnnex[A]]() *AnnexedMapOf[K,
 // is valid only during the callback.
 type AnnexedLeaf[K any, A any] struct {
 	annex *A
-	leaf  unsafe.Pointer
-	view  leafView[K]
+	// keys are the leaf's, in place where the leaf keeps its keys as Ks,
+	// and head its copy of the first, where it keeps one; a text leaf's
+	// keys are read into keys, and head is nil.
+	keys []K
+	head *atomic.Pointer[headCopy[K]]
 }
 
 // Annex is the leaf's annex.
 func (l AnnexedLeaf[K, A]) Annex() *A { return l.annex }
 
 // Keys are the leaf's keys, in order, not to be changed but by ReplaceKey.
-func (l AnnexedLeaf[K, A]) Keys() []K { return l.view.leafKeys(l.leaf) }
+func (l AnnexedLeaf[K, A]) Keys() []K { return l.keys }
 
 // ReplaceKey replaces the leaf's key i with key, which must compare equal
 // to it: a key that refers to where its bytes lie, as the store's do, is
 // replaced as they move. Where the leaf keeps a copy of its first key, for
-// lookups past it, the copy is replaced too.
-func (l AnnexedLeaf[K, A]) ReplaceKey(i int, key K) { l.view.replaceKey(l.leaf, i, key) }
+// lookups past it, the copy is replaced too. Text keys are their bytes,
+// which the leaf keeps: an equal key is the same one, and nothing changes.
+func (l AnnexedLeaf[K, A]) ReplaceKey(i int, key K) {
+	l.keys[i] = key
+	// The leaf's head is a copy of its first key, which lookups past its
+	// separator compare racing: they read the old copy or the new, equal
+	// either way, and whose windows, the key's bytes, stay.
+	if i == 0 && l.head != nil {
+		if c := l.head.Load(); c != nil {
+			replaced := *c
+			replaced.key = key
+			l.head.Store(&replaced)
+		}
+	}
+}
 
 // UpdateOrInsertWithLeaf runs occupied on the entry whose key equals key,
 // its index among the leaf's Keys and its value to change, the index being
@@ -180,6 +197,53 @@ func (w LeafWrite[K, V, A, PA]) Insert(key K, value V) {
 
 // Release lets go of the leaf.
 func (w LeafWrite[K, V, A, PA]) Release() { w.n.latch.unlockExclusive(w.version) }
+
+// HoldRemove holds key's leaf exclusively, found as a write finds it
+// (HoldWrite), with the index of key's entry there, for a container that
+// takes what it keeps of an entry out itself, as a store kills its record,
+// with no callback: DeleteWithLeaf calls its own through a function value.
+// found is false, holding nothing, where the map holds no such key. ok is
+// false, holding nothing, where the removal needs more than the leaf: the
+// entry is the leaf's first, whose key may be a separator, or the leaf
+// would be left underfull, or the leaf can't be found racing; the caller
+// then removes through DeleteWithLeaf. The caller must not use the map
+// while it holds the leaf, and must Remove or Release; a panic meanwhile
+// leaves the leaf held, as upstream's contract has it of code run on an
+// entry.
+func (m *AnnexedMapOf[K, V, A, PA]) HoldRemove(key K) (w LeafRemove[K, V, A, PA], found, ok bool) {
+	n, version, i, found, ok := m.generic.holdRemove(key)
+	return LeafRemove[K, V, A, PA]{&m.generic, n, version, i}, found, ok
+}
+
+// LeafRemove is a leaf of an AnnexedMapOf that HoldRemove holds
+// exclusively, with the entry to remove.
+type LeafRemove[K Key[K], V any, A any, PA LeafAnnex[A]] struct {
+	t       *genericTree[K, V, annexOrder[K, A, PA]]
+	n       *gleaf[K, V]
+	version uint64
+	i       int
+}
+
+// Leaf is the held leaf.
+func (w LeafRemove[K, V, A, PA]) Leaf() AnnexedLeaf[K, A] { return annexedLeafOf[A](w.t, w.n) }
+
+// Index is the index among the leaf's Keys of the entry.
+func (w LeafRemove[K, V, A, PA]) Index() int { return w.i }
+
+// Key is the entry's key, as the map stored it.
+func (w LeafRemove[K, V, A, PA]) Key() K { return w.n.keyed()[w.i&(nodeSize-1)] }
+
+// Value is the entry's value.
+func (w LeafRemove[K, V, A, PA]) Value() V { return w.n.values[w.i&(nodeSize-1)] }
+
+// Remove takes the entry out, and lets go of the leaf.
+func (w LeafRemove[K, V, A, PA]) Remove() {
+	w.t.removeEntry(w.n, w.i, false)
+	w.n.latch.unlockExclusive(w.version)
+}
+
+// Release lets go of the leaf, the entry in it.
+func (w LeafRemove[K, V, A, PA]) Release() { w.n.latch.unlockExclusive(w.version) }
 
 // WalkLeaves walks the map's leaves with entries in b, in key order or in
 // reverse, a leaf at a time: Next hands out each leaf's keys and values in
@@ -319,51 +383,29 @@ func (t *genericTree[K, V, O]) releaseAnnexes(h *gheader) {
 }
 
 // annexedLeafOf is leaf n of annexed tree t, held, whose annexes are As,
-// for a callback.
+// for a callback: its keys in place, and its head, where it keeps them as
+// Ks; a text leaf's keys read into a slice of their own, as what a callback
+// does to them, nothing, needs no leaf.
 func annexedLeafOf[A any, K any, V any, O keyOrder[K]](t *genericTree[K, V, O], n *gleaf[K, V]) AnnexedLeaf[K, A] {
-	return AnnexedLeaf[K, A]{annex: (*A)(t.annexOf(n)), leaf: unsafe.Pointer(n), view: t}
-}
-
-// leafView is what an AnnexedLeaf asks of its tree, by the leaf's address.
-type leafView[K any] interface {
-	leafKeys(leaf unsafe.Pointer) []K
-	replaceKey(leaf unsafe.Pointer, i int, key K)
-}
-
-func (t *genericTree[K, V, O]) leafKeys(leaf unsafe.Pointer) []K {
-	n := (*gleaf[K, V])(leaf)
-	count := int(n.count.Load())
-	if !prefixed[O, K]() {
-		return n.keyed()[:count:count]
+	if prefixed[O, K]() {
+		return textAnnexedLeafOf[A](t, n)
 	}
-	keys := make([]K, count)
+	count := int(n.count.Load())
+	return AnnexedLeaf[K, A]{
+		annex: (*A)(t.annexOf(n)),
+		keys:  n.keyed()[:count:count],
+		head:  &(*keyedLeaf[K, V])(unsafe.Pointer(n)).head,
+	}
+}
+
+// textAnnexedLeafOf is annexedLeafOf for a text leaf, out of line: the
+// keyed case inlines into its callers without it.
+func textAnnexedLeafOf[A any, K any, V any, O keyOrder[K]](t *genericTree[K, V, O], n *gleaf[K, V]) AnnexedLeaf[K, A] {
+	keys := make([]K, n.count.Load())
 	for i := range keys {
 		keys[i] = t.key(n, i)
 	}
-	return keys
-}
-
-func (t *genericTree[K, V, O]) replaceKey(leaf unsafe.Pointer, i int, key K) {
-	n := (*gleaf[K, V])(leaf)
-	if i < 0 || i >= int(n.count.Load()) {
-		panic("gobbtree: key index out of range")
-	}
-	if prefixed[O, K]() {
-		// Text keys are their bytes, which the leaf keeps: an equal key is
-		// the same one.
-		return
-	}
-	n.keyed()[i] = key
-	// The leaf's head is a copy of its first key, which lookups past its
-	// separator compare racing: they read the old copy or the new, equal
-	// either way, and whose windows, the key's bytes, stay.
-	if i == 0 {
-		if head := &(*keyedLeaf[K, V])(leaf).head; head.Load() != nil {
-			c := *head.Load()
-			c.key = key
-			head.Store(&c)
-		}
-	}
+	return AnnexedLeaf[K, A]{annex: (*A)(t.annexOf(n)), keys: keys}
 }
 
 // compareSeparatorHeld compares internal node n's separator i with key for

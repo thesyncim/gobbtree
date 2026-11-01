@@ -167,6 +167,88 @@ func TestAnnexesFollowTheirLeaves(t *testing.T) {
 	}
 }
 
+// A removal the leaf alone settles, held through HoldRemove, takes the entry
+// out as DeleteWithLeaf does, or leaves it, released; one that needs more,
+// of a leaf's first key or of a leaf it would leave underfull, is refused,
+// holding nothing, for DeleteWithLeaf; and a key the map doesn't hold is
+// found absent.
+func TestAnnexedHoldRemove(t *testing.T) {
+	pages := &testPages{live: map[*testPage]bool{}}
+	m := NewAnnexedMapOf[annexKey, uint64, pagePerEntry]()
+	tree := &m.generic
+	rng := rand.New(rand.NewPCG(9, 9))
+	model := map[annexKey]uint64{}
+	held, released, refused, absent := 0, 0, 0, 0
+	for step := range uint64(40000) {
+		key := annexKey(rng.Uint64N(3000))
+		if step < 3000 || rng.IntN(3) == 0 {
+			pagedInsert(t, m, pages, key, step, false)
+			model[key] = step
+			continue
+		}
+		want, had := model[key]
+		w, found, ok := m.HoldRemove(key)
+		switch {
+		case !ok:
+			// The removal rebalances, or the leaf wasn't settled: the map
+			// is as it was.
+			refused++
+			got, ok := pagedDelete(t, m, key, true)
+			if ok != had || got != want {
+				t.Fatalf("step %d: delete of %d gave %d %v, want %d %v", step, key, got, ok, want, had)
+			}
+		case !found:
+			absent++
+			if had {
+				t.Fatalf("step %d: HoldRemove(%d) found nothing, model has it", step, key)
+			}
+		default:
+			leaf := w.Leaf()
+			keys := leaf.Keys()
+			if !had || !sortedKeys(keys) || keys[w.Index()] != key || w.Key() != key || w.Value() != want {
+				t.Fatalf("step %d: HoldRemove(%d) held %d at %d of %v, value %d; model %d %v", step, key, w.Key(), w.Index(), keys, w.Value(), want, had)
+			}
+			if tree.root.Load() != &w.n.gheader && (w.i == 0 || int(w.n.count.Load()) <= leafMinLen) {
+				t.Fatalf("step %d: HoldRemove(%d) held entry %d of a leaf of %d, which rebalances", step, key, w.i, w.n.count.Load())
+			}
+			if step%5 == 0 {
+				released++
+				w.Release()
+				if got, ok := m.Get(key); !ok || got != want {
+					t.Fatalf("step %d: Get(%d) = %d %v after a release, want %d", step, key, got, ok, want)
+				}
+				continue
+			}
+			held++
+			a := leaf.Annex()
+			if n := len(a.pages); n > 0 {
+				a.pages[n-1].pages.free(a.pages[n-1])
+				a.pages = a.pages[:n-1]
+			}
+			w.Remove()
+		}
+		delete(model, key)
+	}
+	// Holds are racing reads', which only plain-store builds take: the
+	// others refuse every removal, for DeleteWithLeaf.
+	if seqlockPlainStores && (held == 0 || released == 0 || refused == 0 || absent == 0) {
+		t.Fatalf("held %d, released %d, refused %d, absent %d: each path runs", held, released, refused, absent)
+	}
+	if n := checkGenericTree(t, tree); n != len(model) {
+		t.Fatalf("tree holds %d entries, model %d", n, len(model))
+	}
+	checkPages(t, m, pages, len(model))
+	for k, v := range model {
+		if got, ok := m.Get(k); !ok || got != v {
+			t.Fatalf("Get(%d) = %d %v, want %d", k, got, ok, v)
+		}
+	}
+	m.Clear()
+	if pages.count() != 0 {
+		t.Fatalf("%d pages outlived Clear", pages.count())
+	}
+}
+
 // checkPages checks that every live page is in an annex, and that each of
 // the entries put one there. Entries move between leaves without their
 // pages, as removals and inserts rebalance them, so a removal from a leaf
