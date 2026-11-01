@@ -83,14 +83,18 @@ func (s *latchSet) unlock() {
 }
 
 // splitSet is a latchSet for a split, which takes fewer nodes than a
-// removal: the path from the lowest node with room down, the holder of its
-// high fence and a sibling it fills; or the nodes it makes, which start
-// latched until it lets them go: a leaf, a node a level, and a root. A
-// split's every frame zeroes one, so it holds no more.
+// removal: the path from the lowest node with room down and a sibling it
+// fills, exclusively, and the holder of its high fence, shared; or the
+// nodes it makes, which start latched until it lets them go: a leaf, a node
+// a level, and a root. A split's every frame zeroes one, so it holds no
+// more.
 type splitSet struct {
 	nodes    [maxDepth + 4]*gheader
 	versions [maxDepth + 4]uint64
 	len      int
+	// shared is the node the split holds shared, its high fence's holder,
+	// which it reads and leaves as it is; nil for none.
+	shared *gheader
 }
 
 func (s *splitSet) holds(h *gheader) bool {
@@ -132,11 +136,28 @@ func (s *splitSet) takeLeaf(h *gheader) bool {
 	return true
 }
 
+// shareAt holds h shared if it is still at version; false if it changed or
+// another goroutine holds it exclusively. A node held already stays so.
+func (s *splitSet) shareAt(h *gheader, version uint64) bool {
+	if s.holds(h) || s.shared == h {
+		return true
+	}
+	if !h.latch.tryShareAt(version) {
+		return false
+	}
+	s.shared = h
+	return true
+}
+
 func (s *splitSet) unlock() {
 	for i := 0; i < s.len; i++ {
 		s.nodes[i].latch.unlockExclusive(s.versions[i])
 	}
 	s.len = 0
+	if s.shared != nil {
+		s.shared.latch.unlockShared()
+		s.shared = nil
+	}
 }
 
 // insert inserts key and value, or, where the tree holds key, does what
@@ -493,8 +514,15 @@ func (t *genericTree[K, V, O]) splitAtWith(path *gpath[K], leaf *gleaf[K, V], le
 			return false, false
 		}
 	}
-	// The halves refit to their fences, the highest held at or above top.
-	if h := path.highHolder(top); h >= 0 && !held.takeAt(&path.levels[h].n.gheader, path.levels[h].version) {
+	// The halves refit to their fences, the highest held at or above top:
+	// shared, as the split reads its separator and changes nothing of it,
+	// where upstream takes it exclusively (fences_top). In a tree of two or
+	// three levels it is the root, or a child of it, which every descent
+	// reads: held exclusively through the split, it stalled them all, and
+	// a goroutine spinning on it slowed the split's own stores. A writer
+	// that needs the node fails its take, as at any held node, and tries
+	// again once the split lets go.
+	if h := path.highHolder(top); h >= 0 && !held.shareAt(&path.levels[h].n.gheader, path.levels[h].version) {
 		held.unlock()
 		return false, false
 	}

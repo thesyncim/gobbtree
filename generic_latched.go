@@ -679,7 +679,9 @@ type gpath[K any] struct {
 // path's node at level, the lowest above it with a separator right of its
 // edge, or -1 on the right border. A writer whose changes need that fence
 // holds that node, the separator's, as upstream's take the nodes holding
-// their fences: the path above what it changes may change meanwhile.
+// their fences: the path above what it changes may change meanwhile. A
+// split, which only reads the fence, holds it shared (splitSet.shareAt); a
+// removal, which may change it, exclusively.
 func (p *gpath[K]) highHolder(level int) int {
 	for l := level - 1; l >= 0; l-- {
 		if at := &p.levels[l]; at.edge+1 < at.count {

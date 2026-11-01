@@ -80,6 +80,16 @@ func (l *nodeLatch) tryLockAt(version uint64) bool {
 	return l.CompareAndSwap(version, version|latchExclusive)
 }
 
+// tryShareAt holds the node shared if it is at version, with no exclusive
+// holder, without waiting: for an internal node an operation reads but
+// doesn't change, whose readers it mustn't stall. A shared hold leaves the
+// version alone, so optimistic readers pass it; a writer's tryLockAt fails
+// while it lasts, and tries again.
+func (l *nodeLatch) tryShareAt(version uint64) bool {
+	word := l.Load()
+	return word&^latchSharedMask == version && l.CompareAndSwap(word, word+latchSharedUnit)
+}
+
 // unlockExclusive lets go of a node held from version, at the next version.
 func (l *nodeLatch) unlockExclusive(version uint64) {
 	if orderedStores {
