@@ -35,7 +35,7 @@ func (t *genericTree[K, V, O]) leafByCodes(key K, code uint64) (n *gleaf[K, V], 
 	if !seqlockPlainStores {
 		return nil, 0, 0, 0, codesUnsettled
 	}
-	shared, has := t.sharedLen(key)
+	shared, has := t.sharedLen(key, code)
 	if !has {
 		return nil, 0, 0, 0, codesAbsent
 	}
@@ -196,7 +196,7 @@ func (t *genericTree[K, V, O]) writeLeafRange(key K, code uint64) (n *gleaf[K, V
 	if !seqlockPlainStores {
 		return nil, 0, 0, 0, false, false
 	}
-	shared, has := t.sharedLen(key)
+	shared, has := t.sharedLen(key, code)
 	if !has {
 		return nil, 0, 0, 0, false, false
 	}

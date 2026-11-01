@@ -70,18 +70,17 @@ func (t *genericTree[K, V, O]) hintedLeaf(key K, code uint64, shared int) *ghead
 // sharedLen is the length of what every key of the tree shares, and false
 // where key doesn't share it, and so is in no leaf of a lookup's: a custom
 // key's check of it, once, for its descent and its hint.
-func (t *genericTree[K, V, O]) sharedLen(key K) (int, bool) {
+func (t *genericTree[K, V, O]) sharedLen(key K, w0 uint64) (int, bool) {
 	s := t.shared.Load()
-	if s != nil && len(*s) == 0 {
+	if s == nil || len(*s) == 0 {
 		return 0, true
 	}
-	if t.sharedOrderOf(key) != 0 {
-		return 0, false
+	// A prefix of at most 8 bytes lies in key's first window.
+	if n := len(*s); n <= 8 {
+		m := headMask(n)
+		return n, w0&m == stringCode(*s, 0)&m
 	}
-	if s == nil {
-		return 0, true
-	}
-	return len(*s), true
+	return len(*s), t.sharedOrderOf(key) == 0
 }
 
 // noteLeaf names leaf h, which a descent found for key, in key's cell,
