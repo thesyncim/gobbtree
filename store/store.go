@@ -110,7 +110,20 @@ func (s *Store) MaxValueLen() int { return int(min(math.MaxUint32, uint64(math.M
 // store holds key; buf unchanged without it.
 func (s *Store) GetInto(key, buf []byte) ([]byte, bool) {
 	var q pointQuery
-	e, found := s.m.Hold(q.key(key))
+	query := q.key(key)
+	// The record read racing, checked by its leaf's version; else read
+	// holding the leaf.
+	if p, absent, ok := s.m.Peek(query); ok {
+		if absent {
+			q.release()
+			return buf, false
+		}
+		if out, found, settled := s.heap.peekValue(&p, key, buf); settled {
+			q.release()
+			return out, found
+		}
+	}
+	e, found := s.m.Hold(query)
 	q.release()
 	if found {
 		// A value kept whole in its record, by the scan's decode, inlined;

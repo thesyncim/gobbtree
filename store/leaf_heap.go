@@ -1,6 +1,8 @@
 package store
 
 import (
+	"encoding/binary"
+	"slices"
 	"sync/atomic"
 	"unsafe"
 
@@ -624,4 +626,118 @@ func (h *recordHeap) pull(leaf storeLeaf, i int) bool {
 	// Its bytes die where they were; its overflow pages are the copy's.
 	h.killIn(from, r.at, size)
 	return true
+}
+
+// peekValue appends key's value to buf, its record among the candidates p
+// read racing, and reports whether the store holds key: settled where the
+// leaf held still from the peek to the reads' end, as a sequence lock's
+// reader reads. A candidate's record header, read racing, is trusted once
+// the leaf held still after it: its lengths are then the record's, whose
+// bytes lie in its page, which no collector frees while read. A writer that
+// moves or rewrites a record holds its leaf exclusively (beforeRemoval,
+// compact, pull, overwrite), and moves the leaf's version; a record a stale
+// slot names is still Go memory, which the reader's pointer keeps. The key
+// and the value are read a word at a time, and every word feeds the address
+// of the last check's load, which so loads after them, with no barrier. Not
+// settled where the leaf changed, or the value has overflow pages, which
+// only a held leaf reads.
+func (h *recordHeap) peekValue(p *gobbtree.LeafPeek[storeKey, struct{}], key, buf []byte) ([]byte, bool, bool) {
+	n := len(buf)
+	var acc uint64
+	for j := range p.Len() {
+		k, ok := p.Key(j)
+		if !ok {
+			continue
+		}
+		// A slot read racing may be one a removal cleared: no candidate's
+		// record is nil at the version the peek read.
+		r := k.record()
+		if r.at == nil {
+			return buf[:n], false, false
+		}
+		w := r.headWord()
+		if !p.UnchangedAfter(w) {
+			return buf[:n], false, false
+		}
+		keyLen, valueLen := int(uint16(w)), int(w>>32)
+		if keyLen != len(key) {
+			continue
+		}
+		equal, read := equalWords(unsafe.Add(r.at, recordHeader), key)
+		acc ^= read
+		if !equal {
+			continue
+		}
+		if recordHeader+keyLen+valueLen > h.g.room {
+			return buf[:n], false, false
+		}
+		buf = slices.Grow(buf, valueLen)[:n+valueLen]
+		acc ^= loadWords(buf[n:], unsafe.Add(r.at, recordHeader+keyLen))
+		if p.UnchangedAfter(acc) {
+			return buf, true, true
+		}
+		return buf[:n], false, false
+	}
+	if !p.Edge() && p.UnchangedAfter(acc) {
+		return buf[:n], false, true
+	}
+	return buf[:n], false, false
+}
+
+// loadWords copies the len(dst) bytes at at to dst, and folds every word it
+// read from at by XOR, for a check that loads after them. The last word
+// ends where the bytes do, overlapping the one before, or, where they are
+// fewer than 8, starting before at, in the record that holds them, after its
+// header.
+func loadWords(dst []byte, at unsafe.Pointer) (acc uint64) {
+	n := len(dst)
+	if n < 8 {
+		if n > 0 {
+			w := wordAt(at, n-8) >> (8 * uint(8-n))
+			acc = w
+			for j := range dst {
+				dst[j] = byte(w >> (8 * uint(j)))
+			}
+		}
+		return acc
+	}
+	for i := 0; i < n-8; i += 8 {
+		w := wordAt(at, i)
+		binary.LittleEndian.PutUint64(dst[i:], w)
+		acc ^= w
+	}
+	w := wordAt(at, n-8)
+	binary.LittleEndian.PutUint64(dst[n-8:], w)
+	return acc ^ w
+}
+
+// equalWords reports whether the len(key) bytes at at are key's, read as
+// loadWords reads them, and the words read, folded.
+func equalWords(at unsafe.Pointer, key []byte) (equal bool, acc uint64) {
+	n := len(key)
+	if n < 8 {
+		if n == 0 {
+			return true, 0
+		}
+		w := wordAt(at, n-8) >> (8 * uint(8-n))
+		var k uint64
+		for j, b := range key {
+			k |= uint64(b) << (8 * uint(j))
+		}
+		return w == k, w
+	}
+	var diff uint64
+	for i := 0; i < n-8; i += 8 {
+		w := wordAt(at, i)
+		acc ^= w
+		diff |= w ^ binary.LittleEndian.Uint64(key[i:])
+	}
+	w := wordAt(at, n-8)
+	diff |= w ^ binary.LittleEndian.Uint64(key[n-8:])
+	return diff == 0, acc ^ w
+}
+
+// wordAt is the little-endian word of the 8 bytes at off from at.
+func wordAt(at unsafe.Pointer, off int) uint64 {
+	return binary.LittleEndian.Uint64((*[8]byte)(unsafe.Add(at, off))[:])
 }

@@ -150,6 +150,83 @@ func (e HeldEntry[K, V]) Value() V { return e.n.values[e.i&(nodeSize-1)] }
 // Release lets go of the entry's leaf.
 func (e HeldEntry[K, V]) Release() { e.n.latch.unlockShared() }
 
+// Peek finds key's candidates in its leaf as Hold finds its entry, but
+// latches nothing, for a container that reads what it keeps of an entry
+// itself, as a store reads a record, and checks its reads by the leaf's
+// version, as a sequence lock's reader does: every writer that changes the
+// leaf, its keys or what only its holder changes of what they refer to,
+// holds it exclusively, and moves its version. The caller reads each
+// candidate's stored key by Key, racing, and what it refers to, and trusts
+// what it read only once UnchangedAfter says the leaf held still since the
+// peek read it. absent is the map's holding no such key;
+// ok is false, settling nothing, where the leaf can't be read racing, or
+// keys are more than a word, whose racing reads could tear: the caller then
+// holds the entry. A read racing writes nothing, so readers of one leaf
+// share no cache line they write, where Hold's latch is one.
+func (m *AnnexedMapOf[K, V, A, PA]) Peek(key K) (p LeafPeek[K, V], absent, ok bool) {
+	if unsafe.Sizeof(*new(K)) != unsafe.Sizeof(uintptr(0)) {
+		return p, false, false
+	}
+	t := &m.generic
+	if t.root.Load() == nil {
+		return p, true, true
+	}
+	n, word, lo, hi, tag, state := t.leafOfKey(key, t.code(key), false)
+	switch state {
+	case codesAbsent:
+		return p, true, true
+	case codesRacing, codesRacingEdge:
+		return LeafPeek[K, V]{
+			n: n, version: word &^ latchSharedMask, lo: lo, hi: hi, acc: uint64(hi),
+			tag: tag, tagged: hi-lo > 1 && t.tagged(), edge: state == codesRacingEdge,
+		}, false, true
+	}
+	return p, false, false
+}
+
+// LeafPeek is a key's candidates in its leaf, which Peek read racing.
+type LeafPeek[K any, V any] struct {
+	n       *gleaf[K, V]
+	version uint64
+	lo, hi  int
+	// acc folds every word the peek read, from hi on, which the leaf's
+	// reads fed: each check loads after them.
+	acc    uint64
+	tag    uint8
+	tagged bool
+	edge   bool
+}
+
+// Len is how many candidates there are, the keys whose codes are the key's.
+func (p *LeafPeek[K, V]) Len() int { return p.hi - p.lo }
+
+// Key is candidate j's stored key, read racing; false where the hash tag
+// the leaf keeps for it isn't the key's, which it then isn't.
+func (p *LeafPeek[K, V]) Key(j int) (k K, ok bool) {
+	i := (p.lo + j) & (nodeSize - 1)
+	if p.tagged {
+		got := p.n.tags[i]
+		p.acc ^= uint64(got)
+		if got != p.tag {
+			return k, false
+		}
+	}
+	return p.n.keyed()[i], true
+}
+
+// Edge reports candidates that settle the key only where it is among them:
+// at a leaf a hint named, by its first key or its last, none being the key
+// leaves its absence unsettled.
+func (p *LeafPeek[K, V]) Edge() bool { return p.edge }
+
+// UnchangedAfter reports whether the leaf is still at the version the peek
+// read it at, read after the load that gave w, and every read of the
+// peek's, which its address depends on: what the caller read to reach w,
+// the candidates' keys among it, is as the leaf held it then.
+func (p *LeafPeek[K, V]) UnchangedAfter(w uint64) bool {
+	return *after((*uint64)(unsafe.Pointer(&p.n.latch)), w^p.acc)&^latchSharedMask == p.version
+}
+
 // HoldWrite holds key's leaf exclusively, found as a write finds it, with
 // the index of key's entry there, or of where it goes in, for a container
 // that writes what it keeps of an entry itself, as a store writes its

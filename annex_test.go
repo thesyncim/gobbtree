@@ -2,8 +2,10 @@ package gobbtree
 
 import (
 	"cmp"
+	"fmt"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -246,6 +248,93 @@ func TestAnnexedHoldRemove(t *testing.T) {
 	m.Clear()
 	if pages.count() != 0 {
 		t.Fatalf("%d pages outlived Clear", pages.count())
+	}
+}
+
+// textRef is a custom key a word long, a reference to its text: Peek reads
+// keys no longer than a word, whose racing reads can't tear. Its hash tag
+// is its last byte.
+type textRef struct{ s *string }
+
+func (k textRef) Compare(o textRef) int    { return strings.Compare(*k.s, *o.s) }
+func (k textRef) Window(offset int) uint64 { return StringWindow(*k.s, offset) }
+func (k textRef) HashTag() uint8           { return (*k.s)[len(*k.s)-1] }
+
+func refOf(s string) textRef { return textRef{&s} }
+
+// TestAnnexedPeek peeks at keys whose codes tie in groups of eight, past
+// their first 16 bytes, which their hash tags tell apart, and two of each
+// group absent: a key present is among its candidates once, with its tag,
+// unless they are a hinted leaf's edge, which may be a neighbor's; a key
+// absent is among none, and is settled absent where they aren't an edge.
+// Peeks check unchanged with no writer, and changed after one.
+func TestAnnexedPeek(t *testing.T) {
+	m := NewAnnexedMapOf[textRef, int, noAnnex]()
+	key := func(i int) string { return fmt.Sprintf("%06d==========%02d", i/8, i%8) }
+	const n = 40000
+	for i := range n {
+		if i%8 < 6 {
+			m.Insert(refOf(key(i)), i)
+		}
+	}
+	var tied, filtered, edges, absent, unsettled int
+	for i := range n {
+		k := key(i)
+		p, isAbsent, ok := m.Peek(refOf(k))
+		switch {
+		case !ok:
+			unsettled++
+			continue
+		case isAbsent:
+			if i%8 < 6 {
+				t.Fatalf("Peek(%q) settled absent a key the map holds", k)
+			}
+			absent++
+			continue
+		}
+		hits := 0
+		for j := range p.Len() {
+			c, ok := p.Key(j)
+			if !ok {
+				filtered++
+				continue
+			}
+			if *c.s == k {
+				hits++
+			}
+		}
+		if p.Len() > 1 {
+			tied++
+		}
+		if p.Edge() {
+			edges++
+		}
+		switch present := i%8 < 6; {
+		case hits > 1, !present && hits != 0, present && hits == 0 && !p.Edge():
+			t.Fatalf("Peek(%q): %d of %d candidates are it; present %v, edge %v", k, hits, p.Len(), present, p.Edge())
+		case !present && !p.Edge():
+			absent++
+		}
+		if !p.UnchangedAfter(0) {
+			t.Fatalf("Peek(%q): the leaf changed with no writer", k)
+		}
+		if i%1000 == 0 && hits == 1 {
+			m.Insert(refOf(k), -i)
+			if p.UnchangedAfter(0) {
+				t.Fatalf("Peek(%q): the leaf held still past a write to the key", k)
+			}
+		}
+	}
+	// Peeks are racing reads, which only plain-store builds take.
+	if !seqlockPlainStores {
+		if unsettled != n {
+			t.Fatalf("%d of %d peeks settled without plain stores", n-unsettled, n)
+		}
+		return
+	}
+	t.Logf("tied %d, filtered %d, edges %d, absent %d, unsettled %d", tied, filtered, edges, absent, unsettled)
+	if tied == 0 || filtered == 0 || edges == 0 || absent == 0 || unsettled > n/10 {
+		t.Fatalf("tied %d, filtered %d, edges %d, absent %d, unsettled %d of %d: each path runs, and most peeks settle", tied, filtered, edges, absent, unsettled, n)
 	}
 }
 

@@ -149,3 +149,150 @@ func scanRun(t *testing.T, s *Store, i, stable int, forwards bool) bool {
 	}
 	return true
 }
+
+// stampedValue is key i's value of write seq, length n bytes, at least 12:
+// i, seq and n, then bytes that follow from them, so that a value read whole
+// tells itself apart from a mix of two writes' bytes, or a dead record's.
+func stampedValue(i, seq, n int) []byte {
+	v := make([]byte, n)
+	binary.LittleEndian.PutUint32(v, uint32(i))
+	binary.LittleEndian.PutUint32(v[4:], uint32(seq))
+	binary.LittleEndian.PutUint32(v[8:], uint32(n))
+	for j := 12; j < n; j++ {
+		v[j] = byte(i*7 + seq*13 + j)
+	}
+	return v
+}
+
+// stampedOf reports whether v is a value stampedValue made for key i.
+func stampedOf(v []byte, i int) bool {
+	if len(v) < 12 || binary.LittleEndian.Uint32(v) != uint32(i) || binary.LittleEndian.Uint32(v[8:]) != uint32(len(v)) {
+		return false
+	}
+	seq := int(binary.LittleEndian.Uint32(v[4:]))
+	for j := 12; j < len(v); j++ {
+		if v[j] != byte(i*7+seq*13+j) {
+			return false
+		}
+	}
+	return true
+}
+
+// Readers look keys up while writers rewrite the very values they read: in
+// place, at the same length or shorter, and moved, longer, or into overflow
+// pages; and remove keys and insert them again, singly and by runs, which
+// merges leaves and splits them, while compactions slide what is left. A
+// lookup reads its record racing, checked by its leaf's version, or holding
+// the leaf: either way every value it returns is one write's, whole, and
+// every key no writer removes is found.
+func TestReadersSeeWholeValuesWhileWritersRewriteThem(t *testing.T) {
+	for name, prefix := range stressPrefixes {
+		t.Run(name, func(t *testing.T) {
+			stressPrefix = prefix
+			defer func() { stressPrefix = stressPrefixes["stripped"] }()
+			readWhileRewritten(t)
+		})
+	}
+}
+
+func readWhileRewritten(t *testing.T) {
+	const keys, writers, readers = 4000, 3, 5
+	ops := 150000
+	if testing.Short() {
+		ops = 20000
+	}
+	pages := &counting{}
+	s := NewIn(pages)
+	// Key i is writer i%writers's; it removes none of those i%4 == 0.
+	for i := range keys {
+		mustInsert(t, s, stressKey(i), stampedValue(i, 0, 12+i%50))
+	}
+	length := func(r *rand.Rand) int {
+		switch r.IntN(64) {
+		case 0:
+			return 2*page + r.IntN(page)
+		case 1, 2:
+			return 12
+		}
+		return 12 + r.IntN(240)
+	}
+	var done atomic.Bool
+	var wg sync.WaitGroup
+	for w := range writers {
+		wg.Go(func() {
+			r := rand.New(rand.NewPCG(uint64(w), 31))
+			mine := func(i int) int { return i - i%writers + w }
+			for op := range ops {
+				i := mine(r.IntN(keys - writers))
+				seq := op + 1
+				switch c := r.IntN(16); {
+				case c == 0 && i%4 != 0:
+					s.Remove(stressKey(i))
+				case c == 1:
+					// A run of this writer's keys, removed and inserted
+					// again: their leaves merge, then split.
+					start := mine(r.IntN(keys - 400))
+					for j := start; j < start+300 && j < keys; j += writers {
+						if j%4 != 0 {
+							s.Remove(stressKey(j))
+						}
+					}
+					for j := start; j < start+300 && j < keys; j += writers {
+						if _, err := s.Insert(stressKey(j), stampedValue(j, seq, length(r))); err != nil {
+							t.Error(err)
+							return
+						}
+					}
+				default:
+					if _, err := s.Insert(stressKey(i), stampedValue(i, seq, length(r))); err != nil {
+						t.Error(err)
+						return
+					}
+				}
+			}
+		})
+	}
+	var readerWG sync.WaitGroup
+	var reads, found atomic.Int64
+	for rd := range readers {
+		readerWG.Go(func() {
+			r := rand.New(rand.NewPCG(uint64(rd), 32))
+			var buf []byte
+			n, hits := 0, 0
+			defer func() { reads.Add(int64(n)); found.Add(int64(hits)) }()
+			for !done.Load() {
+				i := r.IntN(keys)
+				var ok bool
+				buf, ok = s.GetInto(stressKey(i), buf[:0])
+				n++
+				if ok {
+					hits++
+					if !stampedOf(buf, i) {
+						t.Errorf("reader %d: key %d read %d bytes no write wrote: %x", rd, i, len(buf), buf[:min(len(buf), 64)])
+						return
+					}
+				} else if i%4 == 0 {
+					t.Errorf("reader %d: key %d, which no writer removes, missing", rd, i)
+					return
+				}
+				if i%4 == 0 && !s.Contains(stressKey(i)) {
+					t.Errorf("reader %d: Contains misses key %d, which no writer removes", rd, i)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	done.Store(true)
+	readerWG.Wait()
+	t.Logf("%d reads, %d found", reads.Load(), found.Load())
+	for i := range keys {
+		if v, ok := s.Get(stressKey(i)); ok && !stampedOf(v, i) {
+			t.Fatalf("key %d holds %x", i, v)
+		} else if !ok && i%4 == 0 {
+			t.Fatalf("key %d, which no writer removes, missing", i)
+		}
+	}
+	checkLive(t, s)
+	assertCleared(t, s, pages)
+}
