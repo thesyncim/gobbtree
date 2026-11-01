@@ -71,7 +71,7 @@ func (t *genericTree[K, V, O]) codeOf(key K, w0 uint64, p int) uint64 {
 	if p < 8 {
 		return w0 << (8 * uint(p&7))
 	}
-	return windowKey[O](key, p)
+	return t.window(key, p)
 }
 
 // textWindows is s's first 64 bytes as windows, zero past its end.

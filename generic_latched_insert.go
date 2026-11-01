@@ -730,7 +730,7 @@ func (t *genericTree[K, V, O]) splitHeld(path *gpath[K], top int, leaf *gleaf[K,
 func (t *genericTree[K, V, O]) insertEntry(n *gleaf[K, V], i int, key K, value V) {
 	var w0 uint64
 	if windowed[O, K]() {
-		w0 = windowKey[O](key, 0)
+		w0 = t.window(key, 0)
 	}
 	t.insertKeyed(n, i, key, value, w0)
 }

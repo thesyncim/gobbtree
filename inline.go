@@ -68,6 +68,9 @@ type inlineOptions[K any] struct {
 	// clone is the key's Clone, which a map stores each new key through,
 	// found once rather than asserted at every insert.
 	clone func(K) K
+	// window is the key's Window, called directly: through the map's key
+	// order it is three calls, none inlined.
+	window func(K, int) uint64
 }
 
 // inlineOptionsOf finds custom key type K's optional methods. A method of
@@ -96,6 +99,9 @@ func inlineOptionsOf[K any]() inlineOptions[K] {
 	}
 	if f := find("ComparePrefix", reflect.TypeFor[func(K, []byte) int]()); f.IsValid() {
 		o.comparePrefix = f.Interface().(func(K, []byte) int)
+	}
+	if m, ok := kt.MethodByName("Window"); ok && m.Type == reflect.TypeFor[func(K, int) uint64]() {
+		o.window = m.Func.Interface().(func(K, int) uint64)
 	}
 	// A Clone of another signature is no Key's Clone, as before: not a
 	// mistake.

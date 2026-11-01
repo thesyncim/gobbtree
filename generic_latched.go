@@ -832,7 +832,18 @@ func (t *genericTree[K, V, O]) code(key K) uint64 {
 	if t.wordCodes() {
 		return numericKey[O](key)
 	}
-	return windowKey[O](key, 0)
+	return t.window(key, 0)
+}
+
+// window is key's window at offset: a custom key's by its Window, as the
+// map found it as it started.
+func (t *genericTree[K, V, O]) window(key K, offset int) uint64 {
+	if windowed[O, K]() {
+		if f := t.inline.window; f != nil {
+			return f(key, offset)
+		}
+	}
+	return windowKey[O](key, offset)
 }
 
 // prefixed reports text keys: built-in text, whose bytes are compared
