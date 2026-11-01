@@ -35,20 +35,27 @@ func (t *genericTree[K, V, O]) leafByCodes(key K, code uint64) (n *gleaf[K, V], 
 	if !seqlockPlainStores {
 		return nil, 0, 0, 0, codesUnsettled
 	}
-	if t.sharesBytes() && t.sharedOrderOf(key) != 0 {
+	shared, has := t.sharedLen(key)
+	if !has {
 		return nil, 0, 0, 0, codesAbsent
 	}
-	// The leaf its hint names, where it settles key; else the descent's.
-	if h := t.hintedLeaf(key, code); h != nil {
-		if n, lo, hi, tag, state = t.leafCandidates(key, code, h, h.latch.Load(), true); state != codesUnsettled {
-			return n, lo, hi, tag, state
+	// The leaf its hint names, where it settles key; else the descent's,
+	// which a table that hints names.
+	r := t.customHints.Load()
+	if hinting := r != nil && !r.off; hinting {
+		if h := t.hintedLeaf(key, code, shared); h != nil {
+			if n, lo, hi, tag, state = t.leafCandidates(key, code, h, h.latch.Load(), true); state != codesUnsettled {
+				return n, lo, hi, tag, state
+			}
 		}
 	}
 	h, word, ok := t.leafOfCodes(key, code)
 	if !ok {
 		return nil, 0, 0, 0, codesUnsettled
 	}
-	t.noteLeaf(key, code, h)
+	if r == nil || !r.off {
+		t.noteLeaf(key, code, h)
+	}
 	return t.leafCandidates(key, code, h, word, false)
 }
 
@@ -186,15 +193,26 @@ func (t *genericTree[K, V, O]) writeLeafByCodes(key K, code uint64) (*gleaf[K, V
 // hands on [lo, hi), the keys whose codes are key's, which it read racing
 // at the version it then latched the leaf at, so still the leaf's: ranged.
 func (t *genericTree[K, V, O]) writeLeafRange(key K, code uint64) (n *gleaf[K, V], version uint64, lo, hi int, ranged, ok bool) {
-	if !seqlockPlainStores || t.sharesBytes() && t.sharedOrderOf(key) != 0 {
+	if !seqlockPlainStores {
 		return nil, 0, 0, 0, false, false
 	}
-	h, word, lo, hi, ranged := t.hintedWriteLeaf(key, code)
+	shared, has := t.sharedLen(key)
+	if !has {
+		return nil, 0, 0, 0, false, false
+	}
+	r := t.customHints.Load()
+	var h *gheader
+	var word uint64
+	if r != nil && !r.off {
+		h, word, lo, hi, ranged = t.hintedWriteLeaf(key, code, shared)
+	}
 	if !ranged {
 		if h, word, ok = t.leafOfCodes(key, code); !ok {
 			return nil, 0, 0, 0, false, false
 		}
-		t.noteLeaf(key, code, h)
+		if r == nil || !r.off {
+			t.noteLeaf(key, code, h)
+		}
 	}
 	n = asLeaf[K, V](h)
 	if version = n.latch.lockExclusive(); version != word&^latchSharedMask {
@@ -208,8 +226,8 @@ func (t *genericTree[K, V, O]) writeLeafRange(key K, code uint64) (n *gleaf[K, V
 // it at, where read racing at that word the leaf settles key as a lookup's
 // does (leafCandidates), its first and last codes strictly about key's:
 // the writer that latches it at that word holds key's leaf.
-func (t *genericTree[K, V, O]) hintedWriteLeaf(key K, code uint64) (h *gheader, word uint64, lo, hi int, ok bool) {
-	if h = t.hintedLeaf(key, code); h == nil {
+func (t *genericTree[K, V, O]) hintedWriteLeaf(key K, code uint64, shared int) (h *gheader, word uint64, lo, hi int, ok bool) {
+	if h = t.hintedLeaf(key, code, shared); h == nil {
 		return nil, 0, 0, 0, false
 	}
 	if word = h.latch.Load(); word&latchExclusive != 0 {

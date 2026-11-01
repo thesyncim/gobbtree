@@ -24,6 +24,17 @@ import (
 type customHints struct {
 	shift uint
 	cells []atomic.Pointer[gheader]
+	// leaves is the tree's when the table was made, and off whether its
+	// hints go unread: where the old table's cells named fewer than a
+	// quarter of the tree's leaves then, its keys' codes spread too little
+	// past the shared prefix for the top bits to tell their leaves apart,
+	// as a tenant's number followed by a constant name, or text, whose bytes
+	// spread over few values: nearly every hint would name a leaf that
+	// doesn't settle its key, and cost a check before the descent. A table
+	// off stays so, unread and unfilled, as does every table after it, until
+	// the tree is cleared: a lookup then costs what it did without hints.
+	leaves int64
+	off    bool
 }
 
 const customHintLeaves = 64
@@ -43,28 +54,62 @@ func (t *genericTree[K, V, O]) hintCode(key K, code uint64) uint64 {
 	return t.codeOf(key, code, len(*s))
 }
 
-// hintedLeaf is the leaf the hint table names for key, or nil.
-func (t *genericTree[K, V, O]) hintedLeaf(key K, code uint64) *gheader {
+// hintedLeaf is the leaf the hint table names for key, or nil, given the
+// shared prefix's length, which the caller read.
+func (t *genericTree[K, V, O]) hintedLeaf(key K, code uint64, shared int) *gheader {
 	r := t.customHints.Load()
-	if r == nil {
+	if r == nil || r.off {
 		return nil
 	}
-	return r.cell(t.hintCode(key, code)).Load()
+	if shared > 0 {
+		code = t.codeOf(key, code, shared)
+	}
+	return r.cell(code).Load()
+}
+
+// sharedLen is the length of what every key of the tree shares, and false
+// where key doesn't share it, and so is in no leaf of a lookup's: a custom
+// key's check of it, once, for its descent and its hint.
+func (t *genericTree[K, V, O]) sharedLen(key K) (int, bool) {
+	s := t.shared.Load()
+	if s != nil && len(*s) == 0 {
+		return 0, true
+	}
+	if t.sharedOrderOf(key) != 0 {
+		return 0, false
+	}
+	if s == nil {
+		return 0, true
+	}
+	return len(*s), true
 }
 
 // noteLeaf names leaf h, which a descent found for key, in key's cell,
 // making the table first, or growing it, where the tree outgrew it.
 func (t *genericTree[K, V, O]) noteLeaf(key K, code uint64, h *gheader) {
 	r := t.customHints.Load()
+	if r != nil && r.off {
+		return
+	}
 	if leaves := t.customLeaves.Load(); r == nil || int64(len(r.cells)) < 4*leaves {
 		if leaves < customHintLeaves {
 			return
 		}
-		next := &customHints{cells: make([]atomic.Pointer[gheader], 1<<bits.Len64(uint64(4*leaves-1)))}
+		next := &customHints{cells: make([]atomic.Pointer[gheader], 1<<bits.Len64(uint64(4*leaves-1))), leaves: leaves}
 		next.shift = uint(64 - bits.Len64(uint64(len(next.cells)-1)))
 		// Each new cell is a slice of an old one, and starts with its
-		// leaf: a grown table hints as well as the old did.
+		// leaf: a grown table hints as well as the old did. The old cells
+		// are in key order, so a leaf they name is a run of them: the runs
+		// count the leaves named.
 		if r != nil {
+			named := 0
+			var last *gheader
+			for j := range r.cells {
+				if h := r.cells[j].Load(); h != nil && h != last {
+					named, last = named+1, h
+				}
+			}
+			next.off = int64(4*named) < r.leaves
 			for j := range next.cells {
 				next.cells[j].Store(r.cells[j>>(r.shift-next.shift)].Load())
 			}
