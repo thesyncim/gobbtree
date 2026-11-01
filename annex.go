@@ -102,38 +102,52 @@ func (m *AnnexedMapOf[K, V, A, PA]) DeleteWithLeaf(key K, f func(leaf AnnexedLea
 	return t.removeWithLeaf(key, func(n *gleaf[K, V], i int) { f(annexedLeafOf[A](t, n), t.key(n, i), n.values[i]) })
 }
 
-// ScanLeaves runs f on each leaf with entries in b, in key order, with the
-// leaf and its keys and values in b, ascending, holding the leaf shared,
-// until f returns false: Scan a leaf at a time, for a container that runs
-// its own loop over a leaf's entries, as upstream's closures, which Rust
-// inlines into its scan, run in its loop. The slices are the leaf's, valid
-// only while f runs, and f must not use the map. It panics as Scan does.
-func (m *AnnexedMapOf[K, V, A, PA]) ScanLeaves(b Bounds[K], f func(leaf AnnexedLeaf[K, A], keys []K, values []V) bool) {
-	m.scanLeaves(b, false, f)
-}
-
-// ScanLeavesReverse is ScanLeaves in descending order of leaves, each leaf's
-// keys and values still ascending, for f to take from the end.
-func (m *AnnexedMapOf[K, V, A, PA]) ScanLeavesReverse(b Bounds[K], f func(leaf AnnexedLeaf[K, A], keys []K, values []V) bool) {
-	m.scanLeaves(b, true, f)
-}
-
-func (m *AnnexedMapOf[K, V, A, PA]) scanLeaves(b Bounds[K], reverse bool, f func(leaf AnnexedLeaf[K, A], keys []K, values []V) bool) {
+// WalkLeaves walks the map's leaves with entries in b, in key order or in
+// reverse, a leaf at a time: Next hands out each leaf's keys and values in
+// b, ascending, holding the leaf shared until the next call, or Close. It is
+// for a container that runs its own loop over a leaf's entries, as an
+// iterator the compiler inlines into its caller's range loop, so that the
+// loop's body is the caller's own code, as upstream's closures are inlined
+// into its scans: Go would otherwise call the body through a function value
+// at every entry.
+//
+// The walk is upstream's latched scan, and its contract: the caller must
+// not use the map while it holds a leaf, and must call Close if it stops
+// before Next returns false. A panic that leaves a leaf held leaves it so:
+// as upstream's, code running inside a walk must not panic. It panics as
+// Scan does.
+func (m *AnnexedMapOf[K, V, A, PA]) WalkLeaves(b Bounds[K], reverse bool) LeafWalk[K, V, A, PA] {
 	checkBounds[K, annexOrder[K, A, PA]](&b)
-	t := &m.generic
-	t.walkLeavesHeld(&b, reverse, func(n *gleaf[K, V], from, to int) bool {
-		var keys []K
-		if windowed[annexOrder[K, A, PA], K]() {
-			keys = n.keyed()[from:to:to]
-		} else {
-			keys = make([]K, to-from)
-			for i := range keys {
-				keys[i] = t.key(n, from+i)
-			}
-		}
-		return f(annexedLeafOf[A](t, n), keys, n.values[from:to:to])
-	})
+	return LeafWalk[K, V, A, PA]{w: leafWalk[K, V, annexOrder[K, A, PA]]{t: &m.generic, b: b, reverse: reverse}}
 }
+
+// LeafWalk is a walk of an AnnexedMapOf's leaves (WalkLeaves).
+type LeafWalk[K Key[K], V any, A any, PA LeafAnnex[A]] struct {
+	w leafWalk[K, V, annexOrder[K, A, PA]]
+}
+
+// Next lets go of the leaf it last handed out, and hands out the next leaf
+// with entries in the walk's bounds, held shared: its keys and values in
+// them, ascending, valid until the next call or Close. false, holding
+// nothing, past the last.
+func (w *LeafWalk[K, V, A, PA]) Next() (keys []K, values []V, ok bool) {
+	n, from, to, ok := w.w.next()
+	if !ok {
+		return nil, nil, false
+	}
+	if windowed[annexOrder[K, A, PA], K]() {
+		keys = n.keyed()[from:to:to]
+	} else {
+		keys = make([]K, to-from)
+		for i := range keys {
+			keys[i] = w.w.t.key(n, from+i)
+		}
+	}
+	return keys, n.values[from:to:to], true
+}
+
+// Close lets go of the leaf the walk holds, if any, and ends the walk.
+func (w *LeafWalk[K, V, A, PA]) Close() { w.w.close() }
 
 // annexOrder orders keys by their Key methods, as custom does, for a map
 // whose leaves keep annexes A. Its size, two bytes, tells it from natural
@@ -334,30 +348,99 @@ func (t *genericTree[K, V, O]) walkHeld(b *Bounds[K], reverse bool, visit func(K
 
 // walkLeavesHeld is walkHeld a leaf at a time: leaf runs once on each leaf
 // with entries in b, holding it shared, with the range [from, to) of them
-// in b, in key order or in reverse, until it returns false. A leaf wholly
-// within b is known so by its first key and its last.
+// in b, in key order or in reverse, until it returns false. A panicking leaf
+// lets go of the leaf it holds.
 func (t *genericTree[K, V, O]) walkLeavesHeld(b *Bounds[K], reverse bool, leaf func(n *gleaf[K, V], from, to int) bool) {
-	if t.root.Load() == nil {
+	w := leafWalk[K, V, O]{t: t, b: *b, reverse: reverse}
+	defer w.close()
+	for {
+		n, lo, hi, ok := w.next()
+		if !ok || !leaf(n, lo, hi) {
+			return
+		}
+	}
+}
+
+// leafWalk walks an annexed tree's leaves with entries in its bounds, in
+// key order or in reverse, holding the one next handed out shared until the
+// next call or close, as upstream's latched scan holds each leaf its closure
+// runs on: it latches a leaf's neighbor before it lets go of the leaf, and
+// where a node on the way changed, it searches again from the leaf's last
+// key, which the leaf keeps where it is. An entry present throughout is in
+// one leaf it hands out. A leaf wholly within the bounds is known so by its
+// first key and its last.
+type leafWalk[K any, V any, O keyOrder[K]] struct {
+	t       *genericTree[K, V, O]
+	b       Bounds[K]
+	path    gpath[K]
+	n       *gleaf[K, V] // the leaf held, or nil
+	reverse bool
+	started bool
+	// last is whether the leaf held reaches the bound the walk goes to.
+	last bool
+	done bool
+	// touched is what touchNext last read, kept so that its loads are.
+	touched uint64
+}
+
+// touchNext reads, plainly, the leaf the walk likely goes to after the one
+// held, the next child of the held leaf's parent, its header's line and its
+// keys' first, so that their fetches overlap the caller's loop over the
+// held leaf's entries: the hardware can't guess a node's address. A hint
+// only: the walk latches whatever leaf it then finds. For custom keys,
+// whose leaves keep their keys as K.
+func (w *leafWalk[K, V, O]) touchNext() {
+	level := w.path.depth - 1
+	if level < 0 {
 		return
 	}
-	var path gpath[K]
-	seek, from, strict := seekFirst, b.lower, false
-	if reverse {
-		seek, from, strict = seekLast, b.upper, b.upperKind == excluded
+	at := &w.path.levels[level]
+	edge := at.edge + 1
+	if w.reverse {
+		edge = at.edge - 1
 	}
-	var code uint64
-	if !reverse && b.lowerKind != unbounded || reverse && b.upperKind != unbounded {
-		seek, code = seekKey, t.code(from)
+	if edge < 0 || edge >= at.count {
+		return
 	}
-	n, _ := t.descend(from, code, seek, strict, shared, &path)
-	defer func() {
-		if n != nil {
-			n.latch.unlockShared()
+	c := *(**gheader)(unsafe.Pointer(&at.n.children[edge&(nodeSize-1)]))
+	if c == nil || !c.leaf {
+		return
+	}
+	// The header's line and the keys' first, of a keyed leaf's.
+	w.touched = uint64(*(*int32)(unsafe.Pointer(&c.count))) ^ uint64(*(*uint8)(unsafe.Pointer(&asLeaf[K, V](c).keyed()[0])))
+}
+
+// next lets go of the leaf held and hands out the next with entries in the
+// bounds, held shared, with the range [lo, hi) of them; false, holding
+// nothing, past the last.
+func (w *leafWalk[K, V, O]) next() (n *gleaf[K, V], lo, hi int, ok bool) {
+	if w.done {
+		return nil, 0, 0, false
+	}
+	t, b := w.t, &w.b
+	if !w.started {
+		w.started = true
+		if t.root.Load() == nil {
+			w.done = true
+			return nil, 0, 0, false
 		}
-	}()
+		seek, from, strict := seekFirst, b.lower, false
+		if w.reverse {
+			seek, from, strict = seekLast, b.upper, b.upperKind == excluded
+		}
+		var code uint64
+		if !w.reverse && b.lowerKind != unbounded || w.reverse && b.upperKind != unbounded {
+			seek, code = seekKey, t.code(from)
+		}
+		w.n, _ = t.descend(from, code, seek, strict, shared, &w.path)
+	} else if w.last || !w.advance() {
+		w.close()
+		return nil, 0, 0, false
+	}
 	// Only a bounded walk compares its keys with the bounds.
 	lower, upper := b.lowerKind != unbounded, b.upperKind != unbounded
 	for {
+		n := w.n
 		count := int(n.count.Load())
 		lo, hi := 0, count
 		if lower && count > 0 && !aboveLower[K, O](b, t.key(n, 0)) {
@@ -371,31 +454,53 @@ func (t *genericTree[K, V, O]) walkLeavesHeld(b *Bounds[K], reverse bool, leaf f
 			}
 		}
 		// The walk ends at the bound its direction reaches.
-		last := !reverse && hi < count || reverse && lo > 0
-		if lo < hi && !leaf(n, lo, hi) || last {
-			return
-		}
-		next, end := t.neighborHeld(&path, reverse)
-		for next == nil && !end {
-			if count == 0 {
-				// Only the root leaf is ever empty, and it has no
-				// neighbor while held.
-				return
+		w.last = !w.reverse && hi < count || w.reverse && lo > 0
+		if lo < hi {
+			// The touch reads racing, plainly: only where racing reads may.
+			if seqlockPlainStores && windowed[O, K]() && !w.last {
+				w.touchNext()
 			}
-			last := count - 1
-			if reverse {
-				last = 0
-			}
-			k := t.key(n, last)
-			t.descend(k, t.code(k), seekKey, false, optimistic, &path)
-			next, end = t.neighborHeld(&path, reverse)
+			return n, lo, hi, true
 		}
-		n.latch.unlockShared()
-		n = next
-		if end {
-			return
+		if w.last || !w.advance() {
+			w.close()
+			return nil, 0, 0, false
 		}
 	}
+}
+
+// advance latches the held leaf's neighbor and lets go of the leaf: false,
+// holding nothing, where it has none.
+func (w *leafWalk[K, V, O]) advance() bool {
+	t, n := w.t, w.n
+	next, end := t.neighborHeld(&w.path, w.reverse)
+	for next == nil && !end {
+		count := int(n.count.Load())
+		if count == 0 {
+			// Only the root leaf is ever empty, and it has no neighbor
+			// while held.
+			return false
+		}
+		last := count - 1
+		if w.reverse {
+			last = 0
+		}
+		k := t.key(n, last)
+		t.descend(k, t.code(k), seekKey, false, optimistic, &w.path)
+		next, end = t.neighborHeld(&w.path, w.reverse)
+	}
+	n.latch.unlockShared()
+	w.n = next
+	return !end
+}
+
+// close lets go of the leaf held, if any, and ends the walk.
+func (w *leafWalk[K, V, O]) close() {
+	if w.n != nil {
+		w.n.latch.unlockShared()
+		w.n = nil
+	}
+	w.done = true
 }
 
 // neighborHeld latches shared the neighbor of the leaf path leads to, on

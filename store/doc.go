@@ -95,7 +95,10 @@
 //   - GetInto appends to the caller's buffer and returns it, where upstream's
 //     get_into returns the value's length. Scan and ScanReverse are
 //     iterators whose loop bodies run holding each leaf shared, as upstream's
-//     closures do, so the body must not use the store; Range's copies come
+//     closures do, so the body must not use the store, and under upstream's
+//     contract must not panic, which leaves its leaf latched: the iterators
+//     release it with no deferred call, so that the compiler inlines them,
+//     the body into their loop over a leaf's records; Range's copies come
 //     from Next and NextBack. Bounds are the store's, with the tree's
 //     constructors, where upstream takes any RangeBounds; errors are values.
 package store

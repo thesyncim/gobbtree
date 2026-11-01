@@ -205,30 +205,28 @@ func (s *Store) Remove(key []byte) bool {
 
 // Scan iterates the entries whose keys lie in b, in key order, with their
 // key and value, running the loop body while each entry's leaf is latched
-// shared, as upstream's scan runs its closure: the body must not use the
-// store. A value with overflow pages is copied into a buffer the scan
-// keeps, for the body to see in one piece. Both slices are valid only
-// until the body returns. As a map's scan, it is not a snapshot.
+// shared, as upstream's scan runs its closure, and under its contract: the
+// body must not use the store, and must not panic, as a panic leaves its
+// leaf latched, and the store's writes to that leaf waiting. A value with
+// overflow pages is copied into a buffer the scan keeps, for the body to
+// see in one piece. Both slices are valid only until the body returns. As a
+// map's scan, it is not a snapshot.
+//
+// The iterator walks the leaves a call a leaf (gobbtree.LeafWalk), and runs
+// its own loop over each leaf's records, which the compiler inlines into
+// the caller's range loop, its body with it, as upstream's closure inlines
+// into its scan: a body running under a deferred release would be called
+// through a function value at every entry instead.
 //
 // It panics as upstream's does, as std's BTreeMap::range: if b starts after
 // it ends, or starts and ends at the same key, both excluded.
 func (s *Store) Scan(b Bounds) iter.Seq2[[]byte, []byte] {
-	return func(yield func(key, value []byte) bool) { s.scan(b, false, yield) }
-}
-
-// ScanReverse is Scan in reverse key order: from the end of b to its start.
-func (s *Store) ScanReverse(b Bounds) iter.Seq2[[]byte, []byte] {
-	return func(yield func(key, value []byte) bool) { s.scan(b, true, yield) }
-}
-
-func (s *Store) scan(b Bounds, reverse bool, yield func(key, value []byte) bool) {
-	var lower, upper queryKey
-	var gathered []byte
-	// A leaf at a time: the loop body's call is the only one an entry
-	// makes, as upstream's closure inlines into its map's scan.
-	h := &s.heap
-	leaf := func(_ storeLeaf, keys []storeKey, _ []struct{}) bool {
-		if !reverse {
+	return func(yield func(key, value []byte) bool) {
+		var lower, upper queryKey
+		w := s.m.WalkLeaves(b.storeBounds(&lower, &upper), false)
+		h := &s.heap
+		var gathered []byte
+		for keys, _, ok := w.Next(); ok; keys, _, ok = w.Next() {
 			for _, stored := range keys {
 				r := stored.record()
 				k, v, ok := h.entry(r)
@@ -236,27 +234,34 @@ func (s *Store) scan(b Bounds, reverse bool, yield func(key, value []byte) bool)
 					k, v = h.overflowEntry(r, &gathered)
 				}
 				if !yield(k, v) {
-					return false
+					w.Close()
+					return
 				}
 			}
-			return true
 		}
-		for i := len(keys) - 1; i >= 0; i-- {
-			r := keys[i].record()
-			k, v, ok := h.entry(r)
-			if !ok {
-				k, v = h.overflowEntry(r, &gathered)
-			}
-			if !yield(k, v) {
-				return false
-			}
-		}
-		return true
 	}
-	if reverse {
-		s.m.ScanLeavesReverse(b.storeBounds(&lower, &upper), leaf)
-	} else {
-		s.m.ScanLeaves(b.storeBounds(&lower, &upper), leaf)
+}
+
+// ScanReverse is Scan in reverse key order: from the end of b to its start.
+func (s *Store) ScanReverse(b Bounds) iter.Seq2[[]byte, []byte] {
+	return func(yield func(key, value []byte) bool) {
+		var lower, upper queryKey
+		w := s.m.WalkLeaves(b.storeBounds(&lower, &upper), true)
+		h := &s.heap
+		var gathered []byte
+		for keys, _, ok := w.Next(); ok; keys, _, ok = w.Next() {
+			for i := len(keys) - 1; i >= 0; i-- {
+				r := keys[i].record()
+				k, v, ok := h.entry(r)
+				if !ok {
+					k, v = h.overflowEntry(r, &gathered)
+				}
+				if !yield(k, v) {
+					w.Close()
+					return
+				}
+			}
+		}
 	}
 }
 

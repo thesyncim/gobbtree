@@ -172,7 +172,7 @@ Beyond upstream, every node keeps its fences, the bounds of the keys under it, a
 
 - **Iteration** keeps upstream's `range_cloned` contract, also for `Scan`: it copies a few leaves at a time and visits the copies with nothing held, so the loop body may use the map. An `AnnexedMapOf`'s iterations instead run their bodies holding each leaf shared, as upstream's `scan` runs its closure, since its keys may read what only their leaf keeps in place; there the body must not change the map. Iteration is not a snapshot: an entry present throughout is visited exactly once, and entries inserted or removed meanwhile may or may not be.
 - **Batches** are consistent per entry; a batch is not a transaction.
-- **Callbacks** of `Read`, `ReadMany`, `Update`, `UpdateOrInsert` and `DeleteIf` run under the entry's leaf latch, as upstream's do, and must not use the same map. A panicking callback releases its latches and stores nothing, as Go programs may recover; upstream instead asks that user code never panic, and leaves what a map holds after one unspecified.
+- **Callbacks** of `Read`, `ReadMany`, `Update`, `UpdateOrInsert` and `DeleteIf` run under the entry's leaf latch, as upstream's do, and must not use the same map. A panicking callback releases its latches and stores nothing, as Go programs may recover; upstream instead asks that user code never panic, and leaves what a map holds after one unspecified. A store's `Scan` and `ScanReverse` keep upstream's contract, so that their loop bodies inline: a body must not panic, which would leave its leaf latched.
 - **No `Len`**, as upstream's shared map has none. `IsEmpty` reports whether the map held no entry at some moment during the call. `Clear`, like upstream's `clear(&mut self)`, is the owner's: no other goroutine may use the map until it returns.
 
 ## Coming from bbtree
@@ -210,7 +210,7 @@ Beyond upstream:
 - **`Map`:** `First`, `Last`, `PopFirst`, `PopLast`, `LoadOrStoreFunc`, `UpdateAll` and `UpdateRange`.
 - **`Tree`:** `LowerBound`, `UpperBound`, `LoadOrStore`, `LoadOrStoreFunc` and `UpdateOrInsert`.
 - **`FileMap`:** `ByteLen`, `WriteTo` and `Close`.
-- **`AnnexedMapOf`:** `ScanLeaves` and `ScanLeavesReverse` hand each held leaf's entries within the bounds at once, for a container that runs its own loop over them, as a store's scans do: Go calls a scan's loop body through a function value at every entry, where Rust inlines upstream's closure.
+- **`AnnexedMapOf`:** `WalkLeaves` walks the leaves a leaf at a time, each held shared until the next, for a container that runs its own loop over a leaf's entries in an iterator the compiler inlines into its caller's range loop, as a store's scans do: Go otherwise calls a scan's loop body through a function value at every entry, where Rust inlines upstream's closure.
 - **Everywhere:** `Range(lo, hi)` and `RangeReverse` as shorthands for scanning `Between(lo, hi)`, and `Ascend(from)` and `Descend(from)` for scanning from a key.
 
 Not carried over, because Go has no counterpart:

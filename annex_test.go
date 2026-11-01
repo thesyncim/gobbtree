@@ -612,11 +612,11 @@ func TestAnnexedScansVisitOnceUnderWriters(t *testing.T) {
 	checkGenericTree(t, &m.generic)
 }
 
-// TestAnnexedScanLeavesMatchesScan checks ScanLeaves hands the entries of
+// TestAnnexedWalkLeavesMatchesScan checks WalkLeaves hands the entries of
 // each bound's range a leaf at a time, ascending within each leaf, the
-// leaves in order or, from ScanLeavesReverse, in reverse, and stops where f
-// says.
-func TestAnnexedScanLeavesMatchesScan(t *testing.T) {
+// leaves in order or in reverse, and that Close, after a walk stops early,
+// lets go of the leaf it held: a write to it then goes through.
+func TestAnnexedWalkLeavesMatchesScan(t *testing.T) {
 	m := NewAnnexedMapOf[annexKey, uint64, noAnnex]()
 	r := rand.New(rand.NewPCG(5, 6))
 	var model []uint64
@@ -629,6 +629,26 @@ func TestAnnexedScanLeavesMatchesScan(t *testing.T) {
 		}
 	}
 	slices.Sort(model)
+	walk := func(b Bounds[annexKey], reverse bool) (leaves [][]uint64) {
+		w := m.WalkLeaves(b, reverse)
+		for keys, values, ok := w.Next(); ok; keys, values, ok = w.Next() {
+			if len(keys) == 0 || len(keys) != len(values) {
+				t.Fatalf("a leaf of %d keys and %d values", len(keys), len(values))
+			}
+			leaf := make([]uint64, len(keys))
+			for i, k := range keys {
+				if values[i] != uint64(k) {
+					t.Fatalf("key %d holds %d", k, values[i])
+				}
+				leaf[i] = uint64(k)
+			}
+			if !slices.IsSorted(leaf) {
+				t.Fatal("a leaf's keys descend")
+			}
+			leaves = append(leaves, leaf)
+		}
+		return leaves
+	}
 	for range 200 {
 		lo, hi := r.Uint64N(1<<20), r.Uint64N(1<<20)
 		if lo > hi {
@@ -641,45 +661,23 @@ func TestAnnexedScanLeavesMatchesScan(t *testing.T) {
 			}
 		}
 		b := Between(annexKey(lo), annexKey(hi))
-		var got []uint64
-		m.ScanLeaves(b, func(_ AnnexedLeaf[annexKey, noAnnex], keys []annexKey, values []uint64) bool {
-			if len(keys) == 0 || len(keys) != len(values) {
-				t.Fatalf("a leaf of %d keys and %d values", len(keys), len(values))
-			}
-			for i, k := range keys {
-				if values[i] != uint64(k) {
-					t.Fatalf("key %d holds %d", k, values[i])
-				}
-				got = append(got, uint64(k))
-			}
-			return true
-		})
-		if !slices.Equal(got, want) {
-			t.Fatalf("[%d, %d): ScanLeaves gave %d keys, want %d", lo, hi, len(got), len(want))
+		if got := slices.Concat(walk(b, false)...); !slices.Equal(got, want) {
+			t.Fatalf("[%d, %d): a walk gave %d keys, want %d", lo, hi, len(got), len(want))
 		}
-		var leaves [][]uint64
-		m.ScanLeavesReverse(b, func(_ AnnexedLeaf[annexKey, noAnnex], keys []annexKey, _ []uint64) bool {
-			leaf := make([]uint64, len(keys))
-			for i, k := range keys {
-				leaf[i] = uint64(k)
-			}
-			if !slices.IsSorted(leaf) {
-				t.Fatal("a reverse leaf's keys descend")
-			}
-			leaves = append(leaves, leaf)
-			return true
-		})
-		got = got[:0]
-		for i := len(leaves) - 1; i >= 0; i-- {
-			got = append(got, leaves[i]...)
+		leaves := walk(b, true)
+		slices.Reverse(leaves)
+		if got := slices.Concat(leaves...); !slices.Equal(got, want) {
+			t.Fatalf("[%d, %d): a reverse walk gave %d keys, want %d", lo, hi, len(got), len(want))
 		}
-		if !slices.Equal(got, want) {
-			t.Fatalf("[%d, %d): ScanLeavesReverse gave %d keys, want %d", lo, hi, len(got), len(want))
-		}
-		calls := 0
-		m.ScanLeaves(b, func(AnnexedLeaf[annexKey, noAnnex], []annexKey, []uint64) bool { calls++; return false })
-		if calls > 1 {
-			t.Fatalf("ScanLeaves ran %d times after f stopped it", calls)
+		// Stopped after its first leaf, and closed: that leaf's keys are
+		// writable again.
+		w := m.WalkLeaves(b, false)
+		if keys, _, ok := w.Next(); ok {
+			k := keys[0]
+			w.Close()
+			m.Insert(k, uint64(k))
+		} else {
+			w.Close()
 		}
 	}
 }
