@@ -611,3 +611,75 @@ func TestAnnexedScansVisitOnceUnderWriters(t *testing.T) {
 	writers.Wait()
 	checkGenericTree(t, &m.generic)
 }
+
+// TestAnnexedScanLeavesMatchesScan checks ScanLeaves hands the entries of
+// each bound's range a leaf at a time, ascending within each leaf, the
+// leaves in order or, from ScanLeavesReverse, in reverse, and stops where f
+// says.
+func TestAnnexedScanLeavesMatchesScan(t *testing.T) {
+	m := NewAnnexedMapOf[annexKey, uint64, noAnnex]()
+	r := rand.New(rand.NewPCG(5, 6))
+	var model []uint64
+	seen := map[uint64]bool{}
+	for len(model) < 5000 {
+		if k := r.Uint64N(1 << 20); !seen[k] {
+			seen[k] = true
+			model = append(model, k)
+			m.Insert(annexKey(k), k)
+		}
+	}
+	slices.Sort(model)
+	for range 200 {
+		lo, hi := r.Uint64N(1<<20), r.Uint64N(1<<20)
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		var want []uint64
+		for _, k := range model {
+			if k >= lo && k < hi {
+				want = append(want, k)
+			}
+		}
+		b := Between(annexKey(lo), annexKey(hi))
+		var got []uint64
+		m.ScanLeaves(b, func(_ AnnexedLeaf[annexKey, noAnnex], keys []annexKey, values []uint64) bool {
+			if len(keys) == 0 || len(keys) != len(values) {
+				t.Fatalf("a leaf of %d keys and %d values", len(keys), len(values))
+			}
+			for i, k := range keys {
+				if values[i] != uint64(k) {
+					t.Fatalf("key %d holds %d", k, values[i])
+				}
+				got = append(got, uint64(k))
+			}
+			return true
+		})
+		if !slices.Equal(got, want) {
+			t.Fatalf("[%d, %d): ScanLeaves gave %d keys, want %d", lo, hi, len(got), len(want))
+		}
+		var leaves [][]uint64
+		m.ScanLeavesReverse(b, func(_ AnnexedLeaf[annexKey, noAnnex], keys []annexKey, _ []uint64) bool {
+			leaf := make([]uint64, len(keys))
+			for i, k := range keys {
+				leaf[i] = uint64(k)
+			}
+			if !slices.IsSorted(leaf) {
+				t.Fatal("a reverse leaf's keys descend")
+			}
+			leaves = append(leaves, leaf)
+			return true
+		})
+		got = got[:0]
+		for i := len(leaves) - 1; i >= 0; i-- {
+			got = append(got, leaves[i]...)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("[%d, %d): ScanLeavesReverse gave %d keys, want %d", lo, hi, len(got), len(want))
+		}
+		calls := 0
+		m.ScanLeaves(b, func(AnnexedLeaf[annexKey, noAnnex], []annexKey, []uint64) bool { calls++; return false })
+		if calls > 1 {
+			t.Fatalf("ScanLeaves ran %d times after f stopped it", calls)
+		}
+	}
+}

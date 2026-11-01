@@ -190,16 +190,27 @@ func (h *recordHeap) value(r record) recordValue {
 	return h.valueOf(r, r.keyLen(), r.valueLen())
 }
 
-// entry is the record's key and value, for a scan, its header read once:
-// the value gathered into *gathered where it has overflow pages.
-func (h *recordHeap) entry(r record, gathered *[]byte) (key, value []byte) {
-	keyLen, valueLen := r.keyLen(), r.valueLen()
-	key = bytesAt(r.at, recordHeader, keyLen)
-	if recordHeader+keyLen+valueLen <= h.g.room {
-		// The whole value in the record, as a small one's always is.
-		return key, bytesAt(r.at, recordHeader+keyLen, valueLen)
+// headWord is the record header's first 8 bytes, in one load: the key's
+// length, its offset, and the value's length (keyLenAt, offsetAt,
+// valueLenAt).
+func (r record) headWord() uint64 { return binary.LittleEndian.Uint64((*[8]byte)(r.at)[:]) }
+
+// entry is the record's key and value, for a scan's loop, which it inlines
+// into: its key's and value's lengths read in one load. ok is false for a
+// value too long for its record, which overflowEntry gathers.
+func (h *recordHeap) entry(r record) (key, value []byte, ok bool) {
+	w := r.headWord()
+	keyLen, valueLen := int(uint16(w)), int(w>>32)
+	if recordHeader+keyLen+valueLen > h.g.room {
+		return nil, nil, false
 	}
-	return key, h.valueOf(r, keyLen, valueLen).gather(&h.g, gathered)
+	return bytesAt(r.at, recordHeader, keyLen), bytesAt(r.at, recordHeader+keyLen, valueLen), true
+}
+
+// overflowEntry is the record's key and value, the value gathered from its
+// overflow pages into *gathered.
+func (h *recordHeap) overflowEntry(r record, gathered *[]byte) (key, value []byte) {
+	return r.key(), h.value(r).gather(&h.g, gathered)
 }
 
 // valueOf is value, given the record's key and value lengths.

@@ -210,6 +210,7 @@ Beyond upstream:
 - **`Map`:** `First`, `Last`, `PopFirst`, `PopLast`, `LoadOrStoreFunc`, `UpdateAll` and `UpdateRange`.
 - **`Tree`:** `LowerBound`, `UpperBound`, `LoadOrStore`, `LoadOrStoreFunc` and `UpdateOrInsert`.
 - **`FileMap`:** `ByteLen`, `WriteTo` and `Close`.
+- **`AnnexedMapOf`:** `ScanLeaves` and `ScanLeavesReverse` hand each held leaf's entries within the bounds at once, for a container that runs its own loop over them, as a store's scans do: Go calls a scan's loop body through a function value at every entry, where Rust inlines upstream's closure.
 - **Everywhere:** `Range(lo, hi)` and `RangeReverse` as shorthands for scanning `Between(lo, hi)`, and `Ascend(from)` and `Descend(from)` for scanning from a key.
 
 Not carried over, because Go has no counterpart:

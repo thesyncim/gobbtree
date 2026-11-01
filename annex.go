@@ -102,6 +102,39 @@ func (m *AnnexedMapOf[K, V, A, PA]) DeleteWithLeaf(key K, f func(leaf AnnexedLea
 	return t.removeWithLeaf(key, func(n *gleaf[K, V], i int) { f(annexedLeafOf[A](t, n), t.key(n, i), n.values[i]) })
 }
 
+// ScanLeaves runs f on each leaf with entries in b, in key order, with the
+// leaf and its keys and values in b, ascending, holding the leaf shared,
+// until f returns false: Scan a leaf at a time, for a container that runs
+// its own loop over a leaf's entries, as upstream's closures, which Rust
+// inlines into its scan, run in its loop. The slices are the leaf's, valid
+// only while f runs, and f must not use the map. It panics as Scan does.
+func (m *AnnexedMapOf[K, V, A, PA]) ScanLeaves(b Bounds[K], f func(leaf AnnexedLeaf[K, A], keys []K, values []V) bool) {
+	m.scanLeaves(b, false, f)
+}
+
+// ScanLeavesReverse is ScanLeaves in descending order of leaves, each leaf's
+// keys and values still ascending, for f to take from the end.
+func (m *AnnexedMapOf[K, V, A, PA]) ScanLeavesReverse(b Bounds[K], f func(leaf AnnexedLeaf[K, A], keys []K, values []V) bool) {
+	m.scanLeaves(b, true, f)
+}
+
+func (m *AnnexedMapOf[K, V, A, PA]) scanLeaves(b Bounds[K], reverse bool, f func(leaf AnnexedLeaf[K, A], keys []K, values []V) bool) {
+	checkBounds[K, annexOrder[K, A, PA]](&b)
+	t := &m.generic
+	t.walkLeavesHeld(&b, reverse, func(n *gleaf[K, V], from, to int) bool {
+		var keys []K
+		if windowed[annexOrder[K, A, PA], K]() {
+			keys = n.keyed()[from:to:to]
+		} else {
+			keys = make([]K, to-from)
+			for i := range keys {
+				keys[i] = t.key(n, from+i)
+			}
+		}
+		return f(annexedLeafOf[A](t, n), keys, n.values[from:to:to])
+	})
+}
+
 // annexOrder orders keys by their Key methods, as custom does, for a map
 // whose leaves keep annexes A. Its size, two bytes, tells it from natural
 // and custom where the trees test shapes: it takes custom's paths, and the
@@ -273,6 +306,37 @@ func (t *genericTree[K, V, O]) compareSeparatorHeld(n *ginner[K], i int, key K, 
 // held leaf's last key, which the leaf keeps where it is. An entry present
 // throughout is visited once.
 func (t *genericTree[K, V, O]) walkHeld(b *Bounds[K], reverse bool, visit func(K, V) bool) {
+	t.walkLeavesHeld(b, reverse, func(n *gleaf[K, V], from, to int) bool {
+		// A custom key is read in place, from the leaf's keys.
+		keys := n.keyed()
+		key := func(i int) K {
+			if windowed[O, K]() {
+				return keys[i&(nodeSize-1)]
+			}
+			return t.key(n, i)
+		}
+		if !reverse {
+			for i := from; i < to; i++ {
+				if !visit(key(i), n.values[i&(nodeSize-1)]) {
+					return false
+				}
+			}
+			return true
+		}
+		for i := to - 1; i >= from; i-- {
+			if !visit(key(i), n.values[i&(nodeSize-1)]) {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// walkLeavesHeld is walkHeld a leaf at a time: leaf runs once on each leaf
+// with entries in b, holding it shared, with the range [from, to) of them
+// in b, in key order or in reverse, until it returns false. A leaf wholly
+// within b is known so by its first key and its last.
+func (t *genericTree[K, V, O]) walkLeavesHeld(b *Bounds[K], reverse bool, leaf func(n *gleaf[K, V], from, to int) bool) {
 	if t.root.Load() == nil {
 		return
 	}
@@ -295,44 +359,21 @@ func (t *genericTree[K, V, O]) walkHeld(b *Bounds[K], reverse bool, visit func(K
 	lower, upper := b.lowerKind != unbounded, b.upperKind != unbounded
 	for {
 		count := int(n.count.Load())
-		// A custom key is read in place, from the leaf's keys.
-		var keys *[nodeSize]K
-		if windowed[O, K]() {
-			keys = n.keyed()
+		lo, hi := 0, count
+		if lower && count > 0 && !aboveLower[K, O](b, t.key(n, 0)) {
+			for lo < count && !aboveLower[K, O](b, t.key(n, lo)) {
+				lo++
+			}
 		}
-		key := func(i int) K {
-			if windowed[O, K]() {
-				return keys[i&(nodeSize-1)]
+		if upper && count > 0 && !belowUpper[K, O](b, t.key(n, count-1)) {
+			for hi > lo && !belowUpper[K, O](b, t.key(n, hi-1)) {
+				hi--
 			}
-			return t.key(n, i)
 		}
-		if windowed[O, K]() && !lower && !upper && !reverse {
-			// A whole forward walk.
-			for i := 0; i < count; i++ {
-				if !visit(keys[i&(nodeSize-1)], n.values[i&(nodeSize-1)]) {
-					return
-				}
-			}
-		} else if !reverse {
-			for i := 0; i < count; i++ {
-				k := key(i)
-				if lower && !aboveLower[K, O](b, k) {
-					continue
-				}
-				if upper && !belowUpper[K, O](b, k) || !visit(k, n.values[i]) {
-					return
-				}
-			}
-		} else {
-			for i := count - 1; i >= 0; i-- {
-				k := key(i)
-				if upper && !belowUpper[K, O](b, k) {
-					continue
-				}
-				if lower && !aboveLower[K, O](b, k) || !visit(k, n.values[i]) {
-					return
-				}
-			}
+		// The walk ends at the bound its direction reaches.
+		last := !reverse && hi < count || reverse && lo > 0
+		if lo < hi && !leaf(n, lo, hi) || last {
+			return
 		}
 		next, end := t.neighborHeld(&path, reverse)
 		for next == nil && !end {
@@ -365,7 +406,7 @@ func (t *genericTree[K, V, O]) walkHeld(b *Bounds[K], reverse bool, visit func(K
 // has no neighbor, and none and false where a node changed.
 func (t *genericTree[K, V, O]) neighborHeld(path *gpath[K], reverse bool) (next *gleaf[K, V], end bool) {
 	for level := path.depth - 1; level >= 0; level-- {
-		at := path.levels[level]
+		at := &path.levels[level]
 		edge := at.edge + 1
 		if reverse {
 			edge = at.edge - 1
@@ -373,8 +414,10 @@ func (t *genericTree[K, V, O]) neighborHeld(path *gpath[K], reverse bool) (next 
 		if edge < 0 || edge >= at.count {
 			continue
 		}
+		// The node's version is checked once the neighbor is latched
+		// (unchanged, below), which a stale child fails.
 		h := at.n.children[edge&(nodeSize-1)].Load()
-		if h == nil || !at.n.latch.isUnchanged(at.version) {
+		if h == nil {
 			return nil, false
 		}
 		depth := level + 1

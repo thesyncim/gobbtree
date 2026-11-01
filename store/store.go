@@ -223,15 +223,40 @@ func (s *Store) ScanReverse(b Bounds) iter.Seq2[[]byte, []byte] {
 
 func (s *Store) scan(b Bounds, reverse bool, yield func(key, value []byte) bool) {
 	var lower, upper queryKey
-	entries := s.m.Scan(b.storeBounds(&lower, &upper))
-	if reverse {
-		entries = s.m.ScanReverse(b.storeBounds(&lower, &upper))
-	}
 	var gathered []byte
-	for stored := range entries {
-		if !yield(s.heap.entry(stored.record(), &gathered)) {
-			return
+	// A leaf at a time: the loop body's call is the only one an entry
+	// makes, as upstream's closure inlines into its map's scan.
+	h := &s.heap
+	leaf := func(_ storeLeaf, keys []storeKey, _ []struct{}) bool {
+		if !reverse {
+			for _, stored := range keys {
+				r := stored.record()
+				k, v, ok := h.entry(r)
+				if !ok {
+					k, v = h.overflowEntry(r, &gathered)
+				}
+				if !yield(k, v) {
+					return false
+				}
+			}
+			return true
 		}
+		for i := len(keys) - 1; i >= 0; i-- {
+			r := keys[i].record()
+			k, v, ok := h.entry(r)
+			if !ok {
+				k, v = h.overflowEntry(r, &gathered)
+			}
+			if !yield(k, v) {
+				return false
+			}
+		}
+		return true
+	}
+	if reverse {
+		s.m.ScanLeavesReverse(b.storeBounds(&lower, &upper), leaf)
+	} else {
+		s.m.ScanLeaves(b.storeBounds(&lower, &upper), leaf)
 	}
 }
 
