@@ -113,7 +113,14 @@ func (s *Store) GetInto(key, buf []byte) ([]byte, bool) {
 	e, found := s.m.Hold(q.key(key))
 	q.release()
 	if found {
-		buf = s.heap.value(e.Key().record()).appendTo(&s.heap.g, buf)
+		// A value kept whole in its record, by the scan's decode, inlined;
+		// one with overflow pages, gathered.
+		r := e.Key().record()
+		if _, v, whole := s.heap.entry(r); whole {
+			buf = append(buf, v...)
+		} else {
+			buf = s.heap.value(r).appendTo(&s.heap.g, buf)
+		}
 		e.Release()
 	}
 	return buf, found
