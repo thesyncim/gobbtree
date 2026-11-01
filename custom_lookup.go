@@ -17,13 +17,14 @@ const (
 // read, confirms it: a miss writes no latch. Otherwise the leaf is latched
 // shared, codesHeld, still at that version, and its candidates for key are
 // [lo, hi), whose keys the caller compares holding it, with key's hash tag
-// where its leaves keep them. Only key itself is read: no stored key, whose
-// bytes an annexed tree's leaf may move. A code that ties with a
-// separator's, which only the separator's key settles, or a node that
-// changes, leaves it codesUnsettled, for the latched descent.
+// where its leaves keep them. A node that changes leaves it
+// codesUnsettled, for the latched descent.
 //
 // The internal nodes are descendCodes's, which counts their separators
-// inline and hands back only where a node's prefix needs key's code at it.
+// inline and hands back where a node's prefix needs key's code at it, or
+// where a separator's code ties with key's: its key settles the route, as
+// the general descent's route settles it, an annexed tree's compared
+// holding its leaf, whose records may move.
 // Each node's version is read by an acquire load and its words plainly,
 // after it, and only the closing check, which every word read feeds, by
 // address dependency, so that a node's lines are fetched together.
@@ -93,19 +94,42 @@ func (t *genericTree[K, V, O]) leafOfCodes(key K, code uint64) (*gheader, uint64
 	for {
 		var reached int
 		h, word, depth, reached = descendCodes(h, word, depth, c, cp, narrow, width)
-		if reached == codesAtLeaf {
+		switch reached {
+		case codesAtLeaf:
 			return h, word, true
-		}
-		// A node of another prefix takes key's code at it, once: a prefix
-		// that moves again is a writer's, for the latched descent.
-		if reached != codesAtPrefix || h == resumed {
+		case codesAtPrefix:
+			// A node of another prefix takes key's code at it, once: a
+			// prefix that moves again is a writer's, for the latched
+			// descent.
+			if h == resumed {
+				return nil, 0, false
+			}
+			q := int(*(*int32)(unsafe.Pointer(&h.prefix)))
+			if q < 0 || q > customPrefixMax {
+				return nil, 0, false
+			}
+			resumed, cp, c = h, q, t.codeOf(key, code, q)
+		case codesTied:
+			// The separators settle a tie, as the general descent's route
+			// settles it, the node checked unchanged after: the descent
+			// goes on from its child, not from the root.
+			n := asInner[K](h)
+			i, ok := t.route(n, key, c, int(n.count.Load()), false)
+			if !ok {
+				return nil, 0, false
+			}
+			child := n.children[i&(nodeSize-1)].Load()
+			if child == nil {
+				return nil, 0, false
+			}
+			childWord := child.latch.Load()
+			if !h.latch.isUnchanged(word &^ latchSharedMask) {
+				return nil, 0, false
+			}
+			h, word, depth = child, childWord, depth+1
+		default:
 			return nil, 0, false
 		}
-		q := int(*(*int32)(unsafe.Pointer(&h.prefix)))
-		if q < 0 || q > customPrefixMax {
-			return nil, 0, false
-		}
-		resumed, cp, c = h, q, t.codeOf(key, code, q)
 	}
 }
 

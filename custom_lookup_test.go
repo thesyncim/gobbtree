@@ -77,7 +77,7 @@ func TestDescendCodesRoutesAsBrackets(t *testing.T) {
 			}
 			got, _, _, reached := descendCodes(&n.gheader, 0, 0, c, 0, narrow, 4)
 			if tie {
-				if reached != codesRaced {
+				if reached != codesTied {
 					t.Fatalf("narrow %v, separators %v, code %d: routed to %v, want a tie", narrow, seps, probe, got)
 				}
 				continue

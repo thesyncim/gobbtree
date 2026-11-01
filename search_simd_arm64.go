@@ -280,10 +280,10 @@ func descendTextOrdered(root **gheader, s string) (h *gheader, word uint64, lo, 
 // latch word word, by c, the key's code at prefix cp, narrowed to width
 // bytes where narrow, through the internal nodes that keep that prefix: the
 // node it stopped at, its word and depth, and what it reached (codesAtLeaf,
-// codesAtPrefix, codesRaced). A node's separators below the key's and at
-// most it are counted in one pass, inline, as descendText counts them: the
-// route is the last child below, and a separator past it equal to the key's
-// is a tie, which only its key settles.
+// codesAtPrefix, codesTied, codesRaced). A node's separators below the
+// key's and at most it are counted in one pass, inline, as descendText
+// counts them: the route is the last child below, and a separator past it
+// equal to the key's is a tie, which only its key settles.
 func descendCodes(h *gheader, word uint64, depth int, c uint64, cp int, narrow bool, width int) (*gheader, uint64, int, int) {
 	if simd.Emulated() {
 		return descendCodesBy(h, word, depth, c, cp, narrow, width)
@@ -325,7 +325,7 @@ func descendCodes(h *gheader, word uint64, depth int, c uint64, cp int, narrow b
 			lt, le = min(-int(l.GetElem(0)+l.GetElem(1)), count), min(-int(e.GetElem(0)+e.GetElem(1)), count)
 		}
 		if le > max(lt, 1) {
-			return h, word, depth, codesRaced
+			return h, word, depth, codesTied
 		}
 		i := max(lt-1, 0)
 		child := *(**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)]))

@@ -38,7 +38,7 @@ func descendCode(h *gheader, code uint64, place bool) (*gheader, int, bool) {
 // latch word word, by c, the key's code at prefix cp, narrowed to width
 // bytes where narrow, through the internal nodes that keep that prefix: the
 // node it stopped at, its word and depth, and what it reached (codesAtLeaf,
-// codesAtPrefix, codesRaced).
+// codesAtPrefix, codesTied, codesRaced).
 func descendCodes(h *gheader, word uint64, depth int, c uint64, cp int, narrow bool, width int) (*gheader, uint64, int, int) {
 	return descendCodesBy(h, word, depth, c, cp, narrow, width)
 }

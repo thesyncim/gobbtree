@@ -85,10 +85,13 @@ const (
 	orderedOutside
 )
 
-// What descendCodes reached.
+// What descendCodes reached: the leaf, a node of another prefix, whose code
+// the caller makes, a node whose separator past the route ties with the
+// code, which only the separator's key settles, or a node that changed.
 const (
 	codesAtLeaf = iota
 	codesAtPrefix
+	codesTied
 	codesRaced
 )
 
@@ -123,8 +126,7 @@ func descendCodesBy(h *gheader, word uint64, depth int, c uint64, cp int, narrow
 			lt, le = codeSpan((*[nodeSize]uint64)(unsafe.Pointer(&n.codes)), count, c)
 		}
 		if le > max(lt, 1) {
-			// The separator after the route ties: only its key settles.
-			return h, word, depth, codesRaced
+			return h, word, depth, codesTied
 		}
 		i := max(lt-1, 0)
 		child := *(**gheader)(unsafe.Pointer(&n.children[i&(nodeSize-1)]))
