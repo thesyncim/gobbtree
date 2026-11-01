@@ -73,7 +73,9 @@ func (l AnnexedLeaf[K, A]) Keys() []K { return l.view.leafKeys(l.leaf) }
 func (l AnnexedLeaf[K, A]) ReplaceKey(i int, key K) { l.view.replaceKey(l.leaf, i, key) }
 
 // UpdateOrInsertWithLeaf runs occupied on the entry whose key equals key,
-// its value to change, or, if the map holds none, vacant on key and value,
+// its index among the leaf's Keys and its value to change, the index being
+// what ReplaceKey takes, as upstream's occupied repoints the stored key
+// through its &K; or, if the map holds none, vacant on key and value,
 // which go in right after it; each with the leaf the entry is in, or goes
 // in, held exclusively. found tells which ran. Either may refuse, for want
 // of what it would hold, by returning false: the map is then unchanged, and
@@ -86,10 +88,12 @@ func (l AnnexedLeaf[K, A]) ReplaceKey(i int, key K) { l.view.replaceKey(l.leaf, 
 // to its record, which only vacant, holding the leaf, can write. It returns
 // the key rather than taking a *K, which would put every new key on the
 // heap.
-func (m *AnnexedMapOf[K, V, A, PA]) UpdateOrInsertWithLeaf(key K, value V, occupied func(leaf AnnexedLeaf[K, A], key K, value *V) bool, vacant func(leaf AnnexedLeaf[K, A], key K, value V) (K, bool)) (found, ok bool) {
+func (m *AnnexedMapOf[K, V, A, PA]) UpdateOrInsertWithLeaf(key K, value V, occupied func(leaf AnnexedLeaf[K, A], i int, key K, value *V) bool, vacant func(leaf AnnexedLeaf[K, A], key K, value V) (K, bool)) (found, ok bool) {
 	t := &m.generic
 	return t.insertWithLeaf(key, value,
-		func(n *gleaf[K, V], i int) bool { return occupied(annexedLeafOf[A](t, n), t.key(n, i), &n.values[i]) },
+		func(n *gleaf[K, V], i int) bool {
+			return occupied(annexedLeafOf[A](t, n), i, t.key(n, i), &n.values[i])
+		},
 		func(n *gleaf[K, V], key K) (K, bool) { return vacant(annexedLeafOf[A](t, n), key, value) })
 }
 

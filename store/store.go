@@ -158,8 +158,8 @@ func (s *Store) Insert(key, value []byte) (replaced bool, err error) {
 	}
 	var q pointQuery
 	found, ok := s.m.UpdateOrInsertWithLeaf(q.key(key), struct{}{},
-		func(leaf storeLeaf, stored storeKey, _ *struct{}) bool {
-			return h.overwrite(leaf, indexOf(leaf, stored), key, value, link)
+		func(leaf storeLeaf, i int, _ storeKey, _ *struct{}) bool {
+			return h.overwrite(leaf, i, key, value, link)
 		},
 		func(leaf storeLeaf, query storeKey, _ struct{}) (storeKey, bool) {
 			r, ok := h.write(leaf, key, value, link)
@@ -177,16 +177,6 @@ func (s *Store) Insert(key, value []byte) (replaced bool, err error) {
 		return false, ErrAlloc
 	}
 	return found, nil
-}
-
-// indexOf is the index of stored among leaf's keys, by its pointer.
-func indexOf(leaf storeLeaf, stored storeKey) int {
-	for i, k := range leaf.Keys() {
-		if k.p == stored.p {
-			return i
-		}
-	}
-	panic("store: a held key is among its leaf's keys")
 }
 
 // Remove removes key, and reports whether the store held it.

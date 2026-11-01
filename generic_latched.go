@@ -1237,11 +1237,18 @@ func (t *genericTree[K, V, O]) find(n *gleaf[K, V], key K, code uint64) (int, bo
 	}
 	// Only the keys whose codes are key's can be it, and they are rare
 	// past the first: they follow the first code at least key's.
-	lo, hi := tieRange(&n.codes, count, code)
+	var lo, hi int
+	if windowed[O, K]() {
+		lo, hi = leafCodeRange(&n.gheader, count, code)
+	} else {
+		lo, hi = tieRange(&n.codes, count, code)
+	}
 	equal := 0
 	if windowed[O, K]() && lo < hi {
 		equal = equalThrough(int(n.prefix.Load()), t.inline.leafWidth)
-		if tag := t.inline.hashTag; tag != nil {
+		// Tags tell several candidates apart, as upstream reads them: a
+		// lone one is compared.
+		if tag := t.inline.hashTag; tag != nil && hi-lo > 1 {
 			// A key with its tag first, compared from where keys of tied
 			// codes can differ: one without is another key.
 			want := tag(key)

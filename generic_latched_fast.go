@@ -652,5 +652,11 @@ func (t *genericTree[K, V, O]) leafLatched(key K, code uint64, seek int, mode in
 			}
 		}
 	}
+	// A custom key's writer descends by codes, as its lookups do.
+	if windowed[O, K]() && seek == seekKey && mode == exclusive {
+		if n, version, ok := t.writeLeafByCodes(key, code); ok {
+			return n, version
+		}
+	}
 	return t.descend(key, code, seek, false, mode, nil)
 }

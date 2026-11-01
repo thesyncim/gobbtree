@@ -555,7 +555,7 @@ func countLeaves(s *Store) int {
 	for _, k := range keys {
 		var q queryKey
 		s.m.UpdateOrInsertWithLeaf(newQuery(&q, k), struct{}{},
-			func(leaf storeLeaf, _ storeKey, _ *struct{}) bool {
+			func(leaf storeLeaf, _ int, _ storeKey, _ *struct{}) bool {
 				leaves[leaf.Annex()] = true
 				return false
 			},

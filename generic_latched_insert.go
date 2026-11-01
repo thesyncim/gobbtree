@@ -1251,6 +1251,16 @@ func (t *genericTree[K, V, O]) insertWithLeaf(key K, value V, occupied func(*gle
 		t.admit(key)
 	}
 	code := t.code(key)
+	// A leaf with room, or the key's entry, takes no path: only a split
+	// needs one.
+	if windowed[O, K]() {
+		if n, version, ok := t.writeLeafByCodes(key, code); ok {
+			if done, found, ok := t.insertIntoWithLeaf(n, version, key, value, code, occupied, vacant); done {
+				return found, ok
+			}
+			n.latch.unlockExclusive(version)
+		}
+	}
 	var b backoff
 	for {
 		var path gpath[K]

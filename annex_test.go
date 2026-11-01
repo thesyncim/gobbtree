@@ -70,7 +70,7 @@ type pagedMap = AnnexedMapOf[annexKey, uint64, pagePerEntry, *pagePerEntry]
 func pagedInsert(t *testing.T, m *pagedMap, pages *testPages, key annexKey, value uint64, check bool) bool {
 	t.Helper()
 	found, ok := m.UpdateOrInsertWithLeaf(key, value,
-		func(leaf AnnexedLeaf[annexKey, pagePerEntry], stored annexKey, v *uint64) bool {
+		func(leaf AnnexedLeaf[annexKey, pagePerEntry], _ int, stored annexKey, v *uint64) bool {
 			if check && (!sortedKeys(leaf.Keys()) || !holdsKey(leaf.Keys(), stored)) {
 				t.Errorf("an occupied leaf's keys %v miss %d", leaf.Keys(), stored)
 			}
@@ -194,7 +194,7 @@ func TestAnnexedRefusedInsertChangesNothing(t *testing.T) {
 	}
 	for key := annexKey(0); key < 2*count+100; key += 3 {
 		found, ok := m.UpdateOrInsertWithLeaf(key, 0,
-			func(AnnexedLeaf[annexKey, pagePerEntry], annexKey, *uint64) bool { return false },
+			func(AnnexedLeaf[annexKey, pagePerEntry], int, annexKey, *uint64) bool { return false },
 			func(_ AnnexedLeaf[annexKey, pagePerEntry], k annexKey, _ uint64) (annexKey, bool) { return k, false })
 		if _, had := model[key]; ok || found != had {
 			t.Fatalf("refused insert of %d: found %v ok %v, model had it %v", key, found, ok, had)
@@ -255,7 +255,7 @@ func TestAnnexedVacantPanicReleases(t *testing.T) {
 		func() {
 			defer func() { _ = recover() }()
 			m.UpdateOrInsertWithLeaf(k*2+1, 0,
-				func(AnnexedLeaf[annexKey, pagePerEntry], annexKey, *uint64) bool { panic("occupied") },
+				func(AnnexedLeaf[annexKey, pagePerEntry], int, annexKey, *uint64) bool { panic("occupied") },
 				func(AnnexedLeaf[annexKey, pagePerEntry], annexKey, uint64) (annexKey, bool) { panic("vacant") })
 		}()
 	}
@@ -300,13 +300,12 @@ func TestAnnexedReplaceKeyMovesTheHead(t *testing.T) {
 	var old []*uint64
 	for v := range uint64(n) {
 		m.UpdateOrInsertWithLeaf(key(v*2), v,
-			func(leaf AnnexedLeaf[cellKey, noAnnex], stored cellKey, _ *uint64) bool {
-				for i, k := range leaf.Keys() {
-					if *k.cell == *stored.cell {
-						old = append(old, k.cell)
-						leaf.ReplaceKey(i, key(*k.cell))
-					}
+			func(leaf AnnexedLeaf[cellKey, noAnnex], i int, stored cellKey, _ *uint64) bool {
+				if leaf.Keys()[i].cell != stored.cell {
+					t.Fatalf("key %d: index %d holds another key", *stored.cell, i)
 				}
+				old = append(old, stored.cell)
+				leaf.ReplaceKey(i, key(*stored.cell))
 				return true
 			}, accept)
 	}
@@ -428,7 +427,7 @@ func TestAnnexesNameTheirLeaves(t *testing.T) {
 	testLeafIDs = &leafIDs{live: map[uint64]bool{0: true}}
 	m := NewAnnexedMapOf[annexKey, uint64, leafID]()
 	accept := func(_ AnnexedLeaf[annexKey, leafID], k annexKey, _ uint64) (annexKey, bool) { return k, true }
-	update := func(AnnexedLeaf[annexKey, leafID], annexKey, *uint64) bool { return true }
+	update := func(AnnexedLeaf[annexKey, leafID], int, annexKey, *uint64) bool { return true }
 	var wg sync.WaitGroup
 	for w := range 4 {
 		wg.Go(func() {

@@ -34,34 +34,9 @@ func (t *genericTree[K, V, O]) leafByCodes(key K, code uint64) (n *gleaf[K, V], 
 	if t.sharesBytes() && t.sharedOrderOf(key) != 0 {
 		return nil, 0, 0, 0, codesAbsent
 	}
-	root := (**gheader)(unsafe.Pointer(&t.root))
-	h := *root
-	if h == nil {
+	h, word, ok := t.leafOfCodes(key, code)
+	if !ok {
 		return nil, 0, 0, 0, codesUnsettled
-	}
-	word := h.latch.Load()
-	if *after(root, word) != h {
-		return nil, 0, 0, 0, codesUnsettled
-	}
-	narrow, width := t.narrowInner(), t.inline.innerWidth
-	cp, c, depth := 0, code, 0
-	var resumed *gheader
-	for {
-		var reached int
-		h, word, depth, reached = descendCodes(h, word, depth, c, cp, narrow, width)
-		if reached == codesAtLeaf {
-			break
-		}
-		// A node of another prefix takes key's code at it, once: a prefix
-		// that moves again is a writer's, for the latched descent.
-		if reached != codesAtPrefix || h == resumed {
-			return nil, 0, 0, 0, codesUnsettled
-		}
-		q := int(*(*int32)(unsafe.Pointer(&h.prefix)))
-		if q < 0 || q > customPrefixMax {
-			return nil, 0, 0, 0, codesUnsettled
-		}
-		resumed, cp, c = h, q, t.codeOf(key, code, q)
 	}
 	// Key lies between the leaf's fences, so begins with its prefix (D26):
 	// its candidates are the keys whose codes are its own, and of several,
@@ -98,6 +73,62 @@ func (t *genericTree[K, V, O]) leafByCodes(key K, code uint64) (n *gleaf[K, V], 
 		return nil, 0, 0, 0, codesUnsettled
 	}
 	return m, lo, hi, tag, codesHeld
+}
+
+// leafOfCodes is custom key key's leaf by leafByCodes's racing descent, and
+// the latch word it read the leaf at; false where the descent can't settle.
+func (t *genericTree[K, V, O]) leafOfCodes(key K, code uint64) (*gheader, uint64, bool) {
+	root := (**gheader)(unsafe.Pointer(&t.root))
+	h := *root
+	if h == nil {
+		return nil, 0, false
+	}
+	word := h.latch.Load()
+	if *after(root, word) != h {
+		return nil, 0, false
+	}
+	narrow, width := t.narrowInner(), t.inline.innerWidth
+	cp, c, depth := 0, code, 0
+	var resumed *gheader
+	for {
+		var reached int
+		h, word, depth, reached = descendCodes(h, word, depth, c, cp, narrow, width)
+		if reached == codesAtLeaf {
+			return h, word, true
+		}
+		// A node of another prefix takes key's code at it, once: a prefix
+		// that moves again is a writer's, for the latched descent.
+		if reached != codesAtPrefix || h == resumed {
+			return nil, 0, false
+		}
+		q := int(*(*int32)(unsafe.Pointer(&h.prefix)))
+		if q < 0 || q > customPrefixMax {
+			return nil, 0, false
+		}
+		resumed, cp, c = h, q, t.codeOf(key, code, q)
+	}
+}
+
+// writeLeafByCodes is custom key key's leaf, found by leafByCodes's racing
+// descent and latched exclusively, and the version it holds it from: as
+// upstream's writes descend as its lookups do, recording no path, and latch
+// the leaf they reach (D37). False, holding nothing, where the descent
+// can't settle, or the leaf changed since it read it.
+func (t *genericTree[K, V, O]) writeLeafByCodes(key K, code uint64) (*gleaf[K, V], uint64, bool) {
+	if !seqlockPlainStores || t.sharesBytes() && t.sharedOrderOf(key) != 0 {
+		return nil, 0, false
+	}
+	h, word, ok := t.leafOfCodes(key, code)
+	if !ok {
+		return nil, 0, false
+	}
+	n := asLeaf[K, V](h)
+	version := n.latch.lockExclusive()
+	if version != word&^latchSharedMask {
+		n.latch.unlockExclusive(version)
+		return nil, 0, false
+	}
+	return n, version, true
 }
 
 // settleHeld is the candidate of [lo, hi), the keys of leaf n whose codes
