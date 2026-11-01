@@ -159,9 +159,13 @@ func (s *Store) Insert(key, value []byte) (replaced bool, err error) {
 		return false, ErrValueTooLong
 	}
 	h := &s.heap
-	link, ok := h.writeOverflow(len(key), value)
-	if !ok {
-		return false, ErrAlloc
+	// A value its record keeps whole has no overflow pages to write.
+	var link overflowLink
+	ok := true
+	if recordHeader+len(key)+len(value) > h.g.room {
+		if link, ok = h.writeOverflow(len(key), value); !ok {
+			return false, ErrAlloc
+		}
 	}
 	var q pointQuery
 	query := q.key(key)

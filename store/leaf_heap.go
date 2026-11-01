@@ -2,6 +2,7 @@ package store
 
 import (
 	"cmp"
+	"encoding/binary"
 	"slices"
 	"sync/atomic"
 	"unsafe"
@@ -270,11 +271,16 @@ func (h *recordHeap) write(leaf storeLeaf, key, value []byte, link overflowLink)
 // be had, the leaf as it was.
 func (h *recordHeap) overwrite(leaf storeLeaf, i int, key, value []byte, link overflowLink) bool {
 	r := leaf.Keys()[i].record()
-	if !r.link(&h.g).ok && len(value) <= r.valueLen() {
-		size := r.size(&h.g)
-		r.overwriteValue(&h.g, value)
-		if left := r.size(&h.g); left < size {
-			h.killIn(r.page(), unsafe.Add(r.at, left), size-left)
+	// A record keeps its value whole where it fits its page's room, as
+	// entry reads it: then a value no longer goes in its place, by one read
+	// of the header, its shortened tail dying in its page.
+	w := r.headWord()
+	keyLen, valueLen := int(uint16(w)), int(w>>32)
+	if recordHeader+keyLen+valueLen <= h.g.room && len(value) <= valueLen {
+		binary.LittleEndian.PutUint32(r.header()[valueLenAt:], uint32(len(value)))
+		copy(bytesAt(r.at, recordHeader+keyLen, len(value)), value)
+		if dead := valueLen - len(value); dead > 0 {
+			h.killIn(r.page(), unsafe.Add(r.at, recordHeader+keyLen+len(value)), dead)
 		}
 		return true
 	}
