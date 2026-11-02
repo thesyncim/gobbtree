@@ -83,13 +83,16 @@ func (r *customHints) rankedCell(hc uint64) *atomic.Pointer[gheader] {
 
 // ranked is hc's place among codes of the ranked bytes, its bytes the
 // digits of a 64-bit fraction in their base: in order as hc is. A place
-// past the fraction's precision weighs 0.
+// past the fraction's precision weighs 0. The places sum in pairs, then
+// pairs of pairs, so that the multiplies don't wait on each other: the
+// index lies on a lookup's path to its leaf.
 func (r *customHints) ranked(hc uint64) uint64 {
 	rank, w := r.rank, &r.weight
-	return uint64(rank[byte(hc>>56)])*w[0] + uint64(rank[byte(hc>>48)])*w[1] +
-		uint64(rank[byte(hc>>40)])*w[2] + uint64(rank[byte(hc>>32)])*w[3] +
-		uint64(rank[byte(hc>>24)])*w[4] + uint64(rank[byte(hc>>16)])*w[5] +
-		uint64(rank[byte(hc>>8)])*w[6] + uint64(rank[byte(hc)])*w[7]
+	a := uint64(rank[byte(hc>>56)])*w[0] + uint64(rank[byte(hc>>48)])*w[1]
+	b := uint64(rank[byte(hc>>40)])*w[2] + uint64(rank[byte(hc>>32)])*w[3]
+	c := uint64(rank[byte(hc>>24)])*w[4] + uint64(rank[byte(hc>>16)])*w[5]
+	d := uint64(rank[byte(hc>>8)])*w[6] + uint64(rank[byte(hc)])*w[7]
+	return (a + b) + (c + d)
 }
 
 // ranksOf ranks the bytes seen, each to how many seen bytes lie below it,
