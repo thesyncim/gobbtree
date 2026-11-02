@@ -296,3 +296,41 @@ func readWhileRewritten(t *testing.T) {
 	checkLive(t, s)
 	assertCleared(t, s, pages)
 }
+
+// A write to a key's record, through the store's own paths, moves its
+// leaf's version past a peek read before it: an overwrite in place, at the
+// same length and shorter, one that moves the record, longer, and a
+// removal. So a read racing any of them reads its record again, held.
+func TestWritesMoveThePeekedLeafsVersion(t *testing.T) {
+	s := New()
+	for i := range 2000 {
+		mustInsert(t, s, stressKey(i), stampedValue(i, 0, 40))
+	}
+	k := stressKey(1000)
+	for _, step := range []struct {
+		name  string
+		write func()
+	}{
+		{"same length", func() { mustInsert(t, s, k, stampedValue(1000, 1, 40)) }},
+		{"shorter", func() { mustInsert(t, s, k, stampedValue(1000, 2, 20)) }},
+		{"longer", func() { mustInsert(t, s, k, stampedValue(1000, 3, 200)) }},
+		{"removed", func() { s.Remove(k) }},
+	} {
+		var q pointQuery
+		p, absent, ok := s.m.Peek(q.key(k))
+		q.release()
+		if !ok || absent {
+			if peeksSettle {
+				t.Fatalf("%s: Peek settled nothing (absent %v) on a still leaf", step.name, absent)
+			}
+			continue
+		}
+		if !p.UnchangedAfter(0) {
+			t.Fatalf("%s: the leaf changed with no writer", step.name)
+		}
+		step.write()
+		if p.UnchangedAfter(0) {
+			t.Fatalf("%s: the peeked leaf's version held past the write", step.name)
+		}
+	}
+}
