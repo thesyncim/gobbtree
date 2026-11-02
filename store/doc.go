@@ -43,6 +43,12 @@
 //     upstream's refused allocation. The map's nodes come from the collector,
 //     not the budget, which bounds heap and overflow pages only, where
 //     upstream's allocator gives nodes too.
+//   - Beyond upstream, a store whose Config asks for MappedPages maps its
+//     pages itself, on unix, outside Go's heap (mapped_pages.go): the
+//     collector neither scans them nor counts them toward its next
+//     collection. The store keeps the pages it frees for its next ones, and
+//     unmaps them all as it clears, or once the collector finds it
+//     unreachable.
 //   - No Go pointer lies in a page's bytes, so the collector sees them all. A
 //     heap page is a typed object whose header holds the chain's link as a
 //     pointer, and whose records follow it in the same object (heap_page.go);

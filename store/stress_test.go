@@ -29,16 +29,22 @@ var (
 	stressPrefix = stressPrefixes["stripped"]
 )
 
-// stressStores are the stress tests' stores: one of Go's pages, and one
+// stressStores are the stress tests' stores: the suite's own, and one
 // that maps its own (MappedPages), which hands a page it gives back out
 // again at its next, so that a racing read of a record that died meets
-// another's bytes, not a dead page's.
-var stressStores = map[string]bool{"go": false, "mapped": true}
+// another's bytes, not a dead page's. The second runs only where lookups
+// read racing (peeksSettle), and every store isn't mapped already.
+func stressStores() map[string]bool {
+	if !peeksSettle || mapEveryStore {
+		return map[string]bool{"default": false}
+	}
+	return map[string]bool{"default": false, "mapped": true}
+}
 
 // eachStressStore runs test on each prefix, with each of stressStores.
 func eachStressStore(t *testing.T, test func(t *testing.T, mapped bool)) {
 	for name, prefix := range stressPrefixes {
-		for kind, mapped := range stressStores {
+		for kind, mapped := range stressStores() {
 			t.Run(name+"/"+kind, func(t *testing.T) {
 				stressPrefix = prefix
 				defer func() { stressPrefix = stressPrefixes["stripped"] }()
