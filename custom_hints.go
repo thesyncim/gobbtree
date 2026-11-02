@@ -51,7 +51,7 @@ type customHints struct {
 	weight [8]uint64
 	// seen are the bytes the codes of keys that missed the table held, the
 	// first four of each, for the ranks of the table after it, and misses
-	// how many missed: it judges no table on fewer than customHintSamples,
+	// how many missed, up to customHintSamples: it judges no table on fewer,
 	// as a few random keys' codes hold few bytes too.
 	seen   [4]atomic.Uint64
 	misses atomic.Int64
@@ -215,7 +215,12 @@ func (t *genericTree[K, V, O]) noteLeaf(key K, code uint64, h *gheader) {
 	if c := r.cell(hc); c.Load() != h {
 		c.Store(h)
 	}
-	// The bytes of a code that missed, for the next table's ranks.
+	// The bytes of a code that missed, for the next table's ranks, until it
+	// has the sample it judges by: past it, a miss writes no line that every
+	// writer's misses would.
+	if r.misses.Load() >= customHintSamples {
+		return
+	}
 	r.misses.Add(1)
 	var seen [4]uint64
 	for i := range 4 {
