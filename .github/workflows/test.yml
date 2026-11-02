@@ -39,6 +39,20 @@ jobs:
       - run: go test -run '^$' -fuzz FuzzStore -fuzztime 20s -tags storepoison ./store
         env:
           GOEXPERIMENT: simd
+      # Every store maps its pages, which it hands out again as soon as it
+      # gives them back, so that a racing read meets another record's bytes.
+      - run: go test -tags storepoison ./store
+        env:
+          GOEXPERIMENT: simd
+          GOBBTREE_STORE_MAPPED: 1
+      - run: go test -race ./store
+        env:
+          GOEXPERIMENT: simd
+          GOBBTREE_STORE_MAPPED: 1
+      - run: go test -run '^$' -fuzz FuzzStore -fuzztime 20s -tags storepoison ./store
+        env:
+          GOEXPERIMENT: simd
+          GOBBTREE_STORE_MAPPED: 1
       - run: go test -run '^$' -fuzz FuzzTree -fuzztime 20s
         env:
           GOEXPERIMENT: simd

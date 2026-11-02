@@ -29,6 +29,25 @@ var (
 	stressPrefix = stressPrefixes["stripped"]
 )
 
+// stressStores are the stress tests' stores: one of Go's pages, and one
+// that maps its own (MappedPages), which hands a page it gives back out
+// again at its next, so that a racing read of a record that died meets
+// another's bytes, not a dead page's.
+var stressStores = map[string]bool{"go": false, "mapped": true}
+
+// eachStressStore runs test on each prefix, with each of stressStores.
+func eachStressStore(t *testing.T, test func(t *testing.T, mapped bool)) {
+	for name, prefix := range stressPrefixes {
+		for kind, mapped := range stressStores {
+			t.Run(name+"/"+kind, func(t *testing.T) {
+				stressPrefix = prefix
+				defer func() { stressPrefix = stressPrefixes["stripped"] }()
+				test(t, mapped)
+			})
+		}
+	}
+}
+
 // stableValue is stable key i's value, which no writer changes: every 16th
 // one takes overflow pages, which records carry their link to as they move.
 func stableValue(i int) []byte {
@@ -47,23 +66,17 @@ func stableValue(i int) []byte {
 // or died, or a page after it went back, reads 0xA5 (scribble), not the
 // stable value.
 func TestReadersAcrossLeavesWhileCompactionsMove(t *testing.T) {
-	for name, prefix := range stressPrefixes {
-		t.Run(name, func(t *testing.T) {
-			stressPrefix = prefix
-			defer func() { stressPrefix = stressPrefixes["stripped"] }()
-			readAcrossCompactions(t)
-		})
-	}
+	eachStressStore(t, readAcrossCompactions)
 }
 
-func readAcrossCompactions(t *testing.T) {
+func readAcrossCompactions(t *testing.T, mapped bool) {
 	const stable, writers, readers = 3000, 3, 4
 	ops := 60000
 	if testing.Short() {
 		ops = 10000
 	}
 	pages := &counting{}
-	s := NewIn(pages)
+	s := NewWithConfig(Config{MappedPages: mapped}, pages)
 	// Stable key i is 4i; writer w churns 4i+1+w.
 	for i := range stable {
 		mustInsert(t, s, stressKey(4*i), stableValue(i))
@@ -186,23 +199,17 @@ func stampedOf(v []byte, i int) bool {
 // the leaf: either way every value it returns is one write's, whole, and
 // every key no writer removes is found.
 func TestReadersSeeWholeValuesWhileWritersRewriteThem(t *testing.T) {
-	for name, prefix := range stressPrefixes {
-		t.Run(name, func(t *testing.T) {
-			stressPrefix = prefix
-			defer func() { stressPrefix = stressPrefixes["stripped"] }()
-			readWhileRewritten(t)
-		})
-	}
+	eachStressStore(t, readWhileRewritten)
 }
 
-func readWhileRewritten(t *testing.T) {
+func readWhileRewritten(t *testing.T, mapped bool) {
 	const keys, writers, readers = 4000, 3, 5
 	ops := 150000
 	if testing.Short() {
 		ops = 20000
 	}
 	pages := &counting{}
-	s := NewIn(pages)
+	s := NewWithConfig(Config{MappedPages: mapped}, pages)
 	// Key i is writer i%writers's; it removes none of those i%4 == 0.
 	for i := range keys {
 		mustInsert(t, s, stressKey(i), stampedValue(i, 0, 12+i%50))
@@ -216,6 +223,7 @@ func readWhileRewritten(t *testing.T) {
 		}
 		return 12 + r.IntN(240)
 	}
+	handedBefore := handedAgain.Load()
 	var done atomic.Bool
 	var wg sync.WaitGroup
 	for w := range writers {
@@ -286,6 +294,11 @@ func readWhileRewritten(t *testing.T) {
 	done.Store(true)
 	readerWG.Wait()
 	t.Logf("%d reads, %d found", reads.Load(), found.Load())
+	if handed := handedAgain.Load() - handedBefore; mapped && handed == 0 {
+		t.Fatal("the store handed out no page it was given back")
+	} else if mapped {
+		t.Logf("the store handed out %d pages it was given back", handed)
+	}
 	for i := range keys {
 		if v, ok := s.Get(stressKey(i)); ok && !stampedOf(v, i) {
 			t.Fatalf("key %d holds %x", i, v)

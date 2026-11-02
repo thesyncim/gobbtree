@@ -211,12 +211,16 @@ def main():
         lo, hi = f"{min(values):.1f}", f"{max(values):.1f}"
         return lo if lo == hi else f"{lo}–{hi}"
 
-    def store_summary():
+    # The port's stores: of Go's pages, and, where the report has them,
+    # mapping their own.
+    store_ports = ["go"] + (["go-mapped"] if any(language == "go-mapped" for _, language in stores) else [])
+
+    def store_summary(port="go"):
         """The store cells each side wins, and the port's insert and get
         times against upstream's."""
         cells = [(size, field) for size in store_sizes for field, _, _ in STORE_TIMES]
-        won = sum(1 for size, field in cells if store(size, "go", field) < store(size, "rust", field))
-        ratio = {field: [store(size, "go", field) / store(size, "rust", field) for size in store_sizes]
+        won = sum(1 for size, field in cells if store(size, port, field) < store(size, "rust", field))
+        ratio = {field: [store(size, port, field) / store(size, "rust", field) for size in store_sizes]
                  for field in ("insert_ns", "get_ns")}
         return won, len(cells), ratio
 
@@ -265,18 +269,22 @@ def main():
         return [first, second, third]
 
     def store_section():
+        languages = store_ports + ["rust"]
+        names = {"go": "Go", "go-mapped": "Go mapped", "rust": "Rust"}
         head = ["| Workload | " + " | ".join(store_labels.get(s, f"{s:,}") for s in store_sizes) + " |",
                 "|---|" + "---:|" * len(store_sizes)]
-        rows = ["<details>", "<summary>Store — Go / Rust</summary>", "",
+        mapped = (" Go mapped is the same store with `Config.MappedPages`: its pages lie outside Go's heap, "
+                  "so its node bytes are all that heap holds of it." if "go-mapped" in store_ports else "")
+        rows = ["<details>", "<summary>Store — " + " / ".join(names[language] for language in languages) + "</summary>", "",
                 "Upstream's own benchmark, `bbtree-store/examples/bench.rs`, unmodified and built with the same "
                 "tuning, against "
                 "`store/cmd/storebench`, its port: 20-byte keys and 32-byte values, a fresh process a run, "
                 "the two alternating, medians of three. Each time is one pass over every entry, in ns an "
                 "entry, and churn's four passes, in ns an operation; eight threads' are wall time. Long "
                 "values are 4,000 bytes, for one entry in 16. Go's node bytes are its heap's, once collected, past the "
-                "budget's pages, where upstream counts what its allocator gives its nodes.", "", *head]
+                "budget's pages, where upstream counts what its allocator gives its nodes." + mapped, "", *head]
         for field, label, precision in STORE_TIMES + STORE_SPACE:
-            cells = [" / ".join(f"{store(size, language, field):,.{precision}f}" for language in ("go", "rust"))
+            cells = [" / ".join(f"{store(size, language, field):,.{precision}f}" for language in languages)
                      for size in store_sizes]
             rows.append(f"| {label} | " + " | ".join(cells) + " |")
         return rows + ["", "</details>", ""]
@@ -310,7 +318,11 @@ def main():
         sizes = [store_labels.get(s, f"{s:,}") for s in store_sizes]
         sizes = ", ".join(sizes[:-1]) + " and " + sizes[-1] if len(sizes) > 1 else sizes[0]
         lost = f"every one of the {cells}" if won == 0 else f"{cells - won} of the {cells}"
-        text += [f"Upstream's `bbtree-store` is faster than the port in {lost} timed store cells, at {sizes} entries.", ""]
+        line = f"Upstream's `bbtree-store` is faster than the port in {lost} timed store cells, at {sizes} entries"
+        if "go-mapped" in store_ports:
+            mapped_won, _, _ = store_summary("go-mapped")
+            line += f"; in {cells - mapped_won} with the port's pages mapped"
+        text += [line + ".", ""]
         text += store_section()
     text += ["Small gaps are inconclusive: other processes shared the machine, as the report's limitations say. "
              f"The [raw report]({report_link}) holds every run, with Go's built-in `map` and `sync.Map` at 4K to 5M mixed keys; "

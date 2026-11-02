@@ -4,6 +4,7 @@ import (
 	"errors"
 	"iter"
 	"math"
+	"runtime"
 
 	"github.com/thesyncim/gobbtree"
 )
@@ -22,10 +23,11 @@ import (
 //     gives the overflow pages back.
 //   - A removal takes the key out, while the map holds the leaf; its record
 //     dies once the map is done with the key, after the removal.
-//   - A lookup or a scan reads records inside the map's callbacks, while it
-//     holds their leaves latched shared. As only a goroutine holding a
-//     record's leaf exclusively moves, changes or kills it, no record goes
-//     while a goroutine reads it.
+//   - A lookup reads its record racing, then checks its leaf's version,
+//     which a goroutine holding the leaf exclusively moves as it moves,
+//     changes or kills a record; else it reads it holding the leaf shared,
+//     as a scan reads each leaf's. So a record a lookup returns didn't
+//     change while it read it, and no record goes while a scan reads it.
 //
 // Nothing it hands out outlives a call: a lookup copies the value out
 // (GetInto), and a scan's loop body sees each entry while its leaf is
@@ -40,9 +42,9 @@ type Store struct {
 // back, each of the store's heap page size. A budget that refuses pages
 // past a limit bounds the store's pages; refused, an insert fails with
 // ErrAlloc, the store as it was. The pages are Go's, which the collector
-// frees once nothing points into them; the map's nodes are the
-// collector's too, uncounted. Its methods must be safe to call from many
-// goroutines.
+// frees once nothing points into them, or the store's own, where its
+// config asks for MappedPages; the map's nodes are the collector's,
+// uncounted. Its methods must be safe to call from many goroutines.
 type Budget interface {
 	// TakePages reports whether the store may take n more pages.
 	TakePages(n int) bool
@@ -61,7 +63,25 @@ type Config struct {
 	// HeapPageSize is the size of the store's heap and overflow pages, a
 	// power of two from 1 KiB to 64 KiB; 0 for DefaultHeapPageSize.
 	HeapPageSize int
+	// MappedPages has the store map its heap and overflow pages itself, on
+	// systems with mmap (unix), outside Go's heap; elsewhere they are Go's,
+	// as without it. The collector neither scans those pages nor counts
+	// them toward its next collection, so a store whose bytes are mostly
+	// records' sets off fewer collections, each of less memory. A page the
+	// store gives back stays mapped, for its next one; Clear unmaps them
+	// all, and so does the collector once the store is unreachable, but
+	// only at a collection, which the pages don't hasten: Clear a store
+	// that is done with, for its memory to go back at once. The key and
+	// value a scan's loop body sees must not be read once the body returns:
+	// their page may be unmapped by then, and reading it faults, where a
+	// page of Go's would be read stale. An insert the system has no memory
+	// to map for fails with ErrAlloc.
+	MappedPages bool
 }
+
+// mapEveryStore, which tests set, maps every new store's pages, as
+// MappedPages asks.
+var mapEveryStore bool
 
 // Errors an insert fails with, upstream's InsertError; the store holds
 // what it held.
@@ -95,7 +115,14 @@ func NewWithConfig(config Config, budget Budget) *Store {
 	if budget == nil {
 		budget = unlimited{}
 	}
-	return &Store{heap: recordHeap{g: newGeometry(size), budget: budget}}
+	s := &Store{heap: recordHeap{g: newGeometry(size), budget: budget}}
+	if config.MappedPages || mapEveryStore {
+		if a := newPageArena(size); a != nil {
+			s.heap.arena = a
+			runtime.AddCleanup(s, (*pageArena).release, a)
+		}
+	}
+	return s
 }
 
 // MaxKeyLen is the longest key: a quarter of a heap page. A key's bytes lie
@@ -109,6 +136,13 @@ func (s *Store) MaxValueLen() int { return int(min(math.MaxUint32, uint64(math.M
 // GetInto appends the value of key to buf and returns it, with whether the
 // store holds key; buf unchanged without it.
 func (s *Store) GetInto(key, buf []byte) ([]byte, bool) {
+	out, found := s.getInto(key, buf)
+	// A store's mapped pages stay so until its methods' last reads.
+	runtime.KeepAlive(s)
+	return out, found
+}
+
+func (s *Store) getInto(key, buf []byte) ([]byte, bool) {
 	var q pointQuery
 	query := q.key(key)
 	// The record read racing, checked by its leaf's version; else read
@@ -153,6 +187,7 @@ func (s *Store) Contains(key []byte) bool {
 	var q pointQuery
 	found := s.m.Contains(q.key(key))
 	q.release()
+	runtime.KeepAlive(s)
 	return found
 }
 
@@ -165,6 +200,12 @@ func (s *Store) Contains(key []byte) bool {
 // ErrAlloc if the budget has no page for the insert. The store holds what
 // it held then.
 func (s *Store) Insert(key, value []byte) (replaced bool, err error) {
+	replaced, err = s.insert(key, value)
+	runtime.KeepAlive(s)
+	return replaced, err
+}
+
+func (s *Store) insert(key, value []byte) (bool, error) {
 	if len(key) > s.MaxKeyLen() {
 		return false, ErrKeyTooLong
 	}
@@ -227,6 +268,12 @@ func (s *Store) Insert(key, value []byte) (replaced bool, err error) {
 
 // Remove removes key, and reports whether the store held it.
 func (s *Store) Remove(key []byte) bool {
+	removed := s.remove(key)
+	runtime.KeepAlive(s)
+	return removed
+}
+
+func (s *Store) remove(key []byte) bool {
 	h := &s.heap
 	var q pointQuery
 	query := q.key(key)
@@ -332,7 +379,8 @@ func (s *Store) Range(b Bounds) *RangeCopies {
 }
 
 // Clear removes every entry and gives every page back to the budget, as
-// dropping upstream's store does, and leaves the store empty. It is the
+// dropping upstream's store does, unmapping them where the store maps its
+// pages, and leaves the store empty. It is the
 // owner's: no other goroutine may use the store until it returns.
 func (s *Store) Clear() {
 	h := &s.heap
@@ -345,6 +393,9 @@ func (s *Store) Clear() {
 	}
 	s.m.Clear()
 	h.overflowed.Store(false)
+	if h.arena != nil {
+		h.arena.release()
+	}
 }
 
 // storeBounds is b over store keys that query b's keys, valid while lower

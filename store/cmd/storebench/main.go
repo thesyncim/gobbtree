@@ -5,11 +5,13 @@
 // back; then values too long for a record, in overflow pages. One store at
 // a time.
 //
-//	go run ./store/cmd/storebench [entries]
+//	go run ./store/cmd/storebench [-mapped] [entries]
 //
-// Upstream counts its nodes' bytes through its allocator; a Go store's
-// nodes are the collector's, so they are what the heap holds, once
-// collected, past the budget's pages: the map's nodes, and what else the
+// With -mapped, the stores map their own pages, outside Go's heap
+// (store.Config's MappedPages). Upstream counts its nodes' bytes through
+// its allocator; a Go store's nodes are the collector's, so they are what
+// the heap holds, once collected, past the budget's pages, which a store
+// that maps them doesn't keep there: the map's nodes, and what else the
 // store keeps in Go's memory. Each goroutine builds its keys in one buffer
 // it reuses, where upstream's are arrays on the stack: the store's
 // lookups take their key's bytes as a slice, which would otherwise go to
@@ -18,8 +20,8 @@ package main
 
 import (
 	"encoding/binary"
+	"flag"
 	"fmt"
-	"os"
 	"runtime"
 	"strconv"
 	"sync"
@@ -99,7 +101,11 @@ func oneThread(s *store.Store, c *counting, base int64, entries uint64) {
 	}
 
 	heap := c.heap.Load()
-	nodes := float64(heapInUse()-base-heap) / float64(entries)
+	inUse := heapInUse() - base
+	if !*mapped {
+		inUse -= heap
+	}
+	nodes := float64(inUse) / float64(entries)
 	heapPer := float64(heap) / float64(entries)
 	fmt.Printf("1 thread:  insert %.0f ns, get %.0f ns, scan %.1f ns an entry; nodes %.1f + heap %.1f = %.1f bytes an entry\n",
 		insert, get, scan, nodes, heapPer, nodes+heapPer)
@@ -154,7 +160,7 @@ func churn(s *store.Store, c *counting, entries uint64) {
 
 func threads(entries uint64) {
 	const goroutines = 8
-	s := store.NewIn(&counting{})
+	s := newStore(&counting{})
 	start := time.Now()
 	var wg sync.WaitGroup
 	for t := range uint64(goroutines) {
@@ -185,6 +191,8 @@ func threads(entries uint64) {
 	wg.Wait()
 	get := nsPer(start, entries)
 	fmt.Printf("8 threads: insert %.0f ns, get %.0f ns an entry, wall time\n", insert, get)
+	// Upstream's store drops here: Clear gives its pages back.
+	s.Clear()
 }
 
 // longValues is a sixteenth as many entries, of 4,000-byte values: three
@@ -193,7 +201,7 @@ func longValues(entries uint64) {
 	const length = 4000
 	entries /= 16
 	c := &counting{}
-	s := store.NewIn(c)
+	s := newStore(c)
 	k, v := make([]byte, 0, 20), make([]byte, length)
 	start := time.Now()
 	for i := range entries {
@@ -217,12 +225,21 @@ func longValues(entries uint64) {
 	heap := float64(c.heap.Load()) / float64(entries*length)
 	fmt.Printf("%d entries of %d-byte values: insert %.0f ns, get %.0f ns; heap %.3f bytes a value byte\n",
 		entries, length, insert, get, heap)
+	s.Clear()
+}
+
+// mapped is whether the stores map their own pages.
+var mapped = flag.Bool("mapped", false, "stores map their own pages, outside Go's heap")
+
+func newStore(b store.Budget) *store.Store {
+	return store.NewWithConfig(store.Config{MappedPages: *mapped}, b)
 }
 
 func main() {
+	flag.Parse()
 	entries := uint64(10_000_000)
-	if len(os.Args) > 1 {
-		n, err := strconv.ParseUint(os.Args[1], 10, 64)
+	if flag.NArg() > 0 {
+		n, err := strconv.ParseUint(flag.Arg(0), 10, 64)
 		if err != nil {
 			panic(err)
 		}
@@ -231,7 +248,7 @@ func main() {
 	fmt.Printf("%d entries of 20-byte keys and 32-byte values\n", entries)
 	base := heapInUse()
 	c := &counting{}
-	s := store.NewIn(c)
+	s := newStore(c)
 	oneThread(s, c, base, entries)
 	churn(s, c, entries)
 	s.Clear()

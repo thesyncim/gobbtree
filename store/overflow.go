@@ -1,7 +1,6 @@
 package store
 
 import (
-	"reflect"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -95,18 +94,19 @@ func (t *overflowTable) remove(id uint32) *overflowPage {
 
 // writeOverflow writes bytes, not empty, into new overflow pages, taking
 // each from the budget, and returns the first; false, with the pages it
-// took given back, if the budget refuses one. From the last page back to
-// the first, each links the next.
+// took given back, if the budget refuses one, or the system has no memory
+// to map one. From the last page back to the first, each links the next.
 func (h *recordHeap) writeOverflowPages(bytes []byte) (*overflowPage, bool) {
 	g := &h.g
 	var next *overflowPage
 	for end := len(bytes); end > 0; {
 		start := (end - 1) / g.overflowRoom * g.overflowRoom
-		if !h.budget.TakePages(1) {
+		p, ok := h.takePage(g.overflowType)
+		if !ok {
 			h.freeOverflowPages(next)
 			return nil, false
 		}
-		page := (*overflowPage)(reflect.New(g.overflowType).UnsafePointer())
+		page := (*overflowPage)(p)
 		page.next = next
 		copy(page.data(g), bytes[start:end])
 		next, end = page, start
@@ -133,7 +133,7 @@ func (h *recordHeap) freeOverflowPages(first *overflowPage) {
 		if scribble {
 			fill(page.data(&h.g))
 		}
-		h.budget.GivePages(1)
+		h.givePage(unsafe.Pointer(page))
 		page = next
 	}
 }

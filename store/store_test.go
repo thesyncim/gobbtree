@@ -17,9 +17,12 @@ import (
 // them past a limit, as upstream's tests/store.rs, whose tests these are.
 // Every page the store gives back, and every record's bytes as it dies, are
 // scribbled over first (scribble), so that a read of either after reads no
-// key or value it held.
+// key or value it held. With GOBBTREE_STORE_MAPPED set, every store maps
+// its pages (MappedPages), which it hands out again as soon as it gives
+// them back.
 func TestMain(m *testing.M) {
 	scribble = true
+	mapEveryStore = os.Getenv("GOBBTREE_STORE_MAPPED") != ""
 	os.Exit(m.Run())
 }
 

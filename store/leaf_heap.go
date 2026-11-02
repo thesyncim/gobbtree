@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/binary"
+	"reflect"
 	"slices"
 	"sync/atomic"
 	"unsafe"
@@ -173,6 +174,9 @@ type recordHeap struct {
 	// made or cleared.
 	overflowed atomic.Bool
 	table      overflowTable
+	// arena is the store's pages where it maps them (MappedPages); nil
+	// where they are Go's.
+	arena *pageArena
 }
 
 // scribble, which tests set, overwrites with 0xA5 each page the store
@@ -202,20 +206,52 @@ func (h *recordHeap) adopt(leaf storeLeaf) *leafHeap {
 
 // newPage is a new heap page, false if the budget refuses it.
 func (h *recordHeap) newPage() (*heapPage, bool) {
-	if !h.budget.TakePages(1) {
+	p, ok := h.takePage(h.g.heapType)
+	if !ok {
 		return nil, false
 	}
-	return h.g.newHeapPage(), true
+	page := (*heapPage)(p)
+	page.next = nil
+	page.top = uint32(recordsOffset)
+	page.live.Store(0)
+	return page, true
 }
 
-// freePage gives page back to the budget: no record lives in it, and no
-// chain holds it. The collector frees it once nothing points into it.
+// freePage gives page back: no record lives in it, and no chain holds it.
 func (h *recordHeap) freePage(page *heapPage) {
 	page.next = nil
 	if scribble {
 		fill(page.records(&h.g))
 	}
+	h.givePage(unsafe.Pointer(page))
+}
+
+// takePage is a new page's memory, which the budget grants: the arena's,
+// where the store maps its pages, holding what it held last, else a new
+// object of type typ, from Go's heap; false if the budget refuses it, or
+// the system has no memory to map.
+func (h *recordHeap) takePage(typ reflect.Type) (unsafe.Pointer, bool) {
+	if !h.budget.TakePages(1) {
+		return nil, false
+	}
+	if h.arena == nil {
+		return reflect.New(typ).UnsafePointer(), true
+	}
+	if p := h.arena.take(); p != nil {
+		return p, true
+	}
 	h.budget.GivePages(1)
+	return nil, false
+}
+
+// givePage gives the page at p back to the budget, and to the arena, where
+// the store maps its pages; else the collector frees it once nothing
+// points into it.
+func (h *recordHeap) givePage(p unsafe.Pointer) {
+	h.budget.GivePages(1)
+	if h.arena != nil {
+		h.arena.give(p)
+	}
 }
 
 // roomInNewPage makes room for a record of size bytes, live, in a new head

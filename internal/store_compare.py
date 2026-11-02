@@ -1,7 +1,9 @@
 """Compare stores: Go's storebench against upstream bbtree-store's examples/bench.rs.
 
-Each run is a fresh process of either program, the two alternating; each
-prints upstream's report, which this parses into one JSON record a run.
+Each run is a fresh process of either program, alternating, Go's twice: its
+stores of Go's pages, and, as go-mapped, stores that map their own
+(storebench -mapped). Each prints upstream's report, which this parses into
+one JSON record a run.
 """
 import argparse
 import json
@@ -55,11 +57,11 @@ def main():
     if args.size < 16 or args.repeat < 1:
         parser.error("size must be at least 16 and repeat positive")
     for repeat in range(args.repeat):
-        commands = [("go", args.go), ("rust", args.rust)]
+        commands = [("go", [args.go]), ("go-mapped", [args.go, "-mapped"]), ("rust", [args.rust])]
         if repeat % 2:
             commands.reverse()
-        for language, program in commands:
-            output = subprocess.run([str(program.resolve()), str(args.size)], check=True,
+        for language, (program, *flags) in commands:
+            output = subprocess.run([str(program.resolve()), *flags, str(args.size)], check=True,
                                     capture_output=True, text=True).stdout
             print(json.dumps({"language": language, "repeat": repeat, **parse(output, args.size)}), flush=True)
 

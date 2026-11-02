@@ -29,8 +29,11 @@ import (
 //
 // The header is a typed Go struct, so the collector sees next; the records'
 // bytes, which hold no pointer, follow it in the same object, which a
-// geometry's heapType makes. A record finds its page by the offset its
-// header holds (record.go), as Go doesn't align a page to its size.
+// geometry's heapType makes. A store that maps its pages lays them out the
+// same in its arena's memory (mapped_pages.go), which the collector doesn't
+// see, nor needs to: next points into it too. A record finds its page by
+// the offset its header holds (record.go), as Go doesn't align a page to
+// its size.
 type heapPage struct {
 	// next is the page before this one in its chain; nil at the chain's end.
 	next *heapPage
@@ -62,7 +65,7 @@ const (
 
 // geometry is a store's page sizes, and the Go types of its pages.
 type geometry struct {
-	// pageSize is what a page takes of Go's heap, which the budget counts.
+	// pageSize is what a page takes of memory, which the budget counts.
 	pageSize int
 	// heapObject is a heap page's size as a Go object, and room the largest
 	// record it holds, past its header, upstream's ROOM.
@@ -93,13 +96,6 @@ func pageType(header reflect.Type, data int) reflect.Type {
 		{Name: "Header", Type: header},
 		{Name: "Data", Type: reflect.ArrayOf(data, reflect.TypeFor[byte]())},
 	})
-}
-
-// newHeapPage is a new heap page, with no record, in no chain yet.
-func (g *geometry) newHeapPage() *heapPage {
-	p := (*heapPage)(reflect.New(g.heapType).UnsafePointer())
-	p.top = uint32(recordsOffset)
-	return p
 }
 
 // at is the address offset bytes into the page, which lies within it.
