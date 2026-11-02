@@ -56,7 +56,7 @@ func (t *genericTree[K, V, O]) leafOfKey(key K, code uint64, latch bool) (n *gle
 	// which a table that hints names.
 	r := t.customHints.Load()
 	if hinting := r != nil && !r.off; hinting {
-		if h := t.hintedLeaf(key, code, shared); h != nil {
+		if h := t.hintedLeaf(r, key, code, shared); h != nil {
 			word = h.latch.Load()
 			if n, lo, hi, tag, state = t.leafCandidates(key, code, h, word, true, latch); state != codesUnsettled {
 				return n, word, lo, hi, tag, state
@@ -250,7 +250,7 @@ func (t *genericTree[K, V, O]) writeLeafRange(key K, code uint64) (n *gleaf[K, V
 // does (leafCandidates), its first and last codes strictly about key's:
 // the writer that latches it at that word holds key's leaf.
 func (t *genericTree[K, V, O]) hintedWriteLeaf(key K, code uint64, shared int) (h *gheader, word uint64, lo, hi int, ok bool) {
-	if h = t.hintedLeaf(key, code, shared); h == nil {
+	if h = t.hintedLeaf(t.customHints.Load(), key, code, shared); h == nil {
 		return nil, 0, 0, 0, false
 	}
 	if word = h.latch.Load(); word&latchExclusive != 0 {

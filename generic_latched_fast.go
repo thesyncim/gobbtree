@@ -583,7 +583,7 @@ func (t *genericTree[K, V, O]) insertText(key K, value V, policy int) (old V, fo
 	if !found {
 		// A key the tree holds has the shared prefix; a new one goes in
 		// here only with it, as admit would find it.
-		if shared := t.shared.Load(); shared == nil || !strings.HasPrefix(textView(&key), *shared) {
+		if shared := t.shared.Load(); shared == nil || !strings.HasPrefix(textView(&key), shared.text) {
 			return old, false, false, false
 		}
 		if int(*(*int32)(unsafe.Pointer(&n.count))) == nodeSize {

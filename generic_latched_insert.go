@@ -274,15 +274,15 @@ func (t *genericTree[K, V, O]) admit(key K) {
 		if cur == nil {
 			// A copy: Bytes keys are the caller's to change.
 			shared := strings.Clone(s[:min(len(s), 64)])
-			if t.shared.CompareAndSwap(nil, &shared) {
+			if t.shared.CompareAndSwap(nil, newSharedPrefix(shared)) {
 				return
 			}
 			continue
 		}
-		if strings.HasPrefix(s, *cur) {
+		if strings.HasPrefix(s, cur.text) {
 			return
 		}
-		t.shrinkShared(cur, commonPrefix(s, *cur))
+		t.shrinkShared(cur, commonPrefix(s, cur.text))
 	}
 }
 
@@ -296,14 +296,13 @@ func (t *genericTree[K, V, O]) admitWindows(key K) {
 			for off := 0; off < customPrefixMax; off += 8 {
 				binary.BigEndian.PutUint64(b[off:], windowKey[O](key, off))
 			}
-			shared := string(b[:])
-			if t.shared.CompareAndSwap(nil, &shared) {
+			if t.shared.CompareAndSwap(nil, newSharedPrefix(string(b[:]))) {
 				return
 			}
 			continue
 		}
-		p := t.sharedLenOf(key, *cur)
-		if p == len(*cur) {
+		p := t.sharedLenOf(key, cur.text)
+		if p == len(cur.text) {
 			return
 		}
 		t.shrinkShared(cur, p)
@@ -315,7 +314,7 @@ func (t *genericTree[K, V, O]) admitWindows(key K) {
 // tree's borders, the nodes that take the shared prefix for a fence, without
 // waiting, and refits them; another goroutine holding one makes it start
 // over. It returns once the prefix is no longer cur.
-func (t *genericTree[K, V, O]) shrinkShared(cur *string, p int) {
+func (t *genericTree[K, V, O]) shrinkShared(cur *sharedPrefix, p int) {
 	var b backoff
 	for t.shared.Load() == cur {
 		var held latchSet
@@ -327,8 +326,7 @@ func (t *genericTree[K, V, O]) shrinkShared(cur *string, p int) {
 			ok = held.takeInternal(root) && takeBorder(&held, asInner[K](root), false) && takeBorder(&held, asInner[K](root), true)
 		}
 		if ok && t.root.Load() == root && t.shared.Load() == cur {
-			shorter := (*cur)[:p]
-			t.shared.Store(&shorter)
+			t.shared.Store(newSharedPrefix(cur.text[:p]))
 			// The borders take the shared prefix for a fence: the root, the
 			// internal nodes and the leaves along them.
 			if root.leaf {

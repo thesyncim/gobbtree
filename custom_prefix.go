@@ -229,7 +229,7 @@ func windowed[O keyOrder[K], K any]() bool {
 // which a custom key checks against: random keys share none.
 func (t *genericTree[K, V, O]) sharesBytes() bool {
 	s := t.shared.Load()
-	return s == nil || len(*s) > 0
+	return s == nil || len(s.text) > 0
 }
 
 // narrowInner reports custom keys whose internal nodes keep windows of

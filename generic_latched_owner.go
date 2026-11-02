@@ -314,7 +314,7 @@ func (t *genericTree[K, V, O]) ownerInsertText(n *gleaf[K, V], i int, found, fit
 		switch {
 		case shared == nil:
 			t.admit(key)
-		case (!fits || owned(&n.prefix) < len(*shared)) && t.sharedOrder(key) != 0:
+		case (!fits || owned(&n.prefix) < len(shared.text)) && t.sharedOrder(key) != 0:
 			// A new key without the shared prefix shortens it, which
 			// refits the borders its route may have crossed: route it
 			// again.

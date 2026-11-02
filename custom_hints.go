@@ -37,7 +37,10 @@ import (
 // followed by a constant name is: a lookup then costs what it did without
 // hints.
 type customHints struct {
+	// A code's cell is its top bits, shifted down by shift, masked by mask:
+	// len(cells)-1.
 	shift uint
+	mask  uint64
 	cells []atomic.Pointer[gheader]
 	// rank, where set, ranks a byte among the bytes keys used, and weight
 	// is a rank's weight at each of a code's bytes, 2^64 over the count of
@@ -62,23 +65,31 @@ const (
 	customHintSamples = 256
 )
 
-// cell is hint code hc's cell.
+// cell is hint code hc's cell: its top bits', or its ranked place's.
 func (r *customHints) cell(hc uint64) *atomic.Pointer[gheader] {
 	if r.rank != nil {
-		hc = r.ranked(hc)
+		return r.rankedCell(hc)
 	}
-	return &r.cells[(hc>>r.shift)&uint64(len(r.cells)-1)]
+	return &r.cells[(hc>>r.shift)&r.mask]
+}
+
+// rankedCell is cell for a table that ranks codes' bytes, out of line, so
+// that cell inlines into its callers.
+//
+//go:noinline
+func (r *customHints) rankedCell(hc uint64) *atomic.Pointer[gheader] {
+	return &r.cells[(r.ranked(hc)>>r.shift)&r.mask]
 }
 
 // ranked is hc's place among codes of the ranked bytes, its bytes the
-// digits of a 64-bit fraction in their base: in order as hc is.
+// digits of a 64-bit fraction in their base: in order as hc is. A place
+// past the fraction's precision weighs 0.
 func (r *customHints) ranked(hc uint64) uint64 {
-	var v uint64
-	for i := 0; i < len(r.weight) && r.weight[i] != 0; i++ {
-		v += uint64(r.rank[byte(hc>>56)]) * r.weight[i]
-		hc <<= 8
-	}
-	return v
+	rank, w := r.rank, &r.weight
+	return uint64(rank[byte(hc>>56)])*w[0] + uint64(rank[byte(hc>>48)])*w[1] +
+		uint64(rank[byte(hc>>40)])*w[2] + uint64(rank[byte(hc>>32)])*w[3] +
+		uint64(rank[byte(hc>>24)])*w[4] + uint64(rank[byte(hc>>16)])*w[5] +
+		uint64(rank[byte(hc>>8)])*w[6] + uint64(rank[byte(hc)])*w[7]
 }
 
 // ranksOf ranks the bytes seen, each to how many seen bytes lie below it,
@@ -116,16 +127,15 @@ func ranksOf(seen *[4]atomic.Uint64) (*[256]uint8, [8]uint64, bool) {
 // window at 0: the hint table's index is its top bits.
 func (t *genericTree[K, V, O]) hintCode(key K, code uint64) uint64 {
 	s := t.shared.Load()
-	if s == nil || len(*s) == 0 {
+	if s == nil || len(s.text) == 0 {
 		return code
 	}
-	return t.codeOf(key, code, len(*s))
+	return t.codeOf(key, code, len(s.text))
 }
 
-// hintedLeaf is the leaf the hint table names for key, or nil, given the
+// hintedLeaf is the leaf hint table r names for key, or nil, given the
 // shared prefix's length, which the caller read.
-func (t *genericTree[K, V, O]) hintedLeaf(key K, code uint64, shared int) *gheader {
-	r := t.customHints.Load()
+func (t *genericTree[K, V, O]) hintedLeaf(r *customHints, key K, code uint64, shared int) *gheader {
 	if r == nil || r.off {
 		return nil
 	}
@@ -140,15 +150,14 @@ func (t *genericTree[K, V, O]) hintedLeaf(key K, code uint64, shared int) *ghead
 // key's check of it, once, for its descent and its hint.
 func (t *genericTree[K, V, O]) sharedLen(key K, w0 uint64) (int, bool) {
 	s := t.shared.Load()
-	if s == nil || len(*s) == 0 {
+	if s == nil || len(s.text) == 0 {
 		return 0, true
 	}
 	// A prefix of at most 8 bytes lies in key's first window.
-	if n := len(*s); n <= 8 {
-		m := headMask(n)
-		return n, w0&m == stringCode(*s, 0)&m
+	if n := len(s.text); n <= 8 {
+		return n, w0&headMask(n) == s.head
 	}
-	return len(*s), t.sharedOrderOf(key) == 0
+	return len(s.text), t.sharedOrderOf(key) == 0
 }
 
 // noteLeaf names leaf h, which a descent found for key, in key's cell,
@@ -164,6 +173,7 @@ func (t *genericTree[K, V, O]) noteLeaf(key K, code uint64, h *gheader) {
 		}
 		next := &customHints{cells: make([]atomic.Pointer[gheader], 1<<bits.Len64(uint64(4*leaves-1))), leaves: leaves}
 		next.shift = uint(64 - bits.Len64(uint64(len(next.cells)-1)))
+		next.mask = uint64(len(next.cells) - 1)
 		// The old cells are in key order, so a leaf they name is a run of
 		// them: the runs count the leaves named.
 		if r != nil {

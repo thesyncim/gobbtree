@@ -32,7 +32,7 @@ type genericTree[K any, V any, O keyOrder[K]] struct {
 	// (D50), at most 64 bytes, nil before the first key: a query without it
 	// sorts before or after every key and reads no node, and nodes on the
 	// tree's borders take it for the fence they lack.
-	shared   atomic.Pointer[string]
+	shared   atomic.Pointer[sharedPrefix]
 	starting sync.Mutex
 	// owner marks a Tree's tree (generic_latched_owner.go).
 	owner bool
@@ -1148,9 +1148,21 @@ func (t *genericTree[K, V, O]) refitInner(n *ginner[K], high fence[K]) {
 // sharedText is the tree's shared prefix, empty before its first key.
 func (t *genericTree[K, V, O]) sharedText() string {
 	if s := t.shared.Load(); s != nil {
-		return *s
+		return s.text
 	}
 	return ""
+}
+
+// sharedPrefix is a tree's shared prefix, and its first 8 bytes as a
+// window, zero past its end, which a custom key's first window is checked
+// against (sharedLen).
+type sharedPrefix struct {
+	text string
+	head uint64
+}
+
+func newSharedPrefix(text string) *sharedPrefix {
+	return &sharedPrefix{text, stringCode(text, 0) & headMask(min(len(text), 8))}
 }
 
 // fencePrefix is what every key between fences low and high begins with:
