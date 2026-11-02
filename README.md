@@ -5,7 +5,7 @@
 
 **Fast ordered maps and sets for Go, ported from Rust's [bbtree](https://github.com/XiangpengHao/bbtree).** It is a B+ tree whose nodes keep compact summaries of their keys and search them with SIMD, so most lookups never touch a full key.
 
-1. Faster than the Rust original in 189 of the 192 `uint64` timings of the [benchmarks](#benchmarks): 2.1× its lookup throughput on one thread (`Tree`) and 1.7× on four (`Map`), on 5M keys. Rust still builds faster in 10 of the 24 build cells, and wins 12 of the 22 byte-string cells. Upstream's [store](#store-and-wal) is faster than the port: Go's inserts take 1.2–1.5× as long, and its lookups 1.4–1.5×.
+1. Faster than the Rust original in 189 of the 192 `uint64` timings of the [benchmarks](#benchmarks): 2.1× its lookup throughput on one thread (`Tree`) and 1.7× on four (`Map`), on 5M keys. Rust still builds faster in 10 of the 24 build cells, and wins 12 of the 22 byte-string cells. Upstream's [store](#store-and-wal) is faster than the port: Go's inserts take 1.2–1.4× as long, and its lookups 1.4–1.5×.
 2. `Map` is concurrent, with upstream's optimistic latching: lookups descend without locking, checking node versions, and writers latch only the leaf they change. On four threads it serves 2.3× the lookups of `sync.Map`, with its keys in order.
 3. From 5M entries up, peak memory 21–33% below the Rust original's on clustered keys, within 3% of it on mixed keys, and 4–8% above it on sequential keys.
 4. Any `cmp.Ordered` key, your own orders through a two-method `Key` interface, and `[]byte` keys.
@@ -162,7 +162,7 @@ for k, v := range s.Scan(store.AtLeast([]byte("user:"))) { // holding each leaf:
 }
 ```
 
-With `Config.MappedPages`, on unix, a store maps its pages itself, outside Go's heap. The collector neither scans them nor counts them toward its next collection, so it collects less often: eight goroutines filling fresh 32K-entry stores insert 16% faster, one goroutine inserts 4–9% faster from 32K to 10M entries, and 1M entries under churn peak at 28% less memory. Building a large store from empty with eight goroutines is 11–16% slower instead, as the system faults its new pages in, and lookups and churn run within 4% of a store of Go's pages. Pages a store frees stay mapped for its next ones, until `Clear`, or until a collection finds the store unreachable, which its pages don't bring forward; Go's own garbage, a cleared store's nodes among it, waits longer for a collection too. A scan's slices must not outlive the loop body, as their page may be unmapped by then.
+With `Config.MappedPages`, on unix, a store maps its pages itself, outside Go's heap. The collector neither scans them nor counts them toward its next collection, so it collects less often: in the [benchmarks](#benchmarks), inserts run 3–6% faster on one goroutine, 14% faster on eight at 32K entries, and long values' 6–14% faster; measured apart, 1M entries under churn peak at 28% less memory. It costs elsewhere: eight goroutines building a 1M or 10M store from empty run 10–13% slower, as the system faults the new pages in, churn 5–11% slower at those sizes, and long values' lookups 15% slower at 10M; other lookups stay within 5%. Pages a store frees stay mapped for its next ones, until `Clear`, or until a collection finds the store unreachable, which its pages don't bring forward; Go's own garbage, a cleared store's nodes among it, waits longer for a collection too. A scan's slices must not outlive the loop body, as their page may be unmapped by then.
 
 `store/wal` is upstream's write-ahead log: CRC-checked records appended to numbered files through a `Storage`, a writer that fences the one before it, and a replay on open. Its files are upstream's byte for byte. As upstream's, it is a library of its own: the store doesn't log to it, and the package brings no storage of its own. Each package's documentation lists how it differs from upstream.
 
@@ -236,7 +236,7 @@ Not carried over, because Go has no counterpart:
 
 ![gobbtree's Tree against Rust bbtree's and Go's map, get throughput on one thread](benchmarks/race-single-arm64.svg)
 
-gobbtree's `Tree` and `Map` against Rust bbtree's `unsync::BBTreeMap` and `BBTreeMap` on an Apple M4 Max: Go 1.27.3 with `GOEXPERIMENT=simd` at [`24c8dd2`](https://github.com/thesyncim/gobbtree/commit/24c8dd21725b8c8308f91e53c608435417143e2d), Rust 1.99.1 with native CPU tuning, full LTO and mimalloc at [`8ef597b`](https://github.com/XiangpengHao/bbtree/tree/8ef597b5b8d957531d88871bdb566f391206f860). Each cell is the median of three fresh-process runs over identical keys, with checked results.
+gobbtree's `Tree` and `Map` against Rust bbtree's `unsync::BBTreeMap` and `BBTreeMap` on an Apple M4 Max: Go 1.27.3 with `GOEXPERIMENT=simd` at [`b1429f6`](https://github.com/thesyncim/gobbtree/commit/b1429f66db10912ccea2cd0a4a3ffa5c2ff0a946), Rust 1.99.1 with native CPU tuning, full LTO and mimalloc at [`8ef597b`](https://github.com/XiangpengHao/bbtree/tree/8ef597b5b8d957531d88871bdb566f391206f860). Each cell is the median of three fresh-process runs over identical keys, with checked results.
 
 gobbtree is faster in 189 of the 192 `uint64` timings below; Rust wins Map 4 workers · 10% writes at 4K sequential keys; Tree delete + insert new key at 50M sequential keys; Map delete + insert new key at 50M sequential keys. Go builds faster in 14 of 24 build cells, at 0.73× to 2.21× Rust's speed. Go's process peaks 3.3–3.4 MB higher at 4K, 1.7–4.1 MB higher at 262K, from 38.6 MB lower to 9.3 MB higher at 5M, from 613.2 MB lower to 46.0 MB higher at 50M entries, against Rust's.
 
@@ -404,26 +404,26 @@ Go `Bytes` keys, byte slices a program can reuse, against Rust `String`s, each a
 
 </details>
 
-Upstream's `bbtree-store` is faster than the port in 18 of the 24 timed store cells, at 32K, 1M and 10M entries.
+Upstream's `bbtree-store` is faster than the port in 18 of the 24 timed store cells, at 32K, 1M and 10M entries; in 20 with the port's pages mapped.
 
 <details>
-<summary>Store — Go / Rust</summary>
+<summary>Store — Go / Go mapped / Rust</summary>
 
-Upstream's own benchmark, `bbtree-store/examples/bench.rs`, unmodified and built with the same tuning, against `store/cmd/storebench`, its port: 20-byte keys and 32-byte values, a fresh process a run, the two alternating, medians of three. Each time is one pass over every entry, in ns an entry, and churn's four passes, in ns an operation; eight threads' are wall time. Long values are 4,000 bytes, for one entry in 16. Go's node bytes are its heap's, once collected, past the budget's pages, where upstream counts what its allocator gives its nodes.
+Upstream's own benchmark, `bbtree-store/examples/bench.rs`, unmodified and built with the same tuning, against `store/cmd/storebench`, its port: 20-byte keys and 32-byte values, a fresh process a run, the two alternating, medians of three. Each time is one pass over every entry, in ns an entry, and churn's four passes, in ns an operation; eight threads' are wall time. Long values are 4,000 bytes, for one entry in 16. Go's node bytes are its heap's, once collected, past the budget's pages, where upstream counts what its allocator gives its nodes. Go mapped is the same store with `Config.MappedPages`: its pages lie outside Go's heap, so its node bytes are all that heap holds of it.
 
 | Workload | 32K | 1M | 10M |
 |---|---:|---:|---:|
-| Insert | 146 / 97 | 212 / 152 | 338 / 279 |
-| Get | 54 / 39 | 178 / 117 | 304 / 212 |
-| Scan | 2.0 / 1.6 | 6.9 / 6.5 | 8.0 / 8.5 |
-| Churn · a get, then a removal or a resized insert | 193 / 196 | 366 / 389 | 539 / 577 |
-| 8 threads · insert | 121 / 55 | 66 / 34 | 71 / 41 |
-| 8 threads · get | 12 / 14 | 29 / 19 | 38 / 35 |
-| Long values · insert | 1,663 / 775 | 1,576 / 1,539 | 1,735 / 3,835 |
-| Long values · get | 150 / 131 | 570 / 515 | 768 / 632 |
-| Bytes an entry, nodes and heap | 129.2 / 110.3 | 125.1 / 103.7 | 132.8 / 107.9 |
-| Churn · heap bytes a live record byte, after it | 1.84 / 1.55 | 1.81 / 1.52 | 1.85 / 1.54 |
-| Long values · heap bytes a value byte | 1.038 / 1.049 | 1.039 / 1.032 | 1.042 / 1.029 |
+| Insert | 144 / 135 / 101 | 209 / 198 / 150 | 341 / 332 / 279 |
+| Get | 54 / 55 / 37 | 179 / 187 / 119 | 305 / 302 / 213 |
+| Scan | 2.0 / 1.9 / 1.7 | 7.0 / 7.1 / 6.5 | 8.3 / 8.7 / 8.4 |
+| Churn · a get, then a removal or a resized insert | 191 / 185 / 188 | 365 / 405 / 389 | 569 / 598 / 577 |
+| 8 threads · insert | 108 / 93 / 55 | 64 / 72 / 33 | 73 / 80 / 42 |
+| 8 threads · get | 11 / 12 / 14 | 29 / 29 / 19 | 38 / 38 / 35 |
+| Long values · insert | 1,563 / 1,346 / 766 | 1,478 / 1,365 / 1,542 | 1,684 / 1,580 / 3,844 |
+| Long values · get | 175 / 153 / 127 | 582 / 570 / 512 | 770 / 882 / 625 |
+| Bytes an entry, nodes and heap | 129.2 / 129.0 / 110.3 | 125.1 / 125.1 / 103.7 | 132.8 / 132.8 / 107.9 |
+| Churn · heap bytes a live record byte, after it | 1.84 / 1.84 / 1.55 | 1.81 / 1.81 / 1.52 | 1.85 / 1.85 / 1.54 |
+| Long values · heap bytes a value byte | 1.038 / 1.038 / 1.049 | 1.039 / 1.039 / 1.032 | 1.042 / 1.042 / 1.029 |
 
 </details>
 
@@ -440,7 +440,7 @@ How the comparison is kept fair:
 - **Interference retaken, both sides.** Where one backend's three runs of a timing segment, CPU or store, differ by more than 1.3× in their serial timings summed, as when another process takes the machine's memory bandwidth, the whole segment runs again, both languages (`internal/spread.py`); the report's limitations list each retake. Builds are single timings, reported as measured.
 
 <details>
-<summary>Commands, from source checkpoint `24c8dd2`</summary>
+<summary>Commands, from source checkpoint `b1429f6`</summary>
 
 Build the drivers:
 

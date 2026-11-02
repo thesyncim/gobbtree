@@ -1,6 +1,6 @@
 {
  "date": "2026-11-02",
- "go_source": "24c8dd21725b8c8308f91e53c608435417143e2d",
+ "go_source": "b1429f66db10912ccea2cd0a4a3ffa5c2ff0a946",
  "rust_source": "8ef597b5b8d957531d88871bdb566f391206f860",
  "hardware": {
   "cpu": "Apple M4 Max",
@@ -41,9 +41,11 @@
   "retakes": "A CPU or store segment where one backend's three runs spread more than 1.3x, by the sum of each run's serial timings (internal/spread.py), runs again in full, both languages; internal/matrix.sh runs the matrix so."
  },
  "limitations": [
-  "Desktop apps (the window server, an IDE, a screen saver) kept the one-minute load average between 2.5 and 8.4 at the starts of the run's segments; the machine drew AC power throughout, as logged each minute. Small timing differences are inconclusive.",
-  "Every CPU segment's backend spread at most 1.05x over its three runs, by the sum of a run's serial timings, max over min, and no segment was run again. The 32K store segment's first pass spread 1.96x on Go's side and was run again, both languages, to 1.02x; the 1M and 10M store sizes spread at most 1.03x.",
+  "Desktop apps (the window server, an IDE, a screen saver) kept the one-minute load average between 2.5 and 8.4 at the starts of the CPU and memory segments, and at 4.6 at those of the store segments; the machine drew AC power throughout, as logged each minute. Small timing differences are inconclusive.",
+  "Only the store segments ran at b1429f6. The CPU, string-key and memory segments are the previous run's, at 24c8dd2, whose code outside store/ is the same byte for byte.",
+  "Every CPU segment's backend spread at most 1.05x over its three runs, by the sum of a run's serial timings, max over min, and no segment was run again. The 32K store segment's first pass spread 2.00x on Rust's side and was run again, all three backends, to 1.02x; the 1M and 10M store sizes spread at most 1.04x.",
   "Against the previous report (8215927), Go cells that moved more than 10% past Rust's change were Map's four-worker reads at 4K and 262K mixed keys, the string Map's four-worker reads at 262K, and Tree reads at 50M sequential keys, where Rust's sped up and Go's held. The previous report's driver, run beside this one afterwards in the same session, timed them alike (medians 2.25 and 2.26 ns, 4.34 and 4.35 ns, 12.03 and 12.21 ns, 61.7 and 61.0 ns), so those moves are the machine's state. Builds that moved are in the next item.",
+  "Against the previous report (24c8dd2), the one store cell of Go's that moved more than 10% past Rust's change was eight threads' inserts at 32K entries, 10.7% faster. The previous report's driver, run beside this one earlier in the same session, timed it alike (minima 115 and 114 ns), so that move is the machine's state.",
   "Builds that take under 0.2 s, every one at 4K and 262K entries and those at 5M sequential and clustered keys, are single timings that the page faults of fresh memory dominate: a backend's three spread up to 2.1x, so those build cells are inconclusive. Builds of 0.2 s or more spread at most 1.04x. Memory segments are not retaken.",
   "A store run times one pass over every entry, as upstream's benchmark does: at 32K entries a pass takes a few milliseconds, too short for the core's clock to settle, so single 32K cells vary, and the same cells ran up to 2x slower, both languages, in runs outside the matrix. The eight-thread cells are wall time on a shared machine.",
   "CPU records include Go's builtin map and sync.Map at 4096, 262144 and 5000000 entries with mixed keys only.",
@@ -15818,37 +15820,75 @@
    "language": "go",
    "repeat": 0,
    "entries": 1000000,
-   "insert_ns": 208,
-   "get_ns": 178,
-   "scan_ns": 6.6,
+   "insert_ns": 209,
+   "get_ns": 179,
+   "scan_ns": 7.0,
    "node_bytes": 34.3,
    "heap_bytes": 90.8,
    "threads8_insert_ns": 57,
-   "threads8_get_ns": 29,
+   "threads8_get_ns": 30,
    "long_entries": 62500,
-   "long_insert_ns": 1480,
-   "long_get_ns": 597,
+   "long_insert_ns": 1478,
+   "long_get_ns": 582,
    "long_heap_per_value_byte": 1.039,
    "churn": [
     {
      "round": 1,
      "heap_per_live_byte": 1.93,
-     "ns_per_op": 372
+     "ns_per_op": 384
     },
     {
      "round": 2,
      "heap_per_live_byte": 1.84,
-     "ns_per_op": 368
+     "ns_per_op": 382
     },
     {
      "round": 3,
      "heap_per_live_byte": 1.82,
-     "ns_per_op": 363
+     "ns_per_op": 375
     },
     {
      "round": 4,
      "heap_per_live_byte": 1.81,
-     "ns_per_op": 361
+     "ns_per_op": 377
+    }
+   ]
+  },
+  {
+   "language": "go-mapped",
+   "repeat": 0,
+   "entries": 1000000,
+   "insert_ns": 219,
+   "get_ns": 197,
+   "scan_ns": 7.2,
+   "node_bytes": 34.3,
+   "heap_bytes": 90.8,
+   "threads8_insert_ns": 72,
+   "threads8_get_ns": 29,
+   "long_entries": 62500,
+   "long_insert_ns": 1340,
+   "long_get_ns": 570,
+   "long_heap_per_value_byte": 1.039,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 1.93,
+     "ns_per_op": 411
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.84,
+     "ns_per_op": 409
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.82,
+     "ns_per_op": 407
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.81,
+     "ns_per_op": 405
     }
    ]
   },
@@ -15856,37 +15896,37 @@
    "language": "rust",
    "repeat": 0,
    "entries": 1000000,
-   "insert_ns": 152,
+   "insert_ns": 149,
    "get_ns": 117,
-   "scan_ns": 6.5,
+   "scan_ns": 7.6,
    "node_bytes": 23.3,
    "heap_bytes": 80.4,
-   "threads8_insert_ns": 31,
+   "threads8_insert_ns": 34,
    "threads8_get_ns": 19,
    "long_entries": 62500,
-   "long_insert_ns": 1566,
-   "long_get_ns": 521,
+   "long_insert_ns": 1542,
+   "long_get_ns": 512,
    "long_heap_per_value_byte": 1.032,
    "churn": [
     {
      "round": 1,
      "heap_per_live_byte": 1.58,
-     "ns_per_op": 398
+     "ns_per_op": 405
     },
     {
      "round": 2,
      "heap_per_live_byte": 1.52,
-     "ns_per_op": 393
+     "ns_per_op": 395
     },
     {
      "round": 3,
      "heap_per_live_byte": 1.52,
-     "ns_per_op": 388
+     "ns_per_op": 396
     },
     {
      "round": 4,
      "heap_per_live_byte": 1.52,
-     "ns_per_op": 390
+     "ns_per_op": 392
     }
    ]
   },
@@ -15894,37 +15934,75 @@
    "language": "rust",
    "repeat": 1,
    "entries": 1000000,
-   "insert_ns": 151,
-   "get_ns": 117,
+   "insert_ns": 150,
+   "get_ns": 121,
    "scan_ns": 6.5,
    "node_bytes": 23.3,
    "heap_bytes": 80.4,
-   "threads8_insert_ns": 34,
+   "threads8_insert_ns": 30,
    "threads8_get_ns": 19,
    "long_entries": 62500,
-   "long_insert_ns": 1539,
-   "long_get_ns": 513,
+   "long_insert_ns": 1573,
+   "long_get_ns": 510,
    "long_heap_per_value_byte": 1.032,
    "churn": [
     {
      "round": 1,
      "heap_per_live_byte": 1.58,
-     "ns_per_op": 397
+     "ns_per_op": 401
     },
     {
      "round": 2,
      "heap_per_live_byte": 1.52,
-     "ns_per_op": 397
+     "ns_per_op": 394
     },
     {
      "round": 3,
      "heap_per_live_byte": 1.52,
-     "ns_per_op": 392
+     "ns_per_op": 389
     },
     {
      "round": 4,
      "heap_per_live_byte": 1.52,
-     "ns_per_op": 389
+     "ns_per_op": 385
+    }
+   ]
+  },
+  {
+   "language": "go-mapped",
+   "repeat": 1,
+   "entries": 1000000,
+   "insert_ns": 195,
+   "get_ns": 187,
+   "scan_ns": 6.7,
+   "node_bytes": 34.3,
+   "heap_bytes": 90.8,
+   "threads8_insert_ns": 70,
+   "threads8_get_ns": 28,
+   "long_entries": 62500,
+   "long_insert_ns": 1365,
+   "long_get_ns": 606,
+   "long_heap_per_value_byte": 1.039,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 1.93,
+     "ns_per_op": 413
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.84,
+     "ns_per_op": 412
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.82,
+     "ns_per_op": 409
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.81,
+     "ns_per_op": 404
     }
    ]
   },
@@ -15932,37 +16010,37 @@
    "language": "go",
    "repeat": 1,
    "entries": 1000000,
-   "insert_ns": 212,
-   "get_ns": 177,
-   "scan_ns": 6.9,
+   "insert_ns": 209,
+   "get_ns": 179,
+   "scan_ns": 7.0,
    "node_bytes": 34.3,
    "heap_bytes": 90.8,
-   "threads8_insert_ns": 66,
-   "threads8_get_ns": 28,
+   "threads8_insert_ns": 64,
+   "threads8_get_ns": 29,
    "long_entries": 62500,
-   "long_insert_ns": 1576,
-   "long_get_ns": 570,
+   "long_insert_ns": 1465,
+   "long_get_ns": 592,
    "long_heap_per_value_byte": 1.039,
    "churn": [
     {
      "round": 1,
      "heap_per_live_byte": 1.93,
-     "ns_per_op": 374
+     "ns_per_op": 378
     },
     {
      "round": 2,
      "heap_per_live_byte": 1.84,
-     "ns_per_op": 371
+     "ns_per_op": 373
     },
     {
      "round": 3,
      "heap_per_live_byte": 1.82,
-     "ns_per_op": 369
+     "ns_per_op": 368
     },
     {
      "round": 4,
      "heap_per_live_byte": 1.81,
-     "ns_per_op": 366
+     "ns_per_op": 365
     }
    ]
   },
@@ -15970,16 +16048,16 @@
    "language": "go",
    "repeat": 2,
    "entries": 1000000,
-   "insert_ns": 212,
-   "get_ns": 184,
-   "scan_ns": 7.0,
+   "insert_ns": 208,
+   "get_ns": 178,
+   "scan_ns": 6.6,
    "node_bytes": 34.3,
    "heap_bytes": 90.8,
-   "threads8_insert_ns": 66,
+   "threads8_insert_ns": 65,
    "threads8_get_ns": 29,
    "long_entries": 62500,
-   "long_insert_ns": 1602,
-   "long_get_ns": 567,
+   "long_insert_ns": 1578,
+   "long_get_ns": 564,
    "long_heap_per_value_byte": 1.039,
    "churn": [
     {
@@ -15990,17 +16068,55 @@
     {
      "round": 2,
      "heap_per_live_byte": 1.84,
-     "ns_per_op": 373
+     "ns_per_op": 372
     },
     {
      "round": 3,
      "heap_per_live_byte": 1.82,
-     "ns_per_op": 373
+     "ns_per_op": 367
     },
     {
      "round": 4,
      "heap_per_live_byte": 1.81,
-     "ns_per_op": 370
+     "ns_per_op": 365
+    }
+   ]
+  },
+  {
+   "language": "go-mapped",
+   "repeat": 2,
+   "entries": 1000000,
+   "insert_ns": 198,
+   "get_ns": 182,
+   "scan_ns": 7.1,
+   "node_bytes": 34.3,
+   "heap_bytes": 90.8,
+   "threads8_insert_ns": 72,
+   "threads8_get_ns": 29,
+   "long_entries": 62500,
+   "long_insert_ns": 1367,
+   "long_get_ns": 569,
+   "long_heap_per_value_byte": 1.039,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 1.93,
+     "ns_per_op": 410
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.84,
+     "ns_per_op": 424
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.82,
+     "ns_per_op": 417
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.81,
+     "ns_per_op": 414
     }
    ]
   },
@@ -16008,37 +16124,37 @@
    "language": "rust",
    "repeat": 2,
    "entries": 1000000,
-   "insert_ns": 154,
-   "get_ns": 117,
-   "scan_ns": 7.3,
+   "insert_ns": 153,
+   "get_ns": 119,
+   "scan_ns": 6.5,
    "node_bytes": 23.3,
    "heap_bytes": 80.4,
-   "threads8_insert_ns": 34,
+   "threads8_insert_ns": 33,
    "threads8_get_ns": 19,
    "long_entries": 62500,
-   "long_insert_ns": 1507,
-   "long_get_ns": 515,
+   "long_insert_ns": 1528,
+   "long_get_ns": 514,
    "long_heap_per_value_byte": 1.032,
    "churn": [
     {
      "round": 1,
      "heap_per_live_byte": 1.58,
-     "ns_per_op": 404
+     "ns_per_op": 407
     },
     {
      "round": 2,
      "heap_per_live_byte": 1.52,
-     "ns_per_op": 397
+     "ns_per_op": 400
     },
     {
      "round": 3,
      "heap_per_live_byte": 1.52,
-     "ns_per_op": 391
+     "ns_per_op": 393
     },
     {
      "round": 4,
      "heap_per_live_byte": 1.52,
-     "ns_per_op": 388
+     "ns_per_op": 389
     }
    ]
   },
@@ -16047,36 +16163,74 @@
    "repeat": 0,
    "entries": 10000000,
    "insert_ns": 334,
-   "get_ns": 300,
-   "scan_ns": 8.0,
+   "get_ns": 302,
+   "scan_ns": 8.1,
    "node_bytes": 37.5,
    "heap_bytes": 95.3,
-   "threads8_insert_ns": 70,
+   "threads8_insert_ns": 71,
    "threads8_get_ns": 38,
    "long_entries": 625000,
-   "long_insert_ns": 1710,
-   "long_get_ns": 768,
+   "long_insert_ns": 1680,
+   "long_get_ns": 764,
    "long_heap_per_value_byte": 1.042,
    "churn": [
     {
      "round": 1,
      "heap_per_live_byte": 2.04,
-     "ns_per_op": 541
+     "ns_per_op": 538
     },
     {
      "round": 2,
      "heap_per_live_byte": 1.91,
-     "ns_per_op": 542
+     "ns_per_op": 539
     },
     {
      "round": 3,
      "heap_per_live_byte": 1.85,
-     "ns_per_op": 538
+     "ns_per_op": 535
     },
     {
      "round": 4,
      "heap_per_live_byte": 1.85,
-     "ns_per_op": 536
+     "ns_per_op": 534
+    }
+   ]
+  },
+  {
+   "language": "go-mapped",
+   "repeat": 0,
+   "entries": 10000000,
+   "insert_ns": 324,
+   "get_ns": 308,
+   "scan_ns": 8.9,
+   "node_bytes": 37.5,
+   "heap_bytes": 95.3,
+   "threads8_insert_ns": 83,
+   "threads8_get_ns": 38,
+   "long_entries": 625000,
+   "long_insert_ns": 1551,
+   "long_get_ns": 829,
+   "long_heap_per_value_byte": 1.042,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 2.04,
+     "ns_per_op": 598
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.91,
+     "ns_per_op": 601
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 596
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 594
     }
    ]
   },
@@ -16084,22 +16238,22 @@
    "language": "rust",
    "repeat": 0,
    "entries": 10000000,
-   "insert_ns": 275,
-   "get_ns": 212,
-   "scan_ns": 8.5,
+   "insert_ns": 279,
+   "get_ns": 209,
+   "scan_ns": 8.4,
    "node_bytes": 25.0,
    "heap_bytes": 82.9,
    "threads8_insert_ns": 41,
    "threads8_get_ns": 35,
    "long_entries": 625000,
-   "long_insert_ns": 3836,
-   "long_get_ns": 632,
+   "long_insert_ns": 3843,
+   "long_get_ns": 630,
    "long_heap_per_value_byte": 1.029,
    "churn": [
     {
      "round": 1,
      "heap_per_live_byte": 1.62,
-     "ns_per_op": 594
+     "ns_per_op": 589
     },
     {
      "round": 2,
@@ -16109,7 +16263,7 @@
     {
      "round": 3,
      "heap_per_live_byte": 1.54,
-     "ns_per_op": 580
+     "ns_per_op": 579
     },
     {
      "round": 4,
@@ -16122,136 +16276,22 @@
    "language": "rust",
    "repeat": 1,
    "entries": 10000000,
-   "insert_ns": 280,
-   "get_ns": 218,
-   "scan_ns": 8.5,
-   "node_bytes": 25.0,
-   "heap_bytes": 82.9,
-   "threads8_insert_ns": 41,
-   "threads8_get_ns": 55,
-   "long_entries": 625000,
-   "long_insert_ns": 3835,
-   "long_get_ns": 637,
-   "long_heap_per_value_byte": 1.029,
-   "churn": [
-    {
-     "round": 1,
-     "heap_per_live_byte": 1.62,
-     "ns_per_op": 618
-    },
-    {
-     "round": 2,
-     "heap_per_live_byte": 1.54,
-     "ns_per_op": 608
-    },
-    {
-     "round": 3,
-     "heap_per_live_byte": 1.54,
-     "ns_per_op": 600
-    },
-    {
-     "round": 4,
-     "heap_per_live_byte": 1.54,
-     "ns_per_op": 596
-    }
-   ]
-  },
-  {
-   "language": "go",
-   "repeat": 1,
-   "entries": 10000000,
-   "insert_ns": 338,
-   "get_ns": 304,
-   "scan_ns": 8.0,
-   "node_bytes": 37.5,
-   "heap_bytes": 95.3,
-   "threads8_insert_ns": 75,
-   "threads8_get_ns": 38,
-   "long_entries": 625000,
-   "long_insert_ns": 1735,
-   "long_get_ns": 762,
-   "long_heap_per_value_byte": 1.042,
-   "churn": [
-    {
-     "round": 1,
-     "heap_per_live_byte": 2.04,
-     "ns_per_op": 541
-    },
-    {
-     "round": 2,
-     "heap_per_live_byte": 1.91,
-     "ns_per_op": 544
-    },
-    {
-     "round": 3,
-     "heap_per_live_byte": 1.85,
-     "ns_per_op": 541
-    },
-    {
-     "round": 4,
-     "heap_per_live_byte": 1.85,
-     "ns_per_op": 539
-    }
-   ]
-  },
-  {
-   "language": "go",
-   "repeat": 2,
-   "entries": 10000000,
-   "insert_ns": 338,
-   "get_ns": 304,
-   "scan_ns": 8.1,
-   "node_bytes": 37.5,
-   "heap_bytes": 95.3,
-   "threads8_insert_ns": 71,
-   "threads8_get_ns": 39,
-   "long_entries": 625000,
-   "long_insert_ns": 1738,
-   "long_get_ns": 783,
-   "long_heap_per_value_byte": 1.042,
-   "churn": [
-    {
-     "round": 1,
-     "heap_per_live_byte": 2.04,
-     "ns_per_op": 542
-    },
-    {
-     "round": 2,
-     "heap_per_live_byte": 1.91,
-     "ns_per_op": 544
-    },
-    {
-     "round": 3,
-     "heap_per_live_byte": 1.85,
-     "ns_per_op": 540
-    },
-    {
-     "round": 4,
-     "heap_per_live_byte": 1.85,
-     "ns_per_op": 539
-    }
-   ]
-  },
-  {
-   "language": "rust",
-   "repeat": 2,
-   "entries": 10000000,
    "insert_ns": 279,
-   "get_ns": 211,
+   "get_ns": 213,
    "scan_ns": 8.4,
    "node_bytes": 25.0,
    "heap_bytes": 82.9,
-   "threads8_insert_ns": 41,
+   "threads8_insert_ns": 42,
    "threads8_get_ns": 34,
    "long_entries": 625000,
-   "long_insert_ns": 3828,
-   "long_get_ns": 632,
+   "long_insert_ns": 3844,
+   "long_get_ns": 625,
    "long_heap_per_value_byte": 1.029,
    "churn": [
     {
      "round": 1,
      "heap_per_live_byte": 1.62,
-     "ns_per_op": 585
+     "ns_per_op": 587
     },
     {
      "round": 2,
@@ -16261,12 +16301,202 @@
     {
      "round": 3,
      "heap_per_live_byte": 1.54,
-     "ns_per_op": 578
+     "ns_per_op": 579
     },
     {
      "round": 4,
      "heap_per_live_byte": 1.54,
-     "ns_per_op": 575
+     "ns_per_op": 576
+    }
+   ]
+  },
+  {
+   "language": "go-mapped",
+   "repeat": 1,
+   "entries": 10000000,
+   "insert_ns": 332,
+   "get_ns": 302,
+   "scan_ns": 8.7,
+   "node_bytes": 37.5,
+   "heap_bytes": 95.3,
+   "threads8_insert_ns": 80,
+   "threads8_get_ns": 38,
+   "long_entries": 625000,
+   "long_insert_ns": 1580,
+   "long_get_ns": 882,
+   "long_heap_per_value_byte": 1.042,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 2.04,
+     "ns_per_op": 601
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.91,
+     "ns_per_op": 604
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 600
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 598
+    }
+   ]
+  },
+  {
+   "language": "go",
+   "repeat": 1,
+   "entries": 10000000,
+   "insert_ns": 341,
+   "get_ns": 306,
+   "scan_ns": 8.3,
+   "node_bytes": 37.5,
+   "heap_bytes": 95.3,
+   "threads8_insert_ns": 73,
+   "threads8_get_ns": 40,
+   "long_entries": 625000,
+   "long_insert_ns": 1684,
+   "long_get_ns": 770,
+   "long_heap_per_value_byte": 1.042,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 2.04,
+     "ns_per_op": 569
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.91,
+     "ns_per_op": 574
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 570
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 569
+    }
+   ]
+  },
+  {
+   "language": "go",
+   "repeat": 2,
+   "entries": 10000000,
+   "insert_ns": 345,
+   "get_ns": 305,
+   "scan_ns": 8.5,
+   "node_bytes": 37.5,
+   "heap_bytes": 95.3,
+   "threads8_insert_ns": 74,
+   "threads8_get_ns": 38,
+   "long_entries": 625000,
+   "long_insert_ns": 1809,
+   "long_get_ns": 775,
+   "long_heap_per_value_byte": 1.042,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 2.04,
+     "ns_per_op": 553
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.91,
+     "ns_per_op": 566
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 567
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 569
+    }
+   ]
+  },
+  {
+   "language": "go-mapped",
+   "repeat": 2,
+   "entries": 10000000,
+   "insert_ns": 337,
+   "get_ns": 302,
+   "scan_ns": 8.7,
+   "node_bytes": 37.5,
+   "heap_bytes": 95.3,
+   "threads8_insert_ns": 79,
+   "threads8_get_ns": 38,
+   "long_entries": 625000,
+   "long_insert_ns": 1580,
+   "long_get_ns": 993,
+   "long_heap_per_value_byte": 1.042,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 2.04,
+     "ns_per_op": 607
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.91,
+     "ns_per_op": 608
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 604
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 601
+    }
+   ]
+  },
+  {
+   "language": "rust",
+   "repeat": 2,
+   "entries": 10000000,
+   "insert_ns": 284,
+   "get_ns": 214,
+   "scan_ns": 8.5,
+   "node_bytes": 25.0,
+   "heap_bytes": 82.9,
+   "threads8_insert_ns": 42,
+   "threads8_get_ns": 35,
+   "long_entries": 625000,
+   "long_insert_ns": 3866,
+   "long_get_ns": 623,
+   "long_heap_per_value_byte": 1.029,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 1.62,
+     "ns_per_op": 621
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.54,
+     "ns_per_op": 606
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.54,
+     "ns_per_op": 598
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.54,
+     "ns_per_op": 594
     }
    ]
   },
@@ -16274,16 +16504,244 @@
    "language": "go",
    "repeat": 0,
    "entries": 32768,
-   "insert_ns": 152,
-   "get_ns": 51,
-   "scan_ns": 1.9,
-   "node_bytes": 36.5,
+   "insert_ns": 144,
+   "get_ns": 53,
+   "scan_ns": 2.2,
+   "node_bytes": 36.7,
    "heap_bytes": 92.4,
-   "threads8_insert_ns": 112,
+   "threads8_insert_ns": 108,
+   "threads8_get_ns": 12,
+   "long_entries": 2048,
+   "long_insert_ns": 1588,
+   "long_get_ns": 172,
+   "long_heap_per_value_byte": 1.038,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 1.99,
+     "ns_per_op": 178
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.89,
+     "ns_per_op": 185
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 187
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.84,
+     "ns_per_op": 188
+    }
+   ]
+  },
+  {
+   "language": "go-mapped",
+   "repeat": 0,
+   "entries": 32768,
+   "insert_ns": 133,
+   "get_ns": 52,
+   "scan_ns": 1.9,
+   "node_bytes": 36.6,
+   "heap_bytes": 92.4,
+   "threads8_insert_ns": 110,
+   "threads8_get_ns": 12,
+   "long_entries": 2048,
+   "long_insert_ns": 1346,
+   "long_get_ns": 153,
+   "long_heap_per_value_byte": 1.038,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 1.99,
+     "ns_per_op": 182
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.89,
+     "ns_per_op": 188
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 188
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.84,
+     "ns_per_op": 188
+    }
+   ]
+  },
+  {
+   "language": "rust",
+   "repeat": 0,
+   "entries": 32768,
+   "insert_ns": 102,
+   "get_ns": 38,
+   "scan_ns": 1.7,
+   "node_bytes": 26.9,
+   "heap_bytes": 83.4,
+   "threads8_insert_ns": 54,
+   "threads8_get_ns": 14,
+   "long_entries": 2048,
+   "long_insert_ns": 766,
+   "long_get_ns": 127,
+   "long_heap_per_value_byte": 1.049,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 1.67,
+     "ns_per_op": 185
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.56,
+     "ns_per_op": 189
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.56,
+     "ns_per_op": 188
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.55,
+     "ns_per_op": 188
+    }
+   ]
+  },
+  {
+   "language": "rust",
+   "repeat": 1,
+   "entries": 32768,
+   "insert_ns": 101,
+   "get_ns": 37,
+   "scan_ns": 1.6,
+   "node_bytes": 26.9,
+   "heap_bytes": 83.4,
+   "threads8_insert_ns": 55,
+   "threads8_get_ns": 14,
+   "long_entries": 2048,
+   "long_insert_ns": 777,
+   "long_get_ns": 127,
+   "long_heap_per_value_byte": 1.049,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 1.67,
+     "ns_per_op": 187
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.56,
+     "ns_per_op": 191
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.56,
+     "ns_per_op": 190
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.55,
+     "ns_per_op": 189
+    }
+   ]
+  },
+  {
+   "language": "go-mapped",
+   "repeat": 1,
+   "entries": 32768,
+   "insert_ns": 136,
+   "get_ns": 56,
+   "scan_ns": 1.9,
+   "node_bytes": 36.8,
+   "heap_bytes": 92.4,
+   "threads8_insert_ns": 93,
+   "threads8_get_ns": 12,
+   "long_entries": 2048,
+   "long_insert_ns": 1347,
+   "long_get_ns": 149,
+   "long_heap_per_value_byte": 1.038,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 1.99,
+     "ns_per_op": 173
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.89,
+     "ns_per_op": 182
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 184
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.84,
+     "ns_per_op": 185
+    }
+   ]
+  },
+  {
+   "language": "go",
+   "repeat": 1,
+   "entries": 32768,
+   "insert_ns": 142,
+   "get_ns": 54,
+   "scan_ns": 2.0,
+   "node_bytes": 36.8,
+   "heap_bytes": 92.4,
+   "threads8_insert_ns": 106,
    "threads8_get_ns": 11,
    "long_entries": 2048,
-   "long_insert_ns": 1663,
-   "long_get_ns": 191,
+   "long_insert_ns": 1523,
+   "long_get_ns": 176,
+   "long_heap_per_value_byte": 1.038,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 1.99,
+     "ns_per_op": 191
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.89,
+     "ns_per_op": 194
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 193
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.84,
+     "ns_per_op": 193
+    }
+   ]
+  },
+  {
+   "language": "go",
+   "repeat": 2,
+   "entries": 32768,
+   "insert_ns": 144,
+   "get_ns": 56,
+   "scan_ns": 1.9,
+   "node_bytes": 36.8,
+   "heap_bytes": 92.4,
+   "threads8_insert_ns": 116,
+   "threads8_get_ns": 11,
+   "long_entries": 2048,
+   "long_insert_ns": 1563,
+   "long_get_ns": 175,
    "long_heap_per_value_byte": 1.038,
    "churn": [
     {
@@ -16294,169 +16752,55 @@
     {
      "round": 2,
      "heap_per_live_byte": 1.89,
-     "ns_per_op": 191
-    },
-    {
-     "round": 3,
-     "heap_per_live_byte": 1.85,
-     "ns_per_op": 192
-    },
-    {
-     "round": 4,
-     "heap_per_live_byte": 1.84,
-     "ns_per_op": 192
-    }
-   ]
-  },
-  {
-   "language": "rust",
-   "repeat": 0,
-   "entries": 32768,
-   "insert_ns": 96,
-   "get_ns": 39,
-   "scan_ns": 1.6,
-   "node_bytes": 26.9,
-   "heap_bytes": 83.4,
-   "threads8_insert_ns": 55,
-   "threads8_get_ns": 15,
-   "long_entries": 2048,
-   "long_insert_ns": 775,
-   "long_get_ns": 132,
-   "long_heap_per_value_byte": 1.049,
-   "churn": [
-    {
-     "round": 1,
-     "heap_per_live_byte": 1.67,
-     "ns_per_op": 193
-    },
-    {
-     "round": 2,
-     "heap_per_live_byte": 1.56,
-     "ns_per_op": 197
-    },
-    {
-     "round": 3,
-     "heap_per_live_byte": 1.56,
-     "ns_per_op": 195
-    },
-    {
-     "round": 4,
-     "heap_per_live_byte": 1.55,
-     "ns_per_op": 194
-    }
-   ]
-  },
-  {
-   "language": "rust",
-   "repeat": 1,
-   "entries": 32768,
-   "insert_ns": 98,
-   "get_ns": 40,
-   "scan_ns": 1.6,
-   "node_bytes": 26.9,
-   "heap_bytes": 83.4,
-   "threads8_insert_ns": 59,
-   "threads8_get_ns": 14,
-   "long_entries": 2048,
-   "long_insert_ns": 792,
-   "long_get_ns": 131,
-   "long_heap_per_value_byte": 1.049,
-   "churn": [
-    {
-     "round": 1,
-     "heap_per_live_byte": 1.67,
-     "ns_per_op": 194
-    },
-    {
-     "round": 2,
-     "heap_per_live_byte": 1.56,
-     "ns_per_op": 200
-    },
-    {
-     "round": 3,
-     "heap_per_live_byte": 1.56,
-     "ns_per_op": 198
-    },
-    {
-     "round": 4,
-     "heap_per_live_byte": 1.55,
-     "ns_per_op": 196
-    }
-   ]
-  },
-  {
-   "language": "go",
-   "repeat": 1,
-   "entries": 32768,
-   "insert_ns": 146,
-   "get_ns": 55,
-   "scan_ns": 2.0,
-   "node_bytes": 36.8,
-   "heap_bytes": 92.4,
-   "threads8_insert_ns": 126,
-   "threads8_get_ns": 12,
-   "long_entries": 2048,
-   "long_insert_ns": 1740,
-   "long_get_ns": 144,
-   "long_heap_per_value_byte": 1.038,
-   "churn": [
-    {
-     "round": 1,
-     "heap_per_live_byte": 1.99,
-     "ns_per_op": 187
-    },
-    {
-     "round": 2,
-     "heap_per_live_byte": 1.89,
-     "ns_per_op": 192
-    },
-    {
-     "round": 3,
-     "heap_per_live_byte": 1.85,
-     "ns_per_op": 193
-    },
-    {
-     "round": 4,
-     "heap_per_live_byte": 1.84,
-     "ns_per_op": 193
-    }
-   ]
-  },
-  {
-   "language": "go",
-   "repeat": 2,
-   "entries": 32768,
-   "insert_ns": 145,
-   "get_ns": 54,
-   "scan_ns": 2.2,
-   "node_bytes": 36.8,
-   "heap_bytes": 92.4,
-   "threads8_insert_ns": 121,
-   "threads8_get_ns": 14,
-   "long_entries": 2048,
-   "long_insert_ns": 1572,
-   "long_get_ns": 150,
-   "long_heap_per_value_byte": 1.038,
-   "churn": [
-    {
-     "round": 1,
-     "heap_per_live_byte": 1.99,
      "ns_per_op": 190
     },
     {
-     "round": 2,
-     "heap_per_live_byte": 1.89,
-     "ns_per_op": 195
-    },
-    {
      "round": 3,
      "heap_per_live_byte": 1.85,
-     "ns_per_op": 195
+     "ns_per_op": 190
     },
     {
      "round": 4,
      "heap_per_live_byte": 1.84,
-     "ns_per_op": 195
+     "ns_per_op": 191
+    }
+   ]
+  },
+  {
+   "language": "go-mapped",
+   "repeat": 2,
+   "entries": 32768,
+   "insert_ns": 135,
+   "get_ns": 55,
+   "scan_ns": 2.2,
+   "node_bytes": 36.6,
+   "heap_bytes": 92.4,
+   "threads8_insert_ns": 87,
+   "threads8_get_ns": 15,
+   "long_entries": 2048,
+   "long_insert_ns": 1291,
+   "long_get_ns": 176,
+   "long_heap_per_value_byte": 1.038,
+   "churn": [
+    {
+     "round": 1,
+     "heap_per_live_byte": 1.99,
+     "ns_per_op": 176
+    },
+    {
+     "round": 2,
+     "heap_per_live_byte": 1.89,
+     "ns_per_op": 182
+    },
+    {
+     "round": 3,
+     "heap_per_live_byte": 1.85,
+     "ns_per_op": 183
+    },
+    {
+     "round": 4,
+     "heap_per_live_byte": 1.84,
+     "ns_per_op": 184
     }
    ]
   },
@@ -16465,36 +16809,36 @@
    "repeat": 2,
    "entries": 32768,
    "insert_ns": 97,
-   "get_ns": 39,
-   "scan_ns": 1.8,
+   "get_ns": 37,
+   "scan_ns": 1.7,
    "node_bytes": 26.9,
    "heap_bytes": 83.4,
    "threads8_insert_ns": 55,
    "threads8_get_ns": 14,
    "long_entries": 2048,
-   "long_insert_ns": 761,
-   "long_get_ns": 128,
+   "long_insert_ns": 740,
+   "long_get_ns": 134,
    "long_heap_per_value_byte": 1.049,
    "churn": [
     {
      "round": 1,
      "heap_per_live_byte": 1.67,
-     "ns_per_op": 194
+     "ns_per_op": 186
     },
     {
      "round": 2,
      "heap_per_live_byte": 1.56,
-     "ns_per_op": 198
+     "ns_per_op": 190
     },
     {
      "round": 3,
      "heap_per_live_byte": 1.56,
-     "ns_per_op": 197
+     "ns_per_op": 189
     },
     {
      "round": 4,
      "heap_per_live_byte": 1.55,
-     "ns_per_op": 196
+     "ns_per_op": 187
     }
    ]
   }
